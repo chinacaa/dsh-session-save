@@ -13,7 +13,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="license"></a>
   <img src="https://img.shields.io/badge/dsh-%E2%89%A50.2.1--rc.1-4c6ef5" alt="dsh">
   <img src="https://img.shields.io/badge/platform-Windows%20%C2%B7%20Web-555" alt="platform">
-  <a href="https://github.com/OWNER/dsh-session-save/stargazers"><img src="https://img.shields.io/github/stars/OWNER/dsh-session-save?style=flat" alt="stars"></a>
+  <a href="https://github.com/chinacaa/dsh-session-save/stargazers"><img src="https://img.shields.io/github/stars/chinacaa/dsh-session-save?style=flat" alt="stars"></a>
 </p>
 
 <p align="center">English · <a href="README.md">中文</a></p>
@@ -54,7 +54,7 @@ The blank-session hero row also gets an "Open" pill, so you can open a project b
 dsh plugin --profile web add dsh-session-save
 
 # or straight from GitHub
-dsh plugin --profile web add github:OWNER/dsh-session-save
+dsh plugin --profile web add github:chinacaa/dsh-session-save
 ```
 
 **Restart DSH afterwards** — plugins are composed at startup. On Windows the native dialog uses `powershell.exe`; without it (Linux, remote shells) the UI falls back to an in-page path field, so nothing is lost.
@@ -212,4 +212,4 @@ Every test snapshots and restores `~/.dsh/sessions` and `~/.dsh/memory/workspace
 
 ## License
 
-MIT © 2026 OWNER · see [LICENSE](LICENSE)
+MIT © 2026 chinacaa · see [LICENSE](LICENSE)

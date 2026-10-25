@@ -21,7 +21,7 @@ window.__ModuleLoader__.load({
 
     const ZH = {
       button: '保存会话',
-      buttonHint: '保存（Shift+单击：另存为）',
+      buttonHint: '保存',
       saving: '正在保存…',
       ask: '另存为',
       askHint: '选择保存位置',
@@ -61,7 +61,7 @@ window.__ModuleLoader__.load({
       autosaveAskHint: '自动保存需要一个固定文件，之后每次覆盖它',
       locked: '文件被占用',
       saveAs: '另存为',
-      saveAsHint: '另存为新的 .dsproj（换名字或换位置，原文件保留）',
+      saveAsHint: '另存为',
       saveAsSaved: '已另存为',
       wsTitle: '打开到哪个工作区',
       wsHint: '本机没有这个会话，选一个工作区把对话放进去，然后就能接着聊。',
@@ -85,6 +85,25 @@ window.__ModuleLoader__.load({
       pathNotAllowed: '只能存到用过的目录，或者用另存为窗口挑位置',
       memoryHint: 'Alt 点击：连同工作区记忆一起打包',
       memoryTag: '含记忆',
+      memoryCopiesHint: ' 个记忆文件已作为副本落盘（未生效）',
+      memoryConflictsHint: ' 个与本地已有记忆重名',
+      memoryRestoredHint: ' 个记忆文件已写回原位',
+      memoryNoticeTitle: '记忆只落了副本',
+      memoryNoticeBody: '包里的工作区记忆已存成带来源后缀的副本，DSH 不会读它们。要让它们生效，点「合并记忆」——只覆盖本机已有的同名文件，覆盖前先备份。这个包如果不是你自己导出的，请直接关掉：包里的记忆会被 DSH 当作项目笔记读进上下文。',
+      memoryOpenDir: '打开记忆目录',
+      memoryDirLabel: '记忆目录',
+      memoryMerge: '合并记忆',
+      memoryMergeTitle: '把包里的记忆合并到本机',
+      memoryMergeHint: '合并只覆盖本机已有的同名文件，覆盖前每个都会备份成 .bak-<时间>。这个包如果不是你自己导出的，请取消：包里的记忆会被 DSH 当作项目笔记读进上下文。',
+      memoryMergeMore: '还有 {n} 个',
+      memoryMergeConfirm: '合并已有',
+      memoryMergeOverwrite: '将覆盖',
+      memoryMergeCreate: '将新建（本机没有）',
+      memoryMergeCreateHint: '这些文件本机没有。默认不写入——包里的记忆可能不是你自己的，新建等于让 DSH 直接读它。确认是你自己导出的包，再选「合并并新建」。',
+      memoryMergeWithNew: '合并并新建',
+      memoryMergeNoOverwrite: '没有要覆盖的文件',
+      memoryCreatedHint: ' 个新文件未写入',
+      memoryNewHint: ' 个已写回原位（含新建）',
     };
     const EN = {
       button: 'Save session',
@@ -152,6 +171,25 @@ window.__ModuleLoader__.load({
       pathNotAllowed: 'Only folders you have used before, or pick a spot in the Save As dialog',
       memoryHint: 'Alt+click: bundle the workspace memory too',
       memoryTag: 'with memory',
+      memoryCopiesHint: ' memory files landed as copies (not active)',
+      memoryConflictsHint: ' clash with local memory',
+      memoryRestoredHint: ' memory files written back in place',
+      memoryNoticeTitle: 'Memory landed as copies',
+      memoryNoticeBody: 'The workspace memory from this package was written as copies with a source suffix, which DSH does not read. To make it take effect, choose Merge memory — only files that already exist here are overwritten, and each is backed up first. If this package is not one you exported yourself, close this: packaged memory is read by DSH as project notes and enters the context.',
+      memoryOpenDir: 'Open memory folder',
+      memoryDirLabel: 'Memory folder',
+      memoryMerge: 'Merge memory',
+      memoryMergeTitle: 'Merge the packaged memory into this machine',
+      memoryMergeHint: 'Merging only overwrites files that already exist here, and backs each one up as .bak-<time> first. If this package is not one you exported yourself, cancel: packaged memory is read by DSH as project notes and enters the context.',
+      memoryMergeMore: 'and {n} more',
+      memoryMergeConfirm: 'Merge existing',
+      memoryMergeOverwrite: 'Will overwrite',
+      memoryMergeCreate: 'Will create (not on this machine)',
+      memoryMergeCreateHint: 'These files do not exist here. They are not written by default — packaged memory may not be yours, and creating them lets DSH read it directly. Only choose Merge and create when you exported this package yourself.',
+      memoryMergeWithNew: 'Merge and create',
+      memoryMergeNoOverwrite: 'Nothing to overwrite',
+      memoryCreatedHint: ' new files not written',
+      memoryNewHint: ' written back in place (incl. new)',
     };
     const L = (typeof navigator === 'object' && /^en\b/i.test(navigator.language || '')) ? EN : ZH;
 
@@ -677,6 +715,8 @@ window.__ModuleLoader__.load({
       const [ask, setAsk] = useState(null); // { suggested }
       const [conflict, setConflict] = useState(null); // 冲突详情
       const [workspace, setWorkspace] = useState(null); // 本机没有 → 问落点
+      const [notice, setNotice] = useState(null); // 记忆只落了副本 → 留个面板让人去合并
+      const [merge, setMerge] = useState(null); // 合并确认弹窗的载荷
       const [toast, setToast] = useState(null); // { tone, text }
       const mounted = useRef(true);
 
@@ -694,9 +734,26 @@ window.__ModuleLoader__.load({
           ? ''
           : ` · ${String(L.cloudWarn).replace('{name}', payload.cloud)}`;
         const warning = typeof payload.warning === 'string' && payload.warning !== '' ? ` · ${payload.warning}` : '';
+        // 记忆落盘结果必须说出来：副本不会生效，用户不点「合并记忆」就一直读不到。
+        // 三种模式说法不同——restore 可能还有一批「本机没有、没写」的文件，那是用户
+        // 唯一能察觉到「包里还有东西没落地」的地方，不能并进「已写回」里含糊过去。
+        const mode = payload.memoryMode;
+        const restored = mode === 'restore';
+        const created = mode === 'new';
+        const written = Number(payload.memoryWritten) || 0;
+        const pendingCreated = Array.isArray(payload.memoryCreated) ? payload.memoryCreated.length : 0;
+        const clashes = Array.isArray(payload.memoryConflicts) ? payload.memoryConflicts.length : 0;
+        const memory = written > 0
+          ? ` · ${written}${created ? L.memoryNewHint : restored ? L.memoryRestoredHint : L.memoryCopiesHint}`
+          : '';
+        const createdText = pendingCreated > 0 ? ` · ${pendingCreated}${L.memoryCreatedHint}` : '';
+        const clashText = clashes > 0 ? ` · ${clashes}${L.memoryConflictsHint}` : '';
+        // 只要还有没生效的东西，就把面板留在界面上：copy 是「全是副本」，restore 是
+        // 「有文件没写」。new 表示用户已经明确同意全写，不再提示。
+        setNotice(!created && (written > 0 || pendingCreated > 0) ? payload : null);
         setToast({
-          tone: warning !== '' || cloud !== '' ? 'info' : 'ok',
-          text: `${L.opened} · ${label}${warning}${cloud}`,
+          tone: warning !== '' || cloud !== '' || (!created && (written > 0 || pendingCreated > 0)) ? 'info' : 'ok',
+          text: `${L.opened} · ${label}${warning}${cloud}${memory}${createdText}${clashText}`,
         });
         try {
           await host?.sessions?.refresh?.();
@@ -757,7 +814,7 @@ window.__ModuleLoader__.load({
         [jump],
       );
 
-      return { busy, ask, conflict, workspace, toast, open, setAsk, setConflict, setWorkspace, setToast, mounted };
+      return { busy, ask, conflict, workspace, notice, merge, toast, open, setAsk, setConflict, setWorkspace, setNotice, setMerge, setToast, mounted };
     }
 
     /** AskPanel + 冲突弹窗 + toast，两个入口共用。 */
@@ -814,6 +871,42 @@ window.__ModuleLoader__.load({
             },
             onCancel: () => {
               flow.setWorkspace(null);
+              flow.setToast({ tone: 'info', text: L.cancelled });
+            },
+          }),
+        );
+      }
+      if (flow.notice !== null) {
+        children.push(
+          React.createElement(MemoryNotice, {
+            key: 'notice',
+            payload: flow.notice,
+            busy: flow.busy,
+            onMerge: () => flow.setMerge(flow.notice),
+            onDismiss: () => flow.setNotice(null),
+          }),
+        );
+      }
+      if (flow.merge !== null) {
+        children.push(
+          React.createElement(MemoryMergeModal, {
+            key: 'merge',
+            payload: flow.merge,
+            busy: flow.busy,
+            onConfirm: () => {
+              const source = flow.merge.sourcePath;
+              flow.setMerge(null);
+              flow.open({ path: source, memory: 'restore' });
+            },
+            // 「合并并新建」是这一轮新增的第二个按钮：本机没有的文件默认不写，
+            // 用户看到「将新建」段之后才有机会明确放行。
+            onNew: () => {
+              const source = flow.merge.sourcePath;
+              flow.setMerge(null);
+              flow.open({ path: source, memory: 'new' });
+            },
+            onCancel: () => {
+              flow.setMerge(null);
               flow.setToast({ tone: 'info', text: L.cancelled });
             },
           }),
@@ -954,6 +1047,254 @@ window.__ModuleLoader__.load({
     /* ── 文件已被别处改过：覆盖 / 另存为新文件 ── */
 
     /** 服务端拒绝覆盖时的小面板：给一条「换个位置」的出路，别让用户卡死。 */
+    /** 记忆只落了副本时留在界面上的一小块说明：不点合并就永远不生效。 */
+    function MemoryNotice({ payload, busy, onMerge, onDismiss }) {
+      const written = Number(payload?.memoryWritten) || 0;
+      const dir = typeof payload?.memoryDir === 'string' ? payload.memoryDir : '';
+      const openDir = () => {
+        try {
+          if (typeof host?.uiWorkspace?.openPath === 'function' && dir !== '') host.uiWorkspace.openPath(dir);
+        } catch {
+          /* 没有这个入口就只显示路径 */
+        }
+      };
+      const link = (label, onClick) =>
+        React.createElement(
+          'button',
+          {
+            type: 'button',
+            disabled: busy,
+            onClick,
+            style: {
+              padding: '5px 10px',
+              fontSize: 12,
+              fontFamily: 'inherit',
+              color: COLORS.secondary,
+              background: 'transparent',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 6,
+              cursor: busy ? 'default' : 'pointer',
+            },
+          },
+          label,
+        );
+
+      return React.createElement(
+        'div',
+        {
+          style: {
+            position: 'fixed',
+            right: 20,
+            bottom: 20,
+            zIndex: 9996,
+            width: 400,
+            maxWidth: 'calc(100vw - 40px)',
+            padding: 14,
+            background: COLORS.elevated,
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: COLORS.radius,
+            boxShadow: '0 18px 44px rgba(0,0,0,0.18)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+            color: COLORS.label,
+          },
+        },
+        React.createElement('div', { style: { fontSize: 13, fontWeight: 600 } }, `${L.memoryNoticeTitle} · ${written}`),
+        React.createElement('div', { style: { fontSize: 12, color: COLORS.secondary, lineHeight: 1.5 } }, L.memoryNoticeBody),
+        dir === '' ? null : React.createElement(MiniStat, { label: L.memoryDirLabel, value: dir }),
+        React.createElement(
+          'div',
+          { style: { display: 'flex', gap: 8, marginTop: 2 } },
+          React.createElement(
+            'button',
+            {
+              type: 'button',
+              disabled: busy,
+              onClick: onMerge,
+              style: {
+                padding: '6px 12px',
+                fontSize: 12.5,
+                fontFamily: 'inherit',
+                color: COLORS.accentLabel,
+                background: COLORS.accent,
+                border: 'none',
+                borderRadius: 6,
+                cursor: busy ? 'default' : 'pointer',
+              },
+            },
+            L.memoryMerge,
+          ),
+          dir === '' ? null : link(L.memoryOpenDir, openDir),
+          link(L.wsCancel, onDismiss),
+        ),
+      );
+    }
+
+    /** 合并前把要覆盖的文件列出来，避免用户不知道自己在覆盖什么。 */
+    function MemoryMergeModal({ payload, busy, onConfirm, onNew, onCancel }) {
+      // 清单来自 memoryPlanned（copy 模式也返回），不是 memoryConflicts。后者只记「覆盖了
+      // 哪些」，本机没有的文件压根不在里面——上一轮「弹窗列表为空、点确认却落了原名」
+      // 就是拿它当清单用出来的。exists 由服务端用 safeJoin 落点判，前端只负责分两段显示。
+      const planned = Array.isArray(payload?.memoryPlanned) ? payload.memoryPlanned : [];
+      const pick = (wantExists) =>
+        planned
+          .filter((item) => item !== null && typeof item === 'object' && (item.exists === true) === wantExists)
+          .map((item) => String(item.rel ?? ''))
+          .filter((name) => name !== '');
+      const overwrite = pick(true);
+      const create = pick(false);
+      const overwriteShown = overwrite.slice(0, 6);
+      const createShown = create.slice(0, 6);
+      const overwriteRest = overwrite.length - overwriteShown.length;
+      const createRest = create.length - createShown.length;
+      const button = (label, onClick, primary, off) =>
+        React.createElement(
+          'button',
+          {
+            type: 'button',
+            disabled: busy || off === true,
+            onClick,
+            style: {
+              padding: '6px 12px',
+              fontSize: 12.5,
+              fontFamily: 'inherit',
+              color: primary ? COLORS.accentLabel : COLORS.label,
+              background: primary ? COLORS.accent : 'transparent',
+              border: primary ? 'none' : `1px solid ${COLORS.border}`,
+              borderRadius: 6,
+              opacity: off === true ? 0.45 : 1,
+              cursor: busy || off === true ? 'default' : 'pointer',
+            },
+          },
+          label,
+        );
+
+      return React.createElement(
+        'div',
+        {
+          style: {
+            position: 'fixed',
+            inset: 0,
+            zIndex: 9999,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'rgba(15,17,22,0.32)',
+          },
+          onMouseDown: (event) => {
+            if (event.target === event.currentTarget && !busy) onCancel();
+          },
+        },
+        React.createElement(
+          'div',
+          {
+            style: {
+              width: 480,
+              maxWidth: '92vw',
+              padding: 18,
+              background: COLORS.elevated,
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: COLORS.radius,
+              boxShadow: '0 24px 60px rgba(0,0,0,0.24)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              color: COLORS.label,
+            },
+          },
+          React.createElement('div', { style: { fontSize: 13.5, fontWeight: 600 } }, L.memoryMergeTitle),
+          React.createElement('div', { style: { fontSize: 12, color: COLORS.secondary, lineHeight: 1.5 } }, L.memoryMergeHint),
+          // 两段分开列：「将覆盖」是本机已有、点确认就换成本机版本的；「将新建」是本机没有的，
+          // 默认一个都不写。用户看到第二段才知道包里还有东西没落地，才有机会决定要不要放行。
+          React.createElement(
+            'div',
+            { style: { fontSize: 12, fontWeight: 600, color: COLORS.danger } },
+            `${L.memoryMergeOverwrite} · ${overwrite.length}`,
+          ),
+          overwrite.length === 0
+            ? React.createElement(
+                'div',
+                { style: { fontSize: 11.5, color: COLORS.secondary } },
+                L.memoryMergeNoOverwrite,
+              )
+            : React.createElement(
+                'div',
+                {
+                  style: {
+                    maxHeight: 132,
+                    overflow: 'auto',
+                    padding: '8px 10px',
+                    border: `1px solid ${COLORS.border}`,
+                    borderRadius: 6,
+                    background: 'rgba(0,0,0,0.02)',
+                    fontSize: 11.5,
+                    color: COLORS.danger,
+                    lineHeight: 1.7,
+                  },
+                },
+                ...overwriteShown.map((name) => React.createElement('div', { key: `o:${name}` }, name)),
+                overwriteRest > 0
+                  ? React.createElement(
+                      'div',
+                      { style: { color: COLORS.secondary } },
+                      String(L.memoryMergeMore).replace('{n}', String(overwriteRest)),
+                    )
+                  : null,
+              ),
+          create.length === 0
+            ? null
+            : React.createElement(
+                React.Fragment,
+                null,
+                React.createElement(
+                  'div',
+                  { style: { fontSize: 12, fontWeight: 600, color: COLORS.secondary } },
+                  `${L.memoryMergeCreate} · ${create.length}`,
+                ),
+                React.createElement(
+                  'div',
+                  { style: { fontSize: 11.5, color: COLORS.secondary, lineHeight: 1.5 } },
+                  L.memoryMergeCreateHint,
+                ),
+                React.createElement(
+                  'div',
+                  {
+                    style: {
+                      maxHeight: 132,
+                      overflow: 'auto',
+                      padding: '8px 10px',
+                      border: `1px solid ${COLORS.border}`,
+                      borderRadius: 6,
+                      background: 'rgba(0,0,0,0.02)',
+                      fontSize: 11.5,
+                      color: COLORS.label,
+                      lineHeight: 1.7,
+                    },
+                  },
+                  ...createShown.map((name) => React.createElement('div', { key: `c:${name}` }, name)),
+                  createRest > 0
+                    ? React.createElement(
+                        'div',
+                        { style: { color: COLORS.secondary } },
+                        String(L.memoryMergeMore).replace('{n}', String(createRest)),
+                      )
+                    : null,
+                ),
+              ),
+          React.createElement(
+            'div',
+            { style: { display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 2 } },
+            button(L.wsCancel, onCancel, false),
+            // 两个按钮都给：只给「合并已有」的话，用户根本没法在全新机器上恢复记忆；
+            // 只给「合并并新建」的话，等于把默认不放行的那一步做成了一键。
+            button(L.memoryMergeWithNew, onNew, false, create.length === 0),
+            button(L.memoryMergeConfirm, onConfirm, true, overwrite.length === 0),
+          ),
+        ),
+      );
+    }
+
     function RefuseModal({ payload, busy, onSaveAs, onCancel }) {
       const notDsproj = payload?.status === 'not-dsproj';
       const button = (label, onClick, primary) =>

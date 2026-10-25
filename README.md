@@ -13,7 +13,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="license"></a>
   <img src="https://img.shields.io/badge/dsh-%E2%89%A50.2.1--rc.1-4c6ef5" alt="dsh">
   <img src="https://img.shields.io/badge/platform-Windows%20%C2%B7%20Web-555" alt="platform">
-  <a href="https://github.com/OWNER/dsh-session-save/stargazers"><img src="https://img.shields.io/github/stars/OWNER/dsh-session-save?style=flat" alt="stars"></a>
+  <a href="https://github.com/chinacaa/dsh-session-save/stargazers"><img src="https://img.shields.io/github/stars/chinacaa/dsh-session-save?style=flat" alt="stars"></a>
 </p>
 
 <p align="center"><a href="README.en.md">English</a> · 中文</p>
@@ -54,7 +54,7 @@ DSH 把每条会话都记在 `~/.dsh/sessions/` 里，`session.v4.jsonl.zstd` �
 dsh plugin --profile web add dsh-session-save
 
 # 或直接从 GitHub 装
-dsh plugin --profile web add github:OWNER/dsh-session-save
+dsh plugin --profile web add github:chinacaa/dsh-session-save
 ```
 
 装完**重启 DSH**：插件在启动时组合，热装不会生效。Windows 上原生另存为窗口需要 `powershell.exe`；没有它（比如 Linux 或纯远程会话）会退回页面内的路径输入框，功能不丢。
@@ -162,8 +162,9 @@ flowchart TD
 - **解压炸弹**：单条目上限 64 MB、整包上限 512 MB、压缩比上限 200×（4 MB 以下不算比例），并且先校验中央目录里的长度再解压。
 - **写去哪儿**：保存只允许写到上次用的目录、已记住文件的目录，或原生对话框选的位置。写到别处、或者要覆盖一个不是本插件产出的文件，都要先确认。
 - **路由入口**：四条 `/api` 路由只接受回环地址（`127.0.0.1` / `localhost` / `::1`）、同源 `Origin`、非 `cross-site` 请求；`sessionId` 形态校验；失败信息不回显绝对路径。
-- **包完整性**：`manifest.parts` 里每条 `sha256` 与字节数逐条复核，不匹配就拒绝导入。
-- **不带私货**：默认**不**把 `~/.dsh/memory` 打进包（那里面有 `MEMORY.md`、日志和白板）。要连记忆一起带走，按住 <kbd>Alt</kbd> 点保存/另存为，或请求里带 `?memory=1`。
+- **包完整性**：`manifest.parts` 里每条 `sha256` 与字节数逐条复核，不匹配就拒绝导入。反过来说，**内容条目（`session/`、`memory/workspaces/`）必须都在 `manifest.parts` 里声明过**——没声明的一律拒绝，这样就没法只声明会话、偷偷夹带一份 `MEMORY.md` 塞进你的项目笔记。
+- **不带私货**：默认**不**把 `~/.dsh/memory` 打进包（那里面有 `MEMORY.md`、日志和白板）。要连记忆一起带走，按住 <kbd>Alt</kbd> 点保存/另存为，或请求里带 `?memory=1`。带记忆的包在别的机器上打开时，记忆**默认只落成 `xxx.from-dsproj-<日期>` 副本、不自动生效**；打开后界面会提示有几个文件落了副本，点「合并记忆」才写回原名（覆盖前先备份）。
+- **合并记忆只覆盖，不新建**：点「合并记忆」时，**只覆盖本机已经存在、且内容不同的记忆文件**（覆盖前备份成 `xxx.bak-<时间>`）；本机没有的文件默认**一个都不写**，只在弹窗的「将新建」段里列出来给你看。换到一台全新的机器、确实要把记忆铺开，得在同一个弹窗里额外点「合并并新建」（`?memory=new`）。这样投毒最多落在两种位置：你本机本来就有、且能看见备份的那份，或者你明确点过「合并并新建」的新文件——不会再出现「点了确认，凭空多出一份模型会读的笔记」。
 
 ## `.dsproj` 里有什么
 
@@ -244,9 +245,10 @@ node test/security.mjs            # 安全回归：条目名穿越 / 落点文�
 - 单机多实例共用一个 `DSH_HOME` 时，`storages/session-save.json` 会被后写的覆盖，但每个会话记住的路径仍各自独立。
 - 「打开到哪个工作区」的列表来自 `storages/workspace.json`；全新机器上该文件不存在，列表为空，只能走「选其他目录…」。
 - 空会话页面的「打开」按钮只出现在还没有消息的新会话上；进入对话后要打开别的工程，用标题栏那个 📁。
-- 默认不打包工作区记忆（`~/.dsh/memory`），需要时按住 <kbd>Alt</kbd> 点保存/另存为或带 `?memory=1`；不带记忆的包在新机器上打开后，模型看不到原来的项目笔记与日志。
+- 默认不打包工作区记忆（`~/.dsh/memory`），需要时按住 <kbd>Alt</kbd> 点保存/另存为或带 `?memory=1`；不带记忆的包在新机器上打开后，模型看不到原来的项目笔记与日志。带了记忆的包，记忆**默认也只落副本**（见下条），要点一次「合并记忆」才会被 DSH 读到；而「合并记忆」只覆盖本机已有的同名文件，本机没有的默认不写。
 - 只在回环地址上工作：通过反向代理或另一台机器的浏览器访问本机 DSH 时，四条会话路由会被 403 挡掉（这是有意的）。
+- `manifest.parts` 里的 `sha256` 是**打包方自己算的**，只能证明「包内条目与声明一致」（防传输损坏、防有人偷偷改包），**不构成对打包者的信任背书**。所以导入来源不明的 `.dsproj` 时，请假定它的记忆内容可能被投毒：包里的记忆默认一律落成 `xxx.from-dsproj-<日期>` 副本，不会被 DSH 当成记忆读。「合并记忆」是用户看过提示后的一次性显式动作，而它**只覆盖本机已有的同名文件**（覆盖前备份成 `xxx.bak-<时间>`），本机没有的一律不写、只在弹窗里列出来；真要新建得再点一次「合并并新建」。于是投毒只可能落在两种位置：你本机本来就有、且备份看得见的那份，或者你亲手点了「合并并新建」的新文件——不会出现「点一次确认，模型就凭空读到一份陌生笔记」。
 
 ## 许可
 
-MIT © 2026 OWNER · 见 [LICENSE](LICENSE)
+MIT © 2026 chinacaa · 见 [LICENSE](LICENSE)

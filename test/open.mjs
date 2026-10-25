@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { apply, scanZstdFrames, zipRead, zipWrite } from '../index.js';
 
 const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
@@ -162,7 +162,18 @@ if (landed.body.status === 'opened') {
   check(sameText, '帧 1..n 解压内容一致');
   check(typeof landed.body.title === 'string' || landed.body.title === undefined, '能读出标题', String(landed.body.title));
   check((landed.body.stats?.lines ?? 0) > 0, '事件行数可读', `${landed.body.stats?.lines}`);
+  // 记忆通道：打开默认是 copy（落副本），只有显式 memory=restore 才落原名
+  check(landed.body.memoryMode === 'copy', '默认按 copy 处理记忆', String(landed.body.memoryMode));
+  check(landed.body.memoryWritten === 0, '包里没有记忆时不写记忆', String(landed.body.memoryWritten));
 }
+
+// 3b) 显式 memory=restore 也要能正常打开（包里没记忆时是空操作，不能报错）
+const restoreCwd = path.join(tmpDir, 'restore-mode');
+fs.mkdirSync(restoreCwd, { recursive: true });
+const restoreRun = await call(open, { path: pkg, cwd: restoreCwd, memory: 'restore' });
+check(restoreRun.body.status === 'opened', 'memory=restore 也能打开', restoreRun.body.message ?? '');
+check(restoreRun.body.memoryMode === 'restore', 'restore 模式被服务端识别', String(restoreRun.body.memoryMode));
+check(restoreRun.body.memoryWritten === 0, 'restore 在没有记忆条目时不写盘', String(restoreRun.body.memoryWritten));
 
 // 4) 本机没有这个 id 的会话 → 先问「打开到哪个工作区」，给了 cwd 才落地
 const ZSTD_OPTS = { params: { [zlib.constants.ZSTD_c_checksumFlag]: 1 } };
@@ -184,7 +195,13 @@ const manifestEntry = entries.get('manifest.json');
 if (manifestEntry !== undefined) {
   const manifest = JSON.parse(manifestEntry.toString('utf8'));
   manifest.session = { ...manifest.session, id: foreignId };
-  delete manifest.parts?.[sessionName];
+  // 换了 id 就要重算这条的指纹（不是删掉）：parts 得覆盖每个内容条目。
+  if (manifest.parts !== undefined) {
+    manifest.parts[sessionName] = {
+      sha256: createHash('sha256').update(foreignRaw).digest('hex'),
+      bytes: foreignRaw.length,
+    };
+  }
   entries.set('manifest.json', Buffer.from(JSON.stringify(manifest, null, 2), 'utf8'));
 }
 const foreign = path.join(tmpDir, 'foreign.dsproj');

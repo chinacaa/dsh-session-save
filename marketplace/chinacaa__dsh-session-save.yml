@@ -5,12 +5,12 @@
 #       https://github.com/awesome-dsh-plugin/awesome-dsh-plugin 提一个 PR。
 #       不要改那个仓库的 README.md —— 它由 data/plugins/*.yml 生成。
 #
-# 先跑 node scripts/set-repo.mjs <owner> 把 OWNER 换掉，这个文件会被一起改写并改名。
+# 先跑 node scripts/set-repo.mjs <owner> 把 chinacaa 换掉，这个文件会被一起改写并改名。
 
-url: https://github.com/OWNER/dsh-session-save
-name: OWNER/dsh-session-save
+url: https://github.com/chinacaa/dsh-session-save
+name: chinacaa/dsh-session-save
 category: session
 description:
   en: 'Adds open, save, save-as and an autosave switch to the session header that write the whole session to one .dsproj project file: the first save asks where, later saves overwrite that file, and opening a .dsproj on another machine imports it and switches to that session.'
   zh: '在会话标题栏加上打开、保存、另存为与自动保存开关，把整个会话写成单个 .dsproj 工程文件：第一次保存问存哪里，之后一键覆盖；在另一台机器上打开 .dsproj 会导入并直接切到那个会话。'
-icon: https://raw.githubusercontent.com/OWNER/dsh-session-save/main/assets/icon-180.png
+icon: https://raw.githubusercontent.com/chinacaa/dsh-session-save/main/assets/icon-180.png

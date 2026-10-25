@@ -13,3 +13,6 @@ pnpm-lock.yaml
 .DS_Store
 Thumbs.db
 *.log
+
+# 编辑器本地设置
+.vscode/

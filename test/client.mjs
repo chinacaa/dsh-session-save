@@ -205,3 +205,56 @@ console.log(`✅ client 接线通过 / id=${loaded.id} / inject=${mod.inject.joi
 console.log(`✅ 插槽项 ${registered.map((r) => `${r.def.id}@${r.def.order}`).join(' ')}`);
 console.log('✅ 空会话页面渲染了打开按钮（点击走 api/session.open），且 client.js 不再直接操作 DOM');
 console.log('✅ 另存为是独立图标按钮，点击带 ask=1 强制弹对话框');
+
+/* ── R5：记忆落盘结果必须被前端消费（中英两份文案都在） ── */
+
+const clientSource = readFileSync(file, 'utf8');
+for (const key of [
+  'memoryCopiesHint',
+  'memoryConflictsHint',
+  'memoryRestoredHint',
+  'memoryNoticeTitle',
+  'memoryNoticeBody',
+  'memoryMerge',
+  'memoryMergeTitle',
+  'memoryMergeHint',
+  'memoryMergeMore',
+  'memoryMergeConfirm',
+  'memoryOpenDir',
+]) {
+  const hits = source.split(`${key}:`).length - 1;
+  assert.equal(hits, 2, `${key} 必须中英各一份，实际 ${hits} 处`);
+}
+// R6 把判断抽成了 mode 变量，语义不变：restore 与 copy 走不同文案
+assert.ok(
+  source.includes("mode === 'restore'") &&
+    source.includes('L.memoryRestoredHint') &&
+    source.includes('L.memoryCopiesHint'),
+  'jump 应区分 restore 与 copy 的提示',
+);
+assert.ok(source.includes("memory: 'restore'"), '合并按钮应把 memory=restore 传给打开路由');
+assert.ok(source.includes('MemoryNotice') && source.includes('MemoryMergeModal'), '记忆提示与合并弹窗应存在');
+console.log('✅ 记忆落盘结果被前端消费：副本提示、冲突计数、合并弹窗，中英文案齐全');
+
+/* ── R6：合并弹窗要分「将覆盖 / 将新建」，并给出 memory=new 的出路 ── */
+
+for (const key of [
+  'memoryMergeOverwrite',
+  'memoryMergeCreate',
+  'memoryMergeCreateHint',
+  'memoryMergeWithNew',
+  'memoryMergeNoOverwrite',
+  'memoryCreatedHint',
+  'memoryNewHint',
+]) {
+  const hits = source.split(`${key}:`).length - 1;
+  assert.equal(hits, 2, `${key} 必须中英各一份，实际 ${hits} 处`);
+}
+assert.ok(source.includes('memoryPlanned'), '合并弹窗必须读 memoryPlanned 才能分两段列清单');
+assert.ok(source.includes("memory: 'new'"), '「合并并新建」必须把 memory=new 传给打开路由');
+assert.ok(source.includes('memoryCreated'), '前端要消费 memoryCreated（本机没有、没写的那些）');
+assert.ok(
+  source.includes('memoryMergeNoOverwrite'),
+  '没有可覆盖文件时要有明确文案，不能让用户以为「没事」',
+);
+console.log('✅ 合并弹窗分「将覆盖 / 将新建」两段，并给出 memory=new 出路，中英文案齐全');

@@ -21,7 +21,7 @@
 7. **测试必须自己复原 `~/.dsh`**。每个测试前后都对比 `sessions/` 与 `memory/workspaces/` 的目录集合，新增的删掉；改过的 `storages/session-save.json` 只删自己那几个键，别整份删（用户真实记录在里面）。
 8. **不要 commit `*.dsproj`**（`.gitignore` 已挡）。测试产物一律写 `os.tmpdir()`。
 9. **不要主动 commit / push**，除非用户明说。
-10. **不要把安全校验删掉或放宽**。包是「可能来自敌人」：条目名必须过 `safeSegments`（`\` 也算分隔符）、落点必须过 `isInside`、`inflateRawSync` 必须带 `maxOutputLength`、四条 `/api` 路由必须过 `requestGate`、`manifest.parts` 必须复核。`test/security.mjs` 会盯这些，改坏了立刻红。
+10. **不要把安全校验删掉或放宽**。包是「可能来自敌人」：条目名必须过 `safeSegments`（`\` 也算分隔符）、落点必须过 `isInside`、`inflateRawSync` 必须带 `maxOutputLength`、四条 `/api` 路由必须过 `requestGate`（拿不到 `headers` 时默认拒绝，别为单测放开）、`manifest.parts` 必须复核。另外 **`manifest.parts` 必须覆盖所有内容条目**（`session/`、`memory/workspaces/`）：只复核「声明过的」等于给未声明条目开后门，可以夹带 `MEMORY.md` 投毒项目笔记；包里带记忆条目但整个 `parts` 缺失的同样拒绝。**还有一层：记忆条目落盘永远不用原名**，一律 `xxx.from-dsproj-<日期>`——`parts` 的 sha256 是打包方自算的，自洽的包照样能过前面所有检查，所以「会不会被 DSH 当记忆读」只能靠改名来断。`test/security.mjs` 会盯这些，改坏了立刻红。**`memory=restore`（界面上的「合并记忆」）只改落点，不放宽任何校验**：它照样过 `safeSegments` / `safeJoin` / `ENTRY_ALLOW` / `manifest.parts`，覆盖前先备份成 `xxx.bak-<时间>`；restore 只能由用户显式触发，**绝不许用包里的 `exportedBy`、hostname、`parts` 自洽之类字段判断「这个包可信」**——那些都是打包方自己写的。**`memory=restore` 只许覆盖本机已存在的文件，本机没有的一律不写**（计入 `memoryCreated`，不是 `memoryConflicts`）；用户显式选「合并并新建」才走 `memory=new`。理由：restore 若连新文件也建，一份投毒包在「本机没有该文件」时就能零确认地把 `MEMORY.md` 落到记忆目录，而 `MEMORY.md`、最近两天的日期日志、`handoff/*.md` 全在 DSH 的记忆读取面内——等于绕过 R4 的改名防护。
 11. **默认不打包 `~/.dsh/memory`**（里面有用户的项目笔记、日志和白板）。要带必须显式 `?memory=1`（界面上是 <kbd>Alt</kbd> 点击）。
 
 ## 目录

@@ -973,12 +973,22 @@ const ENTRY_ALLOW = [
   /^SUMMARY\.md$/,
   /^session\/[^/]+\.jsonl(\.zstd)?$/,
   /^memory\/workspaces\/[^/]+\/.+$/,
-  /^workspace\/.+$/,
 ];
+
+/**
+ * 内容条目：真正会被写进磁盘的东西（会话日志、工作区记忆）。
+ * `parts` 只登记这两类（元数据条目 manifest/LOCK/SUMMARY 不登记），
+ * 所以「必须在 parts 里声明过」这条只能对它们提要求。
+ */
+const CONTENT_ENTRY = /^(session\/|memory\/workspaces\/)/;
 
 /**
  * 打开前的整包校验：条目白名单 + `manifest.parts` 的 sha256／体积比对。
  * digest 在打包时就写好了，这里第一次真正用它 —— 传输中被改动或被人塞了东西就能发现。
+ *
+ * 光比对 `parts` 里声明过的条目不够：攻击者可以只声明合法条目（哈希全对），
+ * 另外夹带一条没声明的 `memory/workspaces/<slug>/MEMORY.md` —— 那是每轮注入上下文的
+ * 项目长期笔记，写进去等于 prompt injection。所以内容条目必须「全都被声明过」。
  */
 function verifyPackage(entries, manifest) {
   for (const name of entries.keys()) {
@@ -987,7 +997,16 @@ function verifyPackage(entries, manifest) {
     }
   }
   const parts = manifest?.parts;
-  if (parts === undefined || parts === null || typeof parts !== 'object') return;
+  if (parts === undefined || parts === null || typeof parts !== 'object') {
+    // 老包/第三方包可能没有 parts：会话条目照旧放行（不然旧包全打不开），
+    // 但记忆条目无法验证来源，一律拒绝。
+    for (const name of entries.keys()) {
+      if (name.startsWith('memory/workspaces/')) {
+        throw new Error(`包内记忆条目缺少 manifest.parts，拒绝打开：${name}`);
+      }
+    }
+    return;
+  }
   for (const [name, meta] of Object.entries(parts)) {
     const data = entries.get(name);
     if (data === undefined) continue; // 旧包可能没带全，缺的条目按「没有」处理
@@ -996,6 +1015,13 @@ function verifyPackage(entries, manifest) {
     }
     if (Number.isFinite(meta?.bytes) && data.length !== meta.bytes) {
       throw new Error(`包内条目体积不符：${name}`);
+    }
+  }
+  // 内容条目必须在 parts 里声明过，否则等于绕过了上面的完整性校验
+  for (const name of entries.keys()) {
+    if (!CONTENT_ENTRY.test(name)) continue;
+    if (!Object.prototype.hasOwnProperty.call(parts, name)) {
+      throw new Error(`包内条目未在 manifest.parts 中声明，拒绝打开：${name}`);
     }
   }
 }
@@ -1222,10 +1248,28 @@ function importPackage(sourcePath, options = {}) {
   let memoryWritten = 0;
   let memorySkipped = 0;
   const memoryConflicts = [];
+  // 没写进去的新文件单独记。它和 memoryConflicts（覆盖了的）语义相反，混用会让界面把
+  // 「没写」显示成「已覆盖」——那正是这一轮要修的误解源头。
+  const memoryCreated = [];
+  // 四态：'copy'（默认）落副本、'restore'（用户显式合并）只覆盖本机已有、'new'（合并并新建）
+  // 连本机没有的一起落原名、其余（undefined/false）不碰记忆。
+  const memoryMode =
+    options.memory === 'restore'
+      ? 'restore'
+      : options.memory === 'new'
+        ? 'new'
+        : options.memory === 'copy'
+          ? 'copy'
+          : undefined;
+  // 清单给界面用：所有记忆条目 + 本机是否已有同名文件。copy 模式也要给——界面第一次导入
+  // 拿到的就是 copy 的返回体，没有清单它就没法在合并前列出「将覆盖 / 将新建」。
+  let memoryPlanned = [];
   const prefix = 'memory/workspaces/';
   const memoryKeys = [...entries.keys()].filter((name) => name.startsWith(prefix));
-  if (memoryKeys.length > 0 && options.memory !== false) {
+  let memoryDir;
+  if (memoryKeys.length > 0 && memoryMode !== undefined) {
     const memory = memoryDirFor(cwd);
+    memoryDir = memory.dir;
     const stamp = new Date().toISOString().slice(0, 10);
     // 先把所有落点算完再写：任意一条越界都整包拒绝，不给「写了一半」留机会
     const planned = [];
@@ -1234,38 +1278,103 @@ function importPackage(sourcePath, options = {}) {
       const segments = key.slice(prefix.length).split(/[\\/]+/).filter((part) => part !== '');
       const rel = segments.slice(1).join('/');
       if (rel === '') continue;
-      planned.push({ rel, dest: safeJoin(memory.dir, rel), data: entries.get(key) });
+      // 默认（copy）永不落到原名上。manifest.parts 的 sha256 是打包方自己算的，只能证明
+      // 「包内自洽」，证明不了「打包的人可信」——所以包里的记忆内容一律降级成带来源后缀
+      // 的副本：DSH 不会把它当记忆读，静默投毒变成可见文件。
+      // restore 是用户看过提示后显式点的「合并」，只有这条路才落原名，且覆盖前先备份。
+      // 落点一律由 safeJoin 算，exists 也必须拿同一个落点去判——用 path.join 裸拼等于
+      // 自己新开一条穿越面。existed 只用来给界面列清单，不是「可信所以能落原名」的判据。
+      const native = safeJoin(memory.dir, rel);
+      planned.push({
+        rel,
+        existed: fs.existsSync(native),
+        dest:
+          memoryMode === 'restore' || memoryMode === 'new'
+            ? native
+            : safeJoin(memory.dir, `${rel}.from-dsproj-${stamp}`),
+        data: entries.get(key),
+      });
     }
+    memoryPlanned = planned.map((item) => ({ rel: item.rel, exists: item.existed }));
     for (const item of planned) {
       const { rel, dest, data } = item;
       fs.mkdirSync(path.dirname(dest), { recursive: true });
-      let existing;
-      try {
-        existing = fs.readFileSync(dest);
-      } catch {
-        existing = undefined; // 文件不存在
-      }
-      if (existing !== undefined) {
-        if (existing.equals(data)) {
-          memorySkipped += 1;
-          continue;
+      // 落点已被占用时两种模式的处理不同：
+      //   copy    —— 内容相同就幂等跳过，不同就换下一个序号（绝不覆盖别人的文件）
+      //   restore —— 内容相同就幂等跳过（重复点「合并」不产生一堆 .bak），不同就先备份再覆盖
+      let target = dest;
+      let attempt = 0;
+      let wrote = false;
+      let skipped = false;
+      let backup;
+      while (attempt <= 50) {
+        let existing;
+        try {
+          existing = fs.readFileSync(target);
+        } catch {
+          existing = undefined; // 文件不存在
         }
-        const alt = `${dest}.from-dsproj-${stamp}`;
-        fs.mkdirSync(path.dirname(alt), { recursive: true });
-        fs.writeFileSync(alt, data);
-        memoryConflicts.push(rel);
-        memoryWritten += 1;
-        continue;
+        if (existing !== undefined) {
+          if (existing.equals(data)) {
+            memorySkipped += 1;
+            skipped = true;
+            break;
+          }
+          if (memoryMode === 'copy') {
+            attempt += 1;
+            target = `${dest}-${attempt}`;
+            continue;
+          }
+          // 备份名是拼出来的路径，同样过 safeJoin；撞名就换序号重试。
+          const backupDest = safeJoin(memory.dir, `${rel}.bak-${Date.now()}-${attempt}`);
+          try {
+            fs.copyFileSync(target, backupDest, fs.constants.COPYFILE_EXCL);
+            fs.writeFileSync(target, data);
+            backup = backupDest;
+            wrote = true;
+            break;
+          } catch (error) {
+            if (error?.code === 'EEXIST') {
+              attempt += 1;
+              continue;
+            }
+            // 备份或覆盖失败不拖垮整包：记下来当作跳过，让用户知道哪条没成。
+            memoryConflicts.push({ rel, backup: undefined, error: String(error?.message ?? error) });
+            skipped = true;
+            break;
+          }
+        } else {
+          // restore 的语义是「合并」：只覆盖本机已经存在的文件，不新建。
+          // 否则攻击者只要挑本机不存在的路径（handoff/evil.md、当天日期日志），就能绕开
+          // 确认弹窗静默落原名——那正是 R4 要断的注入链。这里必须干净地 break：
+          // 往下走会掉进 while 重试，最后抛「记忆副本重名太多」这种完全不对的错误。
+          if (memoryMode === 'restore') {
+            memorySkipped += 1;
+            memoryCreated.push(rel);
+            // 必须同时把本地标记置上：下面的 `!wrote && !skipped` 判据只看这两个变量，
+            // 只加计数不置标记会被当成「重名写不进去」，抛一句完全不对的错误。
+            skipped = true;
+            break;
+          }
+          try {
+            // wx：存在就失败。existsSync 与 write 之间的空档也不给穿越/覆盖用
+            fs.writeFileSync(target, data, { flag: 'wx' });
+            wrote = true;
+            break;
+          } catch (error) {
+            if (error?.code !== 'EEXIST') throw error;
+            attempt += 1;
+            // copy 换下一个序号；new 要的就是原名，重读一次再走「备份 + 覆盖」分支
+            if (memoryMode === 'copy') target = `${dest}-${attempt}`;
+          }
+        }
       }
-      try {
-        // wx：存在就失败。existsSync 与 write 之间的空档也不给穿越/覆盖用
-        fs.writeFileSync(dest, data, { flag: 'wx' });
-        memoryWritten += 1;
-      } catch (error) {
-        if (error?.code !== 'EEXIST') throw error;
-        const alt = `${dest}.from-dsproj-${stamp}`;
-        fs.writeFileSync(alt, data);
-        memoryConflicts.push(rel);
+      if (!wrote && !skipped) throw new Error(`记忆副本重名太多，放弃写入：${rel}`);
+      if (wrote) {
+        // copy 模式换过序号记一条字符串（老形状，前端只用来数个数）；
+        // restore 模式记 { rel, backup }，前端要把备份路径显示给用户。
+        if (backup !== undefined) memoryConflicts.push({ rel, backup });
+        else if (attempt > 0) memoryConflicts.push(rel);
         memoryWritten += 1;
       }
     }
@@ -1287,6 +1396,13 @@ function importPackage(sourcePath, options = {}) {
     memoryWritten,
     memorySkipped,
     memoryConflicts,
+    // 「本机没有、这次没写」的那批。界面据此提醒「有东西没写」，和 memoryConflicts 分开用。
+    memoryCreated,
+    // 执行前的清单：[{ rel, exists }]。copy 模式也返回，界面靠它渲染「将覆盖 / 将新建」。
+    memoryPlanned,
+    // 记忆落点目录（服务端按 cwd 解析出来的，不是请求里带来的路径），前端「打开记忆目录」用。
+    memoryDir,
+    memoryMode: memoryMode ?? 'none',
     sourcePath,
     cloud: cloudMarkOf(sourcePath),
     packageLock,
@@ -1417,12 +1533,15 @@ async function handleAutosave(request) {
  *
  * 宿主（`dsh-client-connection`）已经有 Host/Origin fence，但它在 `Origin` 缺失时直接放行，
  * 而且一旦 `trustedHosts` 放宽或把 DSH 挂到反代后面，那层就没了 —— 上面那几个洞都会变成远程可利用。
- * 单元测试直接调 handler（没有 headers 对象）时不拦。
+ * 单元测试要构造真实 `Request` 再调 handler；拿不到 headers 一律拒绝 ——
+ * 「默认放行」等于给未来的调用路径留后门。
  * @returns 拒绝原因，或 undefined 表示放行
  */
 function requestGate(request) {
   const headers = request?.headers;
-  if (headers === undefined || headers === null || typeof headers.get !== 'function') return undefined;
+  if (headers === undefined || headers === null || typeof headers.get !== 'function') {
+    return '请求没有可用的 headers，无法校验来源';
+  }
   // 浏览器一定带 Host；undici 之类的调用端可能没带，这时退回看请求 URL 的主机名，
   // 两者都拿不到才算不合格。
   const urlHost = (() => {
@@ -1432,13 +1551,25 @@ function requestGate(request) {
       return '';
     }
   })();
-  const host = String(headers.get('host') ?? '').toLowerCase() || urlHost.toLowerCase();
+  // 一次性把要用的三个头读出来：headers.get 本身可能抛（畸形 request 或自定义 Headers 实现），
+  // 抛出会一路冒到宿主，让整个请求变成 reject —— 这里必须就地兜住，退回「拒绝」。
+  let rawHost;
+  let rawOrigin;
+  let rawSite;
+  try {
+    rawHost = headers.get('host');
+    rawOrigin = headers.get('origin');
+    rawSite = headers.get('sec-fetch-site');
+  } catch {
+    return '请求头读不出来，拒绝处理';
+  }
+  const host = String(rawHost ?? '').toLowerCase() || urlHost.toLowerCase();
   if (host === '') return '请求缺少 Host';
   const hostName = host.replace(/:\d+$/, '');
   const loopback = (value) =>
     value === '127.0.0.1' || value === 'localhost' || value === '::1' || value === '[::1]';
   if (!loopback(hostName)) return '只接受本机回环地址的请求';
-  const origin = headers.get('origin');
+  const origin = rawOrigin;
   if (origin !== null && origin !== undefined && origin !== '') {
     let parsed;
     try {
@@ -1449,7 +1580,7 @@ function requestGate(request) {
     if (!loopback(parsed.hostname.toLowerCase())) return 'Origin 不是本机地址';
     if (parsed.host.toLowerCase() !== host) return 'Origin 与 Host 不一致';
   }
-  if (String(headers.get('sec-fetch-site') ?? '') === 'cross-site') return '拒绝跨站请求';
+  if (String(rawSite ?? '') === 'cross-site') return '拒绝跨站请求';
   return undefined;
 }
 
@@ -1624,7 +1755,7 @@ async function handleSave(request) {
 
   let out;
   try {
-    out = buildPackage(sessionFile, buf, header, readStats(buf), lock);
+    out = buildPackage(sessionFile, buf, header, readStats(buf), lock, { includeMemory });
   } catch (error) {
     return jsonResponse({ status: 'error', message: `打包失败：${error?.message ?? error}` }, 500);
   }
@@ -1700,7 +1831,12 @@ async function handleOpen(request) {
   try {
     const cwd = typeof query.cwd === 'string' && query.cwd.trim() !== '' ? query.cwd.trim() : undefined;
     const onConflict = typeof query.onConflict === 'string' ? query.onConflict : 'ask';
-    const result = importPackage(source, { cwd, onConflict });
+    // 记忆落盘方式：默认只落副本（安全默认）。restore 只覆盖本机已有文件；new 额外允许
+    // 新建本机没有的文件。白名单只认精确字符串，别用 !== 'copy' 之类的兜底——多一个拼写
+    // 就会悄悄变成「能写新文件」的通道。
+    const memoryMode =
+      query.memory === 'restore' ? 'restore' : query.memory === 'new' ? 'new' : 'copy';
+    const result = importPackage(source, { cwd, onConflict, memory: memoryMode });
     if (result.status === 'need-workspace') return jsonResponse(result);
     if (result.conflict === true) return jsonResponse({ status: 'conflict', ...result }, 409);
     // 打开时就把该文件此刻的内容指纹记下来；顺带把「别处正在写 / 在同步盘里」这两件
@@ -1714,9 +1850,18 @@ async function handleOpen(request) {
       warning: result.packageLockBlocked ?? undefined,
     });
   } catch (error) {
-    // 同 V6：包里/路径里的细节只进日志，不进响应正文。
+    // 同 V6：路径细节只进日志，不进响应正文。但「为什么打不开」这类不含路径的理由要带回去 ——
+    // 否则用户只看到一句通用文案，分不清是包坏了、还是被哪条安全校验挡了。
     console.warn('[dsh-session-save] 打开失败', source, error);
-    return jsonResponse({ status: 'error', message: '这个文件打不开：不是有效的 .dsproj 工程包，或者权限不够' }, 500);
+    const raw = String(error?.message ?? '');
+    const leaksPath = raw === '' || raw.includes(source) || raw.includes(os.homedir()) || /[A-Za-z]:[\\/]/.test(raw);
+    return jsonResponse(
+      {
+        status: 'error',
+        message: leaksPath ? '这个文件打不开：不是有效的 .dsproj 工程包，或者权限不够' : `这个文件打不开：${raw}`,
+      },
+      500,
+    );
   }
 }
 

@@ -158,8 +158,15 @@ const conflictEntries = new Map(entries);
   conflictEntries.set(sessionKey, Buffer.concat([frame0, rest]));
   const mirrored = JSON.parse(conflictEntries.get('manifest.json').toString('utf8'));
   mirrored.session = { ...mirrored.session, id: conflictId };
-  // 改过内容就不能再留着旧的指纹，否则 verifyPackage 会判「内容被改动过」。
-  if (mirrored.parts !== undefined) delete mirrored.parts[sessionKey];
+  // 改过内容就得把指纹重算一遍 —— 不能只删掉：parts 必须覆盖每个内容条目，
+  // 删了会被 verifyPackage 判「未在 manifest.parts 中声明」。
+  if (mirrored.parts !== undefined) {
+    const next = conflictEntries.get(sessionKey);
+    mirrored.parts[sessionKey] = {
+      sha256: crypto.createHash('sha256').update(next).digest('hex'),
+      bytes: next.length,
+    };
+  }
   conflictEntries.set('manifest.json', Buffer.from(JSON.stringify(mirrored), 'utf8'));
 }
 const conflictPkg = path.join(tmpDir, 'conflict.dsproj');

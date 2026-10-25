@@ -7,7 +7,7 @@
 //   node scripts/set-repo.mjs octocat
 //   node scripts/set-repo.mjs octocat dsh-session-save
 //
-// It rewrites package.json (repository/homepage/bugs), LICENSE, README.md and the
+// It rewrites package.json (repository/homepage/bugs), LICENSE, README.md, README.en.md and the
 // marketplace entry, then renames the entry file to <owner>__<repo>.yml.
 // Run it once after creating the GitHub repo; running it twice is harmless.
 
@@ -28,7 +28,7 @@ if (!/^[A-Za-z0-9-]+$/.test(owner) || !/^[A-Za-z0-9._-]+$/.test(repo)) {
   process.exit(1);
 }
 
-const targets = ['package.json', 'LICENSE', 'README.md', 'marketplace/dsh-session-save.yml'];
+const targets = ['package.json', 'LICENSE', 'README.md', 'README.en.md', 'marketplace/dsh-session-save.yml'];
 const touched = [];
 
 for (const rel of targets) {
