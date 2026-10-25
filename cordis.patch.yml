@@ -1,0 +1,7 @@
+# dsh-session-save — bundle patch layer
+#
+# Mounts the Session header "save" utility. The package name here must be the
+# real package name (`dsh-session-save`): Cordis imports the module by `name`.
+- insert:
+    - id: session-save
+      name: dsh-session-save

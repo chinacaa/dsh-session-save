@@ -1,0 +1,15 @@
+# dependencies / build output
+node_modules/
+pnpm-lock.yaml
+
+# local saving artifacts
+*.dsproj
+*.dsproj.lock
+*.dsproj.tmp-*
+*.bak
+*.bak-*
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.log
