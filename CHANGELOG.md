@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-26
+
 ### 新增
 
 - 「合并记忆」通道：`?memory=restore`（界面上的「合并记忆」按钮）把包里的工作区记忆写回**原名**，让 DSH 真的能读到；默认行为不变，仍只落 `xxx.from-dsproj-<日期>` 副本。restore 只改落点，`safeSegments` / `safeJoin` / `ENTRY_ALLOW` / `manifest.parts` 校验一条都不跳过；覆盖前先备份成 `xxx.bak-<时间>`，内容已一致则跳过不备份。

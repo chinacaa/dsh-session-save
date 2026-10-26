@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-save",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Save the current Session to a .dsproj file from the Session header, Word-style: first save asks where, later saves overwrite the same file. Also opens a .dsproj from disk and switches to that Session.",
   "type": "module",
   "main": "index.js",
