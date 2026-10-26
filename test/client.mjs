@@ -78,6 +78,32 @@ const source = readFileSync(file, 'utf8');
 assert.equal(/document\s*\./.test(source), false, 'client.js 不应再直接操作 DOM');
 assert.equal(/MutationObserver/.test(source), false, 'client.js 不应再依赖 MutationObserver');
 
+/*
+ * client.js 用 `navigator.language` 选词表（/^en\b/i → EN，否则 ZH）。
+ * Node 21+ 自带全局 navigator，它的 language 跟随宿主机语言：中文机 zh-CN 走 ZH，
+ * GitHub 的英文 windows-latest runner 是 en-US 走 EN。测试若不锁定它，断言就会随
+ * 跑测机器的语言飘——CI 挂而本地过，正是这个原因。
+ *
+ * 所以这里把 navigator 钉死成指定 locale，让测试与环境解耦，并对中英各跑一遍。
+ */
+function setLocale(language) {
+  Object.defineProperty(globalThis, 'navigator', {
+    value: { language },
+    configurable: true,
+    writable: true,
+  });
+}
+
+/* 默认钉中文（断言按中文写）。CI 用 DSH_TEST_LOCALE 显式声明，本文件另有英文一轮的回归。 */
+const LOCALE = process.env.DSH_TEST_LOCALE || 'zh-CN';
+setLocale(LOCALE);
+const IS_EN = /^en\b/i.test(LOCALE);
+
+/* 按当前 locale 取期望文案——别写死某一种语言，否则 CI（英文 runner）与本地会互相打架。 */
+const T = IS_EN
+  ? { saveAs: 'Save As', openButton: 'Open session' }
+  : { saveAs: '另存为', openButton: '打开会话' };
+
 new Function('window', source)(globalThis.window);
 
 assert.ok(loaded, 'client.js 未调用 __ModuleLoader__.load');
@@ -178,7 +204,7 @@ assert.equal(saveAsElement.props.sessionId, 'session-test', '另存为按钮拿�
 const saveAsButtons = collectButtons(saveAsElement.type(saveAsElement.props));
 assert.equal(saveAsButtons.length, 1, '另存为渲染出一个按钮');
 const saveAsButton = saveAsButtons[0];
-assert.equal(saveAsButton.props['aria-label'], '另存为', '另存为按钮的 aria-label');
+assert.equal(saveAsButton.props['aria-label'], T.saveAs, `另存为按钮的 aria-label（locale=${LOCALE}）`);
 
 // 图标必须是新的（不是软盘）
 const renderNode = (node) =>
