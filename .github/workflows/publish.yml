@@ -30,12 +30,18 @@ jobs:
   publish:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      # checkout/setup-node 都用 v5：v4 声明 runs.using: node20，已被 GitHub 强制迁移到
+      # node24 并打印弃用警告；v5 起原生声明 node24，警告消失。
+      - uses: actions/checkout@v5
 
       # Node 24 自带 npm 11；Trusted Publishing 要求 npm >= 11.5.1，这里再兜一层保险
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '24'
+          # 显式关掉 setup-node v5 的 package-manager 自动缓存。本仓库现在没有
+          # packageManager 字段（不会触发），但发布走 OIDC + provenance，不该让缓存
+          # 依赖“恰好没这个字段”这种偶然——写死关掉更稳。
+          package-manager-cache: false
 
       - name: 确认 npm 版本支持 OIDC
         shell: bash
