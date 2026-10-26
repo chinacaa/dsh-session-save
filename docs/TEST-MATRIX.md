@@ -2,8 +2,10 @@
 
 本文从代码反推功能面（`index.js` 四条路由 + `client.js` 五个插槽项），逐条列出可观测行为、期望结果，以及由哪套测试覆盖。测试分两层：
 
-- **六套自动化回归**（`test/*.mjs`）：216 条断言，`node test/<name>.mjs` 单独可跑。
+- **六套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共打印 216 行 ✅。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
 - **审计验收脚本**（未随仓库分发）：针对历史漏洞的复现/防回归，判据写在下表里，可照着重写。
+
+所有套件都通过 `test/fixture.mjs` 自建临时 `DSH_HOME`（`os.tmpdir()` 下），跑完自删——**不读也不改真实 `~/.dsh`**，所以在任何机器、任何数据状态下结果一致。功能面的 F 编号是本文与 `test/*.mjs` 注释共同引用的锚点，改动功能时两边一起改。
 
 约定：`S` = `/api/session.save`，`O` = `/api/session.open`，`A` = `/api/session.autosave`，`W` = `/api/session.workspaces`。
 
@@ -98,7 +100,7 @@
 | --- | --- | --- | --- |
 | `test/dialog.mjs` | 7 | F3、F46 | 脚本带 BOM、`OutputEncoding`、`-ResultFile` 三件套齐；中文路径往返不乱码；取消 → `null`；脚本缺失 → `undefined`；乱码 stdout 不覆盖结果文件 |
 | `test/client.mjs` | 6 | F34、F35、F37 | 5 个插槽项 id/order/插槽名正确；另存为是独立图标且点击带 `ask=1`；hero 按钮点击打 `api/session.open`；源码不含 `document.`/`MutationObserver`；7 个记忆相关 i18n 键中英各一份 |
-| `test/smoke.mjs` | 1 | F1、F8、F10、F12 | 真实会话 → 打包 → 回读 ZIP 首条目 zstd magic、必有 `manifest.json`/`SUMMARY.md`/`session/`；二次保存复用同一路径；默认文件名规则 |
+| `test/smoke.mjs` | 1（12 处 throw 检查） | F1、F8、F10、F12 | 夹具会话 → 打包 → 回读 ZIP 首条目 zstd magic、必有 `manifest.json`/`SUMMARY.md`/`session/`；二次保存复用同一路径；默认文件名规则与非法字符替换；无标题兜底名 |
 | `test/open.mjs` | 35 | F13–F21、F23 | 复用不写盘；新 cwd 落地并改写 header；`need-workspace` 列工作区；选好工作区后打开；帧 1..n 原字节一致；坏路径 404 且不回显 |
 | `test/conflict.mjs` | 67 | F5–F7、F11、F28–F32、F44 | 四种冲突顺序 ask→reuse→copy→overwrite；覆盖前留 `.bak`；异机新鲜锁给理由；CAS 409 与 `force`；自动保存钩子写盘并递增 `writes`；关闭后不再写；同步盘识别；目录复原 |
 | `test/security.mjs` | 100 | F22–F27、F38–F43 | V1 越界条目读包即拒；V2 恶意 `fileName` 被收敛；V3 200 MB / 1026:1 在解压前拒绝；V4 目录外 400 且不建树；V5 非 id 400；V6 不回显路径；V7 `parts` 不符 500；V8 跨站 403；R1 未声明条目拒绝；R4 默认永不落原名；R6 restore 只覆盖已有、`memory=new` 才新建 |
@@ -127,7 +129,7 @@
 | 会话 id 冲突 | 两条历史混成一条 | F17 覆盖：id 全机唯一，relocate 换新 id |
 | 汉名乱码 | 文件名/路径损坏 | F46 覆盖，`dialog.mjs` 7 条 |
 
-**本轮新增修复**：`requestGate` 读 `headers.get('host'/'origin'/'sec-fetch-site')` 时未加保护，畸形 `Headers` 实现（或 `get` 抛异常）会让 handler reject，请求变成非 JSON 失败。已改为一次性 try 包住三个头读取，失败即返回「请求头读不出来，拒绝处理」→ 403。`probe-p0.mjs` 42/42。
+**已修**：`requestGate` 读 `headers.get('host'/'origin'/'sec-fetch-site')` 时未加保护，畸形 `Headers` 实现（或 `get` 抛异常）会让 handler reject，请求变成非 JSON 失败。现为一次性 try 包住三个头读取，失败即返回「请求头读不出来，拒绝处理」→ 403。`probe-p0.mjs` 42/42。
 
 ## 四、怎么跑
 
@@ -135,10 +137,11 @@
 node --check index.js client.js
 node test/dialog.mjs
 node test/client.mjs
+DSH_TEST_LOCALE=en-US node test/client.mjs    # 英文词表那一轮（改过客户端才需要）
 node test/smoke.mjs
 node test/open.mjs
 node test/conflict.mjs
 node test/security.mjs
 ```
 
-跑完确认：`~/.dsh/sessions` 5 个目录、`~/.dsh/memory/workspaces` 3 个目录、`storages/session-save.json` 里没有测试会话的键。
+跑完看末尾是否都打印「自检通过」，以及 `test/` 自己报的临时目录清理行。**不需要**再去核对 `~/.dsh` 里的会话/记忆目录数——夹具从不碰真实 `~/.dsh`（早期版本会碰，那正是"换台机器必红"的原因）。

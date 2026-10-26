@@ -9,6 +9,7 @@
 - 语言/运行时：纯 ESM（`"type": "module"`），零运行时依赖，只用 `node:` 内置模块；客户端只 `require('react')`。
 - 宿主：DSH `>=0.2.1-rc.1`（`engines.dsh`），Cordis `^4.0.1`（peer）。
 - 平台：Windows 优先（原生对话框走 `powershell.exe` + WinForms），没有 PowerShell 时退回网页里的路径输入框。
+- 规模：`index.js` ≈1930 行、`client.js` ≈1950 行、六套测试共 216 行 ✅（`smoke.mjs` 另有 12 处 throw 检查，只打一行汇总）。逐条覆盖见 `docs/TEST-MATRIX.md`。
 
 ## 红线（改之前先看，违反会静默坏掉）
 
@@ -18,33 +19,35 @@
 4. **改会话日志只许重写第 0 帧**。会话文件是「多个 zstd 帧拼接」，第 0 帧是 header；改 `cwd`/`id` 后必须把帧 1..n 原字节照搬，不能整体解压再压回去。
 5. **`client.js` 里不许出现 `document.`、`MutationObserver`、全局 `<style>`、除 react 之外的依赖**。`test/client.mjs` 里有反向断言，写了就红。图标一律内联 SVG（`stroke="currentColor"`），颜色用主题 token。
 6. **`.ps1` 必须是带 BOM 的 UTF-8**，否则 PowerShell 5.1 按 ANSI 解析直接 `Missing closing '}'`（而 pwsh 7 的 AST 校验却能通过，别拿它当证据）。中文路径**必须走 `-ResultFile`**：PS 5.1 的 stdout 是控制台代码页（中文系统 `gb2312`），Node 按 UTF-8 读会把中文读成 `ÿ…`，然后按乱码名写盘。
-7. **测试必须自己复原 `~/.dsh`**。每个测试前后都对比 `sessions/` 与 `memory/workspaces/` 的目录集合，新增的删掉；改过的 `storages/session-save.json` 只删自己那几个键，别整份删（用户真实记录在里面）。
+7. **测试不许读写真实的 `~/.dsh`**。一律 `makeFixture()` 建临时 `DSH_HOME`（`os.tmpdir()` 下），`autoCleanup(fx)` 兜住正常退出/异常/^C 三种收尾。早期那套「跑前跑后对比 `sessions/` 目录集合、改过 `storages/session-save.json` 手工删键」的做法已经废弃——它本身就是「换台机器必红」的根源。要断言状态文件，就断言夹具里那份。
 8. **不要 commit `*.dsproj`**（`.gitignore` 已挡）。测试产物一律写 `os.tmpdir()`。
 9. **不要主动 commit / push**，除非用户明说。
-10. **不要把安全校验删掉或放宽**。包是「可能来自敌人」：条目名必须过 `safeSegments`（`\` 也算分隔符）、落点必须过 `isInside`、`inflateRawSync` 必须带 `maxOutputLength`、四条 `/api` 路由必须过 `requestGate`（拿不到 `headers` 时默认拒绝，别为单测放开）、`manifest.parts` 必须复核。另外 **`manifest.parts` 必须覆盖所有内容条目**（`session/`、`memory/workspaces/`）：只复核「声明过的」等于给未声明条目开后门，可以夹带 `MEMORY.md` 投毒项目笔记；包里带记忆条目但整个 `parts` 缺失的同样拒绝。**还有一层：记忆条目落盘永远不用原名**，一律 `xxx.from-dsproj-<日期>`——`parts` 的 sha256 是打包方自算的，自洽的包照样能过前面所有检查，所以「会不会被 DSH 当记忆读」只能靠改名来断。`test/security.mjs` 会盯这些，改坏了立刻红。**`memory=restore`（界面上的「合并记忆」）只改落点，不放宽任何校验**：它照样过 `safeSegments` / `safeJoin` / `ENTRY_ALLOW` / `manifest.parts`，覆盖前先备份成 `xxx.bak-<时间>`；restore 只能由用户显式触发，**绝不许用包里的 `exportedBy`、hostname、`parts` 自洽之类字段判断「这个包可信」**——那些都是打包方自己写的。**`memory=restore` 只许覆盖本机已存在的文件，本机没有的一律不写**（计入 `memoryCreated`，不是 `memoryConflicts`）；用户显式选「合并并新建」才走 `memory=new`。理由：restore 若连新文件也建，一份投毒包在「本机没有该文件」时就能零确认地把 `MEMORY.md` 落到记忆目录，而 `MEMORY.md`、最近两天的日期日志、`handoff/*.md` 全在 DSH 的记忆读取面内——等于绕过 R4 的改名防护。
+10. **不要把安全校验删掉或放宽**。包是「可能来自敌人」：条目名必须过 `safeSegments`（`\` 也算分隔符）、落点必须过 `isInside`、`inflateRawSync` 必须带 `maxOutputLength`、四条 `/api` 路由必须过 `requestGate`（拿不到 `headers` 时默认拒绝，别为单测放开）、`manifest.parts` 必须复核。另外 **`manifest.parts` 必须覆盖所有内容条目**（`session/`、`memory/workspaces/`）：只复核「声明过的」等于给未声明条目开后门，可以夹带 `MEMORY.md` 投毒项目笔记；包里带记忆条目但整个 `parts` 缺失的同样拒绝。**还有一层：记忆条目落盘永远不用原名**，一律 `xxx.from-dsproj-<日期>`——`parts` 的 sha256 是打包方自算的，自洽的包照样能过前面所有检查，所以「会不会被 DSH 当记忆读」只能靠改名来断。`test/security.mjs` 会盯这些，改坏了立刻红。**`memory=restore`（界面上的「合并记忆」）只改落点，不放宽任何校验**：它照样过 `safeSegments` / `safeJoin` / `ENTRY_ALLOW` / `manifest.parts`，覆盖前先备份成 `xxx.bak-<时间>`；restore 只能由用户显式触发，**绝不许用包里的 `exportedBy`、hostname、`parts` 自洽之类字段判断「这个包可信」**——那些都是打包方自己写的。**`memory=restore` 只许覆盖本机已存在的文件，本机没有的一律不写**（计入 `memoryCreated`，不是 `memoryConflicts`）；用户显式选「合并并新建」才走 `memory=new`。理由：restore 若连新文件也建，一份投毒包在「本机没有该文件」时就能零确认地把 `MEMORY.md` 落到记忆目录，而 `MEMORY.md`、最近两天的日期日志、`handoff/*.md` 全在 DSH 的记忆读取面内——等于绕过 R4 的改名防护。**唯一例外**：本机已有同名记忆**目录**、但没有这个文件时，restore 落 `xxx.from-dsproj-<日期>` 副本（仍不用原名，与「永不落原名」一致）——改这条前先看 `test/security.mjs` 的 R6 用例，那里是判据。
 11. **默认不打包 `~/.dsh/memory`**（里面有用户的项目笔记、日志和白板）。要带必须显式 `?memory=1`（界面上是 <kbd>Alt</kbd> 点击）。
 
 ## 目录
 
 ```
-index.js            Host 半：四条 HTTP 路由 + 打包/导入 + 锁 + CAS（约 1430 行）
-client.js           Client 半：5 个插槽项 + 三个模态 + 内联图标（约 1480 行）
+index.js            Host 半：四条 HTTP 路由 + 打包/导入 + 锁 + CAS
+client.js           Client 半：5 个插槽项 + 各模态 + 内联图标
 cordis.patch.yml    bundle 补丁层（insert id=session-save）
 save-dialog.ps1     原生「保存会话」对话框
 open-dialog.ps1     原生「打开会话工程」对话框
 marketplace/        上架条目（提 PR 到 awesome-dsh-plugin 用）
 scripts/bump.mjs    改版本（package.json + CHANGELOG）
 scripts/set-repo.mjs 把 OWNER 占位换成真实 GitHub 名字
-test/*.mjs          六个自检（见「测试」）
+test/fixture.mjs    临时 DSH_HOME 夹具（六套测试共用）
+test/*.mjs          六套自检（见「测试」）
+docs/TEST-MATRIX.md 功能面 → 测试覆盖矩阵（46 条 F 编号）
 assets/             截图与方形图标（市场用）
 ```
 
 ## 命令
 
 ```bash
-node test/dialog.mjs      # 中文路径往返：PS 结果文件 + UTF-8 编码
-node test/client.mjs      # 客户端接线：5 个插槽项、图标手指纹、点击打到的路由
-node test/smoke.mjs       # Host 冒烟：真实会话 → 打包 → 回读 ZIP → 二次保存复用路径
+node test/client.mjs      # 客户端接线：5 个插槽项、图标指纹、点击打到的路由
+node test/dialog.mjs      # 中文路径往返：PS 结果文件 + UTF-8（要 Windows PowerShell）
+node test/smoke.mjs       # Host 冒烟：夹具会话 → 打包 → 回读 ZIP → 二次保存复用路径
 node test/open.mjs        # 打开链路：复用 / 换 cwd 落地 / need-workspace / 逐帧比对
 node test/conflict.mjs    # 锁、四种冲突、CAS、自动保存（约 30 秒，含 2.6 秒等待）
 node test/security.mjs    # 安全回归：条目名穿越 / 落点文件名 / 解压炸弹 / 路由闸 / parts 校验
@@ -104,8 +107,25 @@ conversation.hero.options               session-open-hero@41
 
 ## 测试怎么写
 
+**一条判据：测试不许依赖本机真实状态。** 早期的 `smoke.mjs` / `open.mjs` 直接读 `~/.dsh/sessions` 里"恰好存在"的会话，换台机器或清过数据就红。现在统一走 `test/fixture.mjs`：
+
+```js
+import { autoCleanup, loadRoutes, makeFixture } from './fixture.mjs';
+const fx = makeFixture();   // 在 os.tmpdir() 下建 dshss-fx-XXXX：sessions/ + memory/ + storages/
+autoCleanup(fx);            // 正常退出/异常/^C 都会删掉
+const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixture 之后
+```
+
+- **顺序不能换**：`index.js` 在模块顶层读 `DSH_HOME` 决定数据根，所以夹具必须先建好再 `loadRoutes`。
+- **夹具的 slug 规则必须抄 `index.js`**：`projectKey(cwd)` 与记忆目录 slug 是**两套**算法（见「架构」），夹具里自己重写一套近似规则就会让 `findSessionFile()` 扫不到会话。`fixture.mjs` 导出的 `projectKeyOf` / `memorySlugOf` 就是照 `index.js` 抄的，改 `index.js` 的 slug 逻辑时两边一起改。
+- **夹具命令行可传**：`makeFixture({ sessionId, cwd, title })` 覆盖默认值。
+- **自定义 set-cwd 类用例别自己拼路径**，用 `fx.home` + `fx.session.id`，否则 relocate 之后 id 对不上。
+
+其余约定：
+
 - 抓 Host handler：给 `apply` 一个假 ctx，`connection.fetch.register` 把 spec 存进 **`Map`（按 `spec.path`）**。别只留最后一个 spec——四条路由会串。
 - 假 React：`createElement` 返回 `{type, props, children}`；`useState` 必须返回 `[value, fn]` 二元组，否则组件里解构直接 TypeError；要拿图标内部 `<path d>` 得先 `renderNode(node.type(node.props))` 把组件元素展开。
+- **假 `navigator.language` 不设，词表就会跟着跑测试的机器走**：`client.js` 按 `navigator.language` 选中/英词表，干净环境的 Node 没有 `navigator` 时取默认 `zh-CN`，但本地装了 Node 也可能被注入。`client.mjs` 现在先用 `setLocale(LOCALE)` 钉住，双语断言从 `T = IS_EN ? {...} : {...}` 取；跑英文一轮用 `DSH_TEST_LOCALE=en-US node test/client.mjs`。
 - 造「同 id 不同会话」：解第 0 帧 → 把 `header.id` 换成新 uuid → 用 `zstdCompressSync(..., { params: { [zlib.constants.ZSTD_c_checksumFlag]: 1 } })` 重压 → 拼回帧 1..n 原字节 → 同步改 `manifest.json` 的 `session.id`。
 - 冲突用例顺序必须是 `ask → reuse → copy → overwrite`：`overwrite` 会把本机那份的 `createdAt` 改成包里的，之后就再也构不成「不同会话」了。
 - 自动保存靠 `ctx.on('session/event', ...)` 钩子：假 ctx 提供 `effect(fn)`（立即执行）与 `on(name, handler)`（存起来），测试里手动 `handler({id}, {type:'step/end'})` 再等 2.6 秒（1.5 秒去抖 + 余量）。
@@ -115,11 +135,43 @@ conversation.hero.options               session-open-hero@41
 - 版本真源是 `package.json` 的 `version`；`0.x` 阶段 MINOR 可带破坏性改动，`PATCH` 只修 bug；四条路由出入参 + 五个插槽座位 + 状态文件字段形状冻结时才升 `1.0.0`。
 - 不随包版本走的三个东西：`dshproj/1`（`FORMAT`）、`dshproj-lock/1`（`LOCK_FORMAT`）、宿主兼容范围（`engines.dsh` 与 peer cordis）。
 - 发版：`node scripts/bump.mjs minor` → `git commit -m "发布 vX"` → `git tag -a vX -m "vX"` → `git push --follow-tags`。
-- 上架：`marketplace/dsh-session-save.yml` 复制成 awesome-dsh-plugin 仓库的 `data/plugins/<owner>__<repo>.yml` 提 PR；硬门槛是 `dsh.bundle`（已满足）、仓库满 1 天、topic `dsh-plugin`、描述与代码对得上。
+- **CI 只发布、不跑测试**。`.github/workflows/publish.yml` 里只有：npm 版本自检（OIDC 需 `>= 11.5.1`）、`node --check`、可选 `--dry-run`、`npm publish --provenance --access public`。测试是发布前的**本机**动作（见「改完之后」）。别把 `node test/*.mjs` 塞回 workflow：发布链路要的是"一条命令、结果确定"，而 `dialog.mjs` 要真拉起 Windows PowerShell + WinForms、其余套件要建临时数据根，都属于本机动作；这也正是当初 CI 红过一轮后定的边界。
+- 上架：`marketplace/chinacaa__dsh-session-save.yml` 复制成 awesome-dsh-plugin 仓库的 `data/plugins/<owner>__<repo>.yml` 提 PR；硬门槛是 `dsh.bundle`（已满足）、仓库满 1 天、topic `dsh-plugin`、描述与代码对得上。
+
+## 文档怎么改
+
+仓库里每个 `.md` 都有唯一职责。**同一个事实只写一处**，写两处必然两处不一致——这是这份文档自己踩过的坑（README 曾把红线写成"九条"、把测试收尾写成"跑完对比 `~/.dsh` 的目录数"，都与代码脱节）。
+
+| 文件 | 写什么 | 不写什么 | 什么时候动 |
+| --- | --- | --- | --- |
+| `README.md`<br>`README.en.md` | 用户视角：这是什么、三步用起来、`.dsproj` 里有什么、和 `dshproj` CLI 的关系、安全承诺、常见问题、已知边界、许可 | 内部实现（函数名、分支顺序）、踩坑过程、"为什么这样写"、测试写法 | 用户能看见的行为变了：按钮、默认文件名、文案、四条路由的出入参、记忆语义、平台限制 |
+| `AGENTS.md` | 协作者视角：红线、目录、命令、架构契约（两套 slug、`importPackage` 判定顺序、三重写保护）、测试怎么写、发版与上架、本文档分工 | 面向用户的教程式叙述、历史流水账、"当初为什么"的完整复盘 | 踩到"会静默坏掉"的坑（→ 补红线）、路由/目录/发版流程变了、测试套路变了 |
+| `CLAUDE.md` | 最短入口：一句话定位、开工命令、最容易犯的错、收工约定 | 重复 AGENTS.md 的架构与安全细节（只留指针） | AGENTS.md 红线增删时同步条目数；开工命令或收工标准变了 |
+| `docs/TEST-MATRIX.md` | F 编号 → 功能面 → 期望结果 → 由哪套测试的哪几条覆盖；怎么跑、什么算通过 | 用户教程、发版流程、安全论证的长篇说明 | **任何功能点或断言变化**。F 编号是 `test/*.mjs` 注释里引用的锚点，改一边必须改另一边 |
+| `CHANGELOG.md` | 用户能感知的变化，按「新增 / 修复 / 变更 / 安全」分组，中文 | 纯文档改动、纯重构、内部改名、开发过程 | 行为变了就加一条 `[Unreleased]`；发版时由 `bump.mjs` 收口，别手写版本号标题 |
+| `marketplace/*.yml` | 上架条目：名称、描述、分类、仓库地址、必需字段 | README 的长篇说明（描述控制在平台限制内） | 插件定位/分类/描述变了，或上游条目格式变更 |
+
+三条硬规矩：
+
+1. **别在文档里复述代码**。默认文件名规则的真源是 `index.js` 的 `suggestPath()`、上限常量在 `index.js` 顶部；文档只说结论和例子，不抄正则、不抄常量值。抄了就会在下次改代码时变成谎言。
+2. **数字必须当场能验**。文档里出现"11 条红线""216 行 ✅""F1–F46""≈1930 行"这类计数时，要能用一条命令复现（见「改完之后」）。改完顺手核一遍，别让读者去发现数字过期。
+3. **中英必须同一次改完**。`README.md` 与 `README.en.md` 是同一份文档的两种语言：小标题顺序、表格列、示例文件名一一对应。只改一份等于给另一半读者发过期信息。
+
+还有两条不写在文档里的东西：进度和计划（放 issue / PR / 提交信息，不写进 README 的"路线图"）、本机路径与个人环境（`C:\Users\...`、profile 名、私有 registry）——后者写进文档等于把私有环境当契约。
 
 ## 改完之后
 
 1. `node --check index.js client.js`（改过 .ps1 再加语法检查）。
-2. 跑**全部五个**测试，别只跑改到的那一个。
+2. 跑**全部六套**测试，别只跑改到的那一个；改过客户端再补一轮 `DSH_TEST_LOCALE=en-US node test/client.mjs`。
 3. 改过行为 → `CHANGELOG.md` 的 `[Unreleased]` 加一条。
-4. 确认 `~/.dsh` 目录集合回到原状（5 个会话目录 / 3 个记忆目录），`storages/session-save.json` 没留下测试会话的键。
+4. 改过任何一个断言或功能点 → 同步 `docs/TEST-MATRIX.md` 的覆盖表（它按 F 编号列，条数对不上就是漏改）。
+5. 改过文档 → 按「文档怎么改」那张表核对：中英两份是否同改、有没有把代码细节抄进文档、文中的计数是否仍成立：
+
+   ```bash
+   wc -l index.js client.js                                  # 对应 AGENTS.md「规模」
+   awk '/^## 红线/,/^## 目录/' AGENTS.md | grep -c '^[0-9]\+\. \*\*'   # 红线条数（必须限在红线节内：本文别处也有编号列表）
+   grep -oE 'F[0-9]+' docs/TEST-MATRIX.md | sort -u | wc -l  # 功能面条数
+   for f in client dialog smoke open conflict security; do node test/$f.mjs | grep -c '✅' ; done   # 六行相加 = 216
+   ```
+
+6. 确认测试没有留下垃圾：跑完 `git status` 应为只有你改的源文件，`os.tmpdir()` 下不该残留 `dshss-fx-*` / `dshss-sec-*` 目录（`autoCleanup` 会删，残留说明收尾路径漏了信号处理）。

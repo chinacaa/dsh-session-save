@@ -10,6 +10,12 @@
 - 「合并记忆」通道：`?memory=restore`（界面上的「合并记忆」按钮）把包里的工作区记忆写回**原名**，让 DSH 真的能读到；默认行为不变，仍只落 `xxx.from-dsproj-<日期>` 副本。restore 只改落点，`safeSegments` / `safeJoin` / `ENTRY_ALLOW` / `manifest.parts` 校验一条都不跳过；覆盖前先备份成 `xxx.bak-<时间>`，内容已一致则跳过不备份。
 - 打开后告诉用户记忆发生了什么：toast 里报「几个记忆文件落了副本 / 几个和本地重名 / 几个已写回原位」，落副本时界面留一块提示面板，带「合并记忆」和「打开记忆目录」；合并前弹窗列出会被覆盖的文件。以前这三个字段后端早就返回、前端一个都没用。
 
+### 变更
+
+- 六套测试改为自带临时数据根（新增 `test/fixture.mjs`）：每个套件在 `os.tmpdir()` 下建一份 `DSH_HOME` 夹具、跑完自删，**不再读写真实的 `~/.dsh`**。以前 `smoke.mjs` / `open.mjs` 依赖"本机恰好存在某个会话"，换机器、清过数据、或 CI runner 上必红；现在任何机器结果一致，也不再需要跑完手工核对目录数。
+- 中文词表不再跟着宿主的 `navigator.language` 漂：`test/client.mjs` 显式钉住 locale（`DSH_TEST_LOCALE`，默认 `zh-CN`），断言从中英两套期望里取；本地/英文 runner 都能跑同一套用例。
+- `publish.yml` 只负责发布：`release: published` 或手动 `workflow_dispatch` 时执行 `npm publish --provenance --access public`，action 升到 `actions/checkout@v5` + `actions/setup-node@v5`（Node 20 已弃用）。测试回归改为发布前的本机动作，不再进 CI。
+
 ### 安全
 
 - 修掉「合并记忆」对本机不存在的文件零确认落盘：`memory=restore` 现在**只覆盖本机已存在的记忆文件**（覆盖前备份 `.bak-<时间>`），本机没有的一律不写、计入 `memoryCreated` 并在弹窗「将新建」段列出；要把记忆铺到全新机器，需用户显式选「合并并新建」（`memory=new`）。此前一份投毒包只要声明一个本机没有的 `MEMORY.md`，点一次「合并记忆」就能让 DSH 把它当项目笔记读进上下文——`MEMORY.md`、最近两天的日期日志、`handoff/*.md` 全在记忆读取面内，等于绕过「记忆永不落原名」这层防护。

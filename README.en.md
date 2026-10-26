@@ -77,7 +77,7 @@ Do not just add an `- id/name` row to the profile's `cordis.patch.yml` — that 
 ## Three steps
 
 1. Hit 💾 mid-conversation (or hit 🔄 for autosave — it saves once first).
-2. Confirm the name — the default is "session title + creation time", e.g. `dsh-session-save-20261025-1043.dsproj`.
+2. Confirm the name — the default is "session title + creation time", e.g. `save-session-as-project-20261025-1043.dsproj`.
 3. Every later 💾 overwrites that file; 📄✏️ makes a copy under a new name.
 
 On the other machine: click 📁, pick the file, the session appears and the UI switches to it.
@@ -135,6 +135,25 @@ Writes are **atomic** (tmp file + rename) so a sync client never picks up half a
 
 > **In short**: if two machines really take turns on one file, keep **autosave on one of them only**; the other machine will be stopped by the content check.
 
+## Security
+
+Opening someone else's `.dsproj` is accepting a compressed archive from a stranger, so the plugin treats every package as potentially hostile:
+
+- **Entry-name traversal**: every path segment is validated; `../../x`, `..\..\x`, drive letters and UNC prefixes are rejected at read time, and each memory write target is re-joined and re-checked to stay inside the memory root.
+- **Landing filenames**: the session filename declared in `manifest.json` must match `session[.tag].jsonl[.zstd]`, only its basename is used, the target must stay under `~/.dsh/sessions`, and an existing file is never overwritten.
+- **Zip bombs**: 64 MB per entry, 512 MB per package, 200× compression ratio (not applied below 4 MB), with the central-directory lengths checked before inflating.
+- **Write targets**: saving is limited to the last used directory, the directory of an already-remembered file, or a location picked in the native dialog. Anything else — or overwriting a file this plugin did not produce — asks first.
+- **Route gate**: all four `/api` routes require a loopback host (`127.0.0.1` / `localhost` / `::1`), a same-origin `Origin`, and a non-`cross-site` request; `sessionId` is shape-checked; failures never echo an absolute path.
+- **Package integrity**: every `manifest.parts` entry is verified by sha256 and byte count, and mismatches refuse the import. Conversely, **every content entry (`session/`, `memory/workspaces/`) must be declared in `manifest.parts`** — undeclared entries are refused, so a package cannot declare only its session and smuggle a `MEMORY.md` into your project notes.
+
+### Memory: off by default, and copies only
+
+- **Memory is not packaged by default.** `~/.dsh/memory` holds your project notes, logs and whiteboard; not a byte of it goes into the package unless you hold <kbd>Alt</kbd> while clicking save/save-as, or pass `?memory=1`.
+- **Opening a package that carries memory writes it as `xxx.from-dsproj-<date>` copies** — DSH will not read them as memory. After opening, the UI reports how many files landed as copies and how many clash with local names, with a panel offering **Merge memory** and **Open memory folder**.
+- **Merge memory (`?memory=restore`) only overwrites files that already exist locally with different content**, backing each one up as `xxx.bak-<timestamp>` first. Files this machine does not have are **not written at all** — they are only listed in the dialog's "will be created" section. One exception: `restore` lands a `xxx.from-dsproj-<date>` copy (never the original name) when a same-named memory *directory* exists but the file does not.
+- **To spread memory onto a fresh machine**, tick **Merge and create** in the same dialog (`?memory=new`); only then may original names be written.
+- **Why so strict**: the `sha256` values in `parts` are **computed by the packager**. A poisoned `MEMORY.md` can be registered there with a matching hash and pass every check above — self-consistency is not trust. So "will DSH read this as memory" is broken only by renaming the landing file. Poisoning can therefore land in exactly two places: a file you already had (with a visible backup), or a new file you explicitly approved with Merge and create.
+
 ## Inside a `.dsproj`
 
 A `dshproj/1` ZIP, byte-compatible with the `dshproj` CLI (same package format; the CLI itself lives elsewhere):
@@ -165,7 +184,7 @@ Code files are not included — a `.dsproj` holds the conversation and its memor
 
 **Linux / macOS?** The host side is platform-neutral; the Save As dialog is PowerShell-only and falls back to an in-page path field.
 
-**Will it clobber my memory files?** No — sha256 comparison, conflicts become `xxx.from-dsproj-<date>`.
+**Will it clobber my memory files?** Memory is not packaged by default; when it is, importing writes `xxx.from-dsproj-<date>` copies; Merge memory only touches files you already have, after a `.bak-<timestamp>` backup.
 
 **Why did the id change after opening?** Because ids must be unique per `DSH_HOME`; the same session landing in a new workspace gets a fresh one and both histories survive.
 
@@ -192,14 +211,21 @@ Zero runtime dependencies, plain ESM, `node:` builtins only; the client half onl
 
 ```bash
 node --check index.js client.js   # syntax
-node test/client.mjs              # client wiring: five slot items, icon fingerprint, routes
-node test/smoke.mjs               # pack a real session, read the ZIP back, save twice
+node test/client.mjs              # client wiring: five slot items, icon fingerprint, routes (both locales)
+node test/smoke.mjs               # pack a fixture session, read the ZIP back, save twice
 node test/open.mjs                # open paths: reuse / new cwd / need-workspace / frame diff
 node test/conflict.mjs            # locks, four conflict modes, CAS, autosave (~30 s)
 node test/dialog.mjs              # Chinese paths through PowerShell result files
+node test/security.mjs            # traversal / landing names / zip bombs / route gate / parts
 ```
 
-Every test snapshots and restores `~/.dsh/sessions` and `~/.dsh/memory/workspaces`, so runs leave no residue. Read [`AGENTS.md`](AGENTS.md) before touching code — nine hard rules, the four host routes, the `importPackage` branch order and testing recipes all live there.
+To check the English word list after touching the client: `DSH_TEST_LOCALE=en-US node test/client.mjs`.
+
+All six suites run against their own temporary `DSH_HOME` (a fixture directory under `os.tmpdir()` built by `test/fixture.mjs`) and delete it afterwards, so **your real `~/.dsh` is never touched** and no session has to "happen to exist".
+
+Two exceptions: `test/client.mjs` is a pure in-memory wiring test with no fixture directory and no disk IO; `test/dialog.mjs` launches the real `powershell.exe` to verify encoding, so it needs Windows. The other five are cross-platform.
+
+Read [`AGENTS.md`](AGENTS.md) before touching code — the hard rules, the four host routes, the `importPackage` branch order and testing recipes all live there. [`CLAUDE.md`](CLAUDE.md) is the short entry point and [`docs/TEST-MATRIX.md`](docs/TEST-MATRIX.md) maps every feature to the test that covers it.
 
 ## Known limits
 
@@ -209,6 +235,8 @@ Every test snapshots and restores `~/.dsh/sessions` and `~/.dsh/memory/workspace
 - Two instances sharing one `DSH_HOME` overwrite `storages/session-save.json` last-write-wins, though each session keeps its own remembered path.
 - The "which workspace" list comes from `storages/workspace.json`; a fresh machine has none, so use "choose another folder…".
 - The hero "Open" button only shows on a session with no messages yet; inside a conversation use the header 📁.
+- Memory is not packaged by default; a package that carries it still lands copies on import until the user explicitly picks Merge memory / Merge and create (see above).
+- Loopback only: reaching this DSH through a reverse proxy or from another machine's browser gets the four session routes a 403, by design.
 
 ## License
 
