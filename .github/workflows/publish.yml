@@ -1,0 +1,69 @@
+name: Publish to npm
+
+# 用 npm Trusted Publishing（OIDC）发布：不需要 NPM_TOKEN，也不需要一次性验证码。
+# npm 侧要有一条指向本文件的 trusted publisher 配置：
+#   npm trust github dsh-session-save --file publish.yml --repo chinacaa/dsh-session-save --allow-publish
+# 配好之后，手动触发本工作流或发布 Release 即可发布，并自动附带 provenance。
+#
+# 为什么跑在 windows-latest：test/dialog.mjs 要真的拉起 Windows PowerShell + WinForms
+# 保存/打开对话框，Linux runner 上跑不了。这个插件本身也只支持 Windows，测试环境跟运行环境一致。
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '只打包不发布（npm publish --dry-run）'
+        type: boolean
+        default: false
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write # 换 OIDC token 用，Trusted Publishing 的必要条件
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 24 自带 npm 11；Trusted Publishing 要求 npm >= 11.5.1，这里再兜一层保险
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: 确认 npm 版本支持 OIDC
+        shell: bash
+        run: |
+          npm --version
+          node -e "const v=require('child_process').execSync('npm --version').toString().trim().split('.').map(Number); if (v[0] < 11 || (v[0] === 11 && v[1] < 5)) { console.error('npm ' + v.join('.') + ' 太旧，需要 >= 11.5.1'); process.exit(1); }"
+
+      - name: 语法检查
+        shell: bash
+        run: node --check index.js client.js
+
+      # 六套测试全部跑：发布前的守门，任何一套红了就不发
+      - name: 测试
+        shell: bash
+        run: |
+          node test/client.mjs
+          node test/smoke.mjs
+          node test/open.mjs
+          node test/conflict.mjs
+          node test/dialog.mjs
+          node test/security.mjs
+
+      - name: 打包预览（dry run）
+        if: ${{ inputs.dry_run }}
+        shell: bash
+        run: npm publish --dry-run --access public
+
+      - name: 发布
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        run: npm publish --provenance --access public

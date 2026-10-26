@@ -16,7 +16,9 @@
     "save-dialog.ps1",
     "open-dialog.ps1",
     "screenshots.json",
-    "assets/",
+    "assets/icon-180.png",
+    "assets/screenshot-icons.png",
+    "assets/screenshot-save-dialog.png",
     "README.md",
     "README.en.md",
     "LICENSE"
@@ -55,5 +57,9 @@
       "platform": "web",
       "inject": ["@deepseek-ai/dsh-client-runtime"]
     }
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
   }
 }
