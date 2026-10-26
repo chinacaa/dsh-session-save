@@ -13,7 +13,9 @@ name: Publish to npm
 # 客户端词表按 navigator.language 分流，中英两条都要跑：
 #   DSH_TEST_LOCALE=zh-CN node test/client.mjs && DSH_TEST_LOCALE=en-US node test/client.mjs
 #
-# windows-latest 保留：本插件只支持 Windows，宿主与原生对话框都在 Windows 上验证。
+# windows-latest 保留：宿主与 Windows 原生对话框（powershell.exe + WinForms）都在这条
+# runner 上验证过，换到 ubuntu 反而会掩盖 Windows 特有的编码/路径问题。插件本身跨平台，
+# macOS / Linux 的对话框实现在本机另有验证。
 
 on:
   workflow_dispatch:
