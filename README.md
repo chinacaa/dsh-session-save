@@ -12,7 +12,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="license"></a>
   <img src="https://img.shields.io/badge/dsh-%E2%89%A50.2.1--rc.1-4c6ef5" alt="dsh">
-  <img src="https://img.shields.io/badge/platform-Windows%20%C2%B7%20Web-555" alt="platform">
+  <img src="https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux%20%C2%B7%20Web-555" alt="platform">
   <a href="https://github.com/chinacaa/dsh-session-save/stargazers"><img src="https://img.shields.io/github/stars/chinacaa/dsh-session-save?style=flat" alt="stars"></a>
 </p>
 
@@ -57,7 +57,7 @@ dsh plugin --profile web add dsh-session-save
 dsh plugin --profile web add github:chinacaa/dsh-session-save
 ```
 
-装完**重启 DSH**：插件在启动时组合，热装不会生效。Windows 上原生另存为窗口需要 `powershell.exe`；没有它（比如 Linux 或纯远程会话）会退回页面内的路径输入框，功能不丢。
+装完**重启 DSH**：插件在启动时组合，热装不会生效。原生另存为窗口按平台挑实现——Windows 用 `powershell.exe`，macOS 用系统自带的 `osascript`，Linux / BSD 找 zenity、kdialog、qarma、matedialog 任一。一个都没有时（无头服务器、纯远程会话、精简镜像）退回页面内的路径输入框，功能不丢。
 
 <details>
 <summary>手动安装（开发时用）</summary>
@@ -200,7 +200,7 @@ dshproj import   会话.dsproj --cwd D:\elsewhere   # 导进另一个工作区�
 
 **自动保存会不会很占磁盘？** 每步整包重写（会话日志追加写，但包要重新打包），1.5 秒去抖把频率压到每步最多一次。会话特别大时建议只手动保存。
 
-**能在 Linux / macOS 上用吗？** Host 侧逻辑与平台无关，另存为窗口走 PowerShell——没有它时退回页面内的路径输入框，功能完整。
+**能在 Linux / macOS 上用吗？** 能。Host 侧逻辑与平台无关；另存为/打开窗口按平台挑：Windows 走 `powershell.exe` 的 WinForms 面板，macOS 走 `osascript` 的 Finder 面板（`choose file name` / `choose file`），Linux / BSD 探 zenity → kdialog → qarma → matedialog，用找到的第一个的 GTK / KDE 面板。三者都没有时退回页面内的路径输入框，功能完整。
 
 **会覆盖我的项目记忆吗？** 默认连记忆都不打包；带记忆打开时一律落 `xxx.from-dsproj-<日期>` 副本；「合并记忆」只覆盖本机已有文件，覆盖前留 `.bak-<时间>`。
 
@@ -235,7 +235,7 @@ node test/client.mjs              # 客户端接线：五个插槽项、图标�
 node test/smoke.mjs               # 打包冒烟：夹具会话 → 打包 → 回读 ZIP → 二次保存复用路径
 node test/open.mjs                # 打开链路：复用 / 换 cwd 落地 / 问工作区 / 逐帧比对
 node test/conflict.mjs            # 锁、四种冲突、CAS、自动保存（约 30 秒）
-node test/dialog.mjs              # 中文路径往返：PowerShell 结果文件 + UTF-8
+node test/dialog.mjs              # 三平台原生窗口：选择器判据 + 参数拼装 + 中文路径往返
 node test/security.mjs            # 安全回归：条目名穿越 / 落点文件名 / 解压炸弹 / 路由闸 / 包校验
 ```
 
@@ -243,7 +243,7 @@ node test/security.mjs            # 安全回归：条目名穿越 / 落点文�
 
 六套测试全部跑在自己的临时 `DSH_HOME`（`test/fixture.mjs` 在 `os.tmpdir()` 下建的夹具目录）里，跑完自动删掉，**不碰真实的 `~/.dsh`**，也不要求本机"恰好有会话"。
 
-两套例外：`test/client.mjs` 是纯内存接线测试，不建夹具目录也不读写磁盘；`test/dialog.mjs` 起真实 `powershell.exe` 验编码，没有 PowerShell 的机器跑不了，其余五套跨平台。
+两套例外：`test/client.mjs` 是纯内存接线测试，不建夹具目录也不读写磁盘；`test/dialog.mjs` 里「选择器判据 / AppleScript 与 zenity 参数拼装 / 脚本 BOM」这几组是纯静态校验、跨平台可跑，只有真拉 `powershell.exe` 验中文编码的几条在非 Windows 上跳过（会打印 `⏭  跳过`，不算通过）。其余五套跨平台。
 
 想改代码先读 [`AGENTS.md`](AGENTS.md)：红线、四条路由的契约、`importPackage` 的分支顺序、测试怎么写，都在那里；[`CLAUDE.md`](CLAUDE.md) 是最短入口，[`docs/TEST-MATRIX.md`](docs/TEST-MATRIX.md) 是功能面与测试的对照表。
 

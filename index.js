@@ -5,15 +5,16 @@
  * writes it to a path the user picks. Paths are remembered per Session, so the
  * first save asks where and later saves overwrite the same file.
  *
- * Zero dependencies: node:fs / node:path / node:zlib / node:child_process only.
+ * Zero dependencies: node:fs / node:path / node:zlib only. 平台相关的原生窗口代码
+ * 被隔离在 `dialog/` 里，本文件只 import 平台选择器，不知道底层是 PowerShell。
  */
-import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { fileURLToPath } from 'node:url';
+
+import { openDialog as platformOpenDialog, saveDialog as platformSaveDialog } from './dialog/index.mjs';
 
 /** Loader row name. */
 export const name = 'session-save';
@@ -31,10 +32,6 @@ const FORMAT = 'dshproj/1';
 const ZSTD_MAGIC = 0xfd2fb528;
 /** Same frame parameters the official writer uses, so rewritten headers stay readable. */
 const CHECKSUM_OPTIONS = { params: { [zlib.constants.ZSTD_c_checksumFlag]: 1 } };
-const here = path.dirname(fileURLToPath(import.meta.url));
-const PS1 = path.join(here, 'save-dialog.ps1');
-const OPEN_PS1 = path.join(here, 'open-dialog.ps1');
-const DIALOG_TIMEOUT_MS = 10 * 60 * 1000;
 /** 包内锁：`LOCK.json` 的格式标记与「锁仍新鲜」的时间窗。 */
 export const LOCK_FORMAT = 'dshproj-lock/1';
 const LOCK_STALE_MS = 15 * 60 * 1000;
@@ -686,84 +683,22 @@ function withSidecarLock(target, run) {
 /* ───────────────────────── 另存为对话框（Host 侧真实窗口） ───────────────────────── */
 
 /**
- * 从结果文件 / stdout 里取出 `RESULT:<path>`。
+ * 弹原生另存为窗口：`undefined` = 这个平台拿不到窗口（调用方改走网页里的路径输入框）、
+ * `null` = 用户取消、字符串 = 选中路径。
  *
- * Windows PowerShell 5.1 的 stdout 走控制台代码页（中文系统上是 GBK），Node 按
- * UTF-8 解就会把中文路径读成乱码（文件被存成 `������ÿ...` 那种名字）。所以脚本
- * 会把同一行按 UTF-8 写进 `-ResultFile`，这里优先读它，stdout 只当兜底。
+ * 平台相关的实现全在 `dialog/` 下，本文件不认识 PowerShell 也不认识 COM：
+ * - `dialog/index.mjs` 探测当前平台有没有实现（只看依赖在不在，不看版本号）
+ * - `dialog/windows.mjs` 用 Windows PowerShell 5.1 拉 WinForms 的 SaveFileDialog
+ *
+ * 新增 macOS / Linux 实现时只需在 `dialog/index.mjs` 加一个分支，本文件零改动。
  */
-export function readDialogResult(resultFile, stdout, error) {
-  let raw = '';
-  if (typeof resultFile === 'string' && resultFile !== '') {
-    try {
-      raw = fs.readFileSync(resultFile, 'utf8');
-    } catch {
-      raw = '';
-    }
-  }
-  if (raw === '') raw = String(stdout ?? '');
-  const line = raw.split(/\r?\n/).find((entry) => entry.startsWith('RESULT:'));
-  // 没有 RESULT 行：要么拿不到窗口（undefined → 客户端改走路径输入），要么被取消。
-  if (line === undefined) return error ? undefined : null;
-  const picked = line.slice('RESULT:'.length).trim();
-  return picked === '' ? null : picked;
-}
-
-/**
- * 跑一个对话框脚本：undefined = 拿不到窗口，null = 用户取消，字符串 = 选中路径。
- * `-ResultFile` 是为了绕开 stdout 的控制台代码页，见 readDialogResult。
- */
-export function runDialog(scriptPath, initial) {
-  return new Promise((resolve) => {
-    const systemRoot = process.env.SystemRoot;
-    const exe = systemRoot
-      ? path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-      : 'powershell.exe';
-    if (!fs.existsSync(scriptPath)) return resolve(undefined);
-    const resultFile = path.join(
-      os.tmpdir(),
-      `dsh-session-save-dialog-${process.pid}-${Date.now()}.txt`,
-    );
-    try {
-      fs.unlinkSync(resultFile);
-    } catch {
-      /* ignore */
-    }
-    execFile(
-      exe,
-      [
-        '-NoProfile',
-        '-STA',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-File',
-        scriptPath,
-        '-Initial',
-        initial ?? '',
-        '-ResultFile',
-        resultFile,
-      ],
-      { timeout: DIALOG_TIMEOUT_MS, windowsHide: false, maxBuffer: 1024 * 1024 },
-      (error, stdout) => {
-        const picked = readDialogResult(resultFile, stdout, error);
-        try {
-          fs.unlinkSync(resultFile);
-        } catch {
-          /* ignore */
-        }
-        resolve(picked);
-      },
-    );
-  });
-}
-
 function nativeSaveDialog(initial) {
-  return runDialog(PS1, initial);
+  return platformSaveDialog(initial);
 }
 
 /** Same contract as nativeSaveDialog, but an Open dialog. */
 function nativeOpenDialog(initial) {
-  return runDialog(OPEN_PS1, initial ?? '');
+  return platformOpenDialog(initial ?? '');
 }
 
 /* ───────────────────────── 打包 ───────────────────────── */

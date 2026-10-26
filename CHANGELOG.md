@@ -15,6 +15,9 @@
 - 六套测试改为自带临时数据根（新增 `test/fixture.mjs`）：每个套件在 `os.tmpdir()` 下建一份 `DSH_HOME` 夹具、跑完自删，**不再读写真实的 `~/.dsh`**。以前 `smoke.mjs` / `open.mjs` 依赖"本机恰好存在某个会话"，换机器、清过数据、或 CI runner 上必红；现在任何机器结果一致，也不再需要跑完手工核对目录数。
 - 中文词表不再跟着宿主的 `navigator.language` 漂：`test/client.mjs` 显式钉住 locale（`DSH_TEST_LOCALE`，默认 `zh-CN`），断言从中英两套期望里取；本地/英文 runner 都能跑同一套用例。
 - `publish.yml` 只负责发布：`release: published` 或手动 `workflow_dispatch` 时执行 `npm publish --provenance --access public`，action 升到 `actions/checkout@v5` + `actions/setup-node@v5`（Node 20 已弃用）。测试回归改为发布前的本机动作，不再进 CI。
+- 平台相关代码抽到 `dialog/` 目录，`index.js` 不再认识 PowerShell：`dialog/index.mjs` 是选择器，`dialog/shared.mjs` 是共用工具，`dialog/windows.mjs` + 两个 `.ps1` 是 Windows 实现。以后加平台只加一个实现文件和一个分支，`index.js` 一行不动。
+- **macOS / Linux 也有原生窗口了**：macOS 走系统自带的 `osascript`（`choose file name` 出保存面板、`choose file` 出打开面板，取消按 AppleScript 的 `-128` 判）；Linux 与 BSD 按 zenity → kdialog → qarma → matedialog 找第一个装了的，GTK 系与 KDE 系各用一套开关。以前非 Windows 只能用网页里的路径输入框。
+- 原生窗口的可用性改为**能力探测**（Windows 看 `powershell.exe`、macOS 看 `/usr/bin/osascript`、Linux 找 GUI 工具），不再假设「某个平台就一定有」。探测不到就直接回退到网页里的路径输入框；这条路径此前只在 `execFile` 抛 `ENOENT` 时才被动触发，现在开窗之前就判掉。
 
 ### 安全
 

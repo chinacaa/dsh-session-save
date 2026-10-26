@@ -11,7 +11,7 @@ DSH 插件：把当前会话另存为单个 `.dsproj` 工程文件，也能反�
 ```bash
 node --check index.js client.js          # 改完必跑
 node test/client.mjs                     # 碰到客户端最先跑（秒级）
-node test/dialog.mjs                     # 碰到 .ps1 / 中文路径
+node test/dialog.mjs                     # 碰到 dialog/ 下任何文件
 node test/smoke.mjs                      # 碰到打包 / 保存路由
 node test/open.mjs                       # 碰到导入 / 落地规则
 node test/conflict.mjs                   # 碰到锁 / CAS / 自动保存（约 30 秒）

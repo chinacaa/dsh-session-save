@@ -57,7 +57,7 @@ dsh plugin --profile web add dsh-session-save
 dsh plugin --profile web add github:chinacaa/dsh-session-save
 ```
 
-**Restart DSH afterwards** — plugins are composed at startup. On Windows the native dialog uses `powershell.exe`; without it (Linux, remote shells) the UI falls back to an in-page path field, so nothing is lost.
+**Restart DSH afterwards** — plugins are composed at startup. The native Save As dialog picks an implementation per platform: `powershell.exe` on Windows, the built-in `osascript` on macOS, and whichever of zenity / kdialog / qarma / matedialog exists on Linux and the BSDs. With none of them (headless servers, remote shells, slim images) the UI falls back to an in-page path field, so nothing is lost.
 
 <details>
 <summary>Manual install (for development)</summary>
@@ -182,7 +182,7 @@ Code files are not included — a `.dsproj` holds the conversation and its memor
 
 **Is autosave expensive?** Each write re-packs the whole package (the log itself is append-only), debounced to at most one write per 1.5 s per step. For very large sessions prefer manual saves.
 
-**Linux / macOS?** The host side is platform-neutral; the Save As dialog is PowerShell-only and falls back to an in-page path field.
+**Linux / macOS?** Yes. The host side is platform-neutral and the Save As / Open dialogs are picked per platform: WinForms panels through `powershell.exe` on Windows, Finder panels through `osascript` (`choose file name` / `choose file`) on macOS, and the GTK or KDE panel of the first tool found among zenity → kdialog → qarma → matedialog on Linux and the BSDs. With none of them the UI falls back to an in-page path field.
 
 **Will it clobber my memory files?** Memory is not packaged by default; when it is, importing writes `xxx.from-dsproj-<date>` copies; Merge memory only touches files you already have, after a `.bak-<timestamp>` backup.
 
@@ -215,7 +215,7 @@ node test/client.mjs              # client wiring: five slot items, icon fingerp
 node test/smoke.mjs               # pack a fixture session, read the ZIP back, save twice
 node test/open.mjs                # open paths: reuse / new cwd / need-workspace / frame diff
 node test/conflict.mjs            # locks, four conflict modes, CAS, autosave (~30 s)
-node test/dialog.mjs              # Chinese paths through PowerShell result files
+node test/dialog.mjs              # three-platform native dialogs: selector + argument assembly + CJK round trip
 node test/security.mjs            # traversal / landing names / zip bombs / route gate / parts
 ```
 
@@ -223,7 +223,7 @@ To check the English word list after touching the client: `DSH_TEST_LOCALE=en-US
 
 All six suites run against their own temporary `DSH_HOME` (a fixture directory under `os.tmpdir()` built by `test/fixture.mjs`) and delete it afterwards, so **your real `~/.dsh` is never touched** and no session has to "happen to exist".
 
-Two exceptions: `test/client.mjs` is a pure in-memory wiring test with no fixture directory and no disk IO; `test/dialog.mjs` launches the real `powershell.exe` to verify encoding, so it needs Windows. The other five are cross-platform.
+Two exceptions: `test/client.mjs` is a pure in-memory wiring test with no fixture directory and no disk IO; in `test/dialog.mjs` the selector checks, the AppleScript / zenity argument assembly and the script BOM checks are pure static verification and run anywhere, while only the few assertions that launch the real `powershell.exe` to verify CJK encoding are skipped off Windows (they print `⏭  跳过` — a skip is not a pass). The other five are cross-platform.
 
 Read [`AGENTS.md`](AGENTS.md) before touching code — the hard rules, the four host routes, the `importPackage` branch order and testing recipes all live there. [`CLAUDE.md`](CLAUDE.md) is the short entry point and [`docs/TEST-MATRIX.md`](docs/TEST-MATRIX.md) maps every feature to the test that covers it.
 

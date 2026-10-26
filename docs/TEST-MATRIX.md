@@ -2,7 +2,7 @@
 
 本文从代码反推功能面（`index.js` 四条路由 + `client.js` 五个插槽项），逐条列出可观测行为、期望结果，以及由哪套测试覆盖。测试分两层：
 
-- **六套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共打印 216 行 ✅。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
+- **六套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共打印 225 行 ✅。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
 - **审计验收脚本**（未随仓库分发）：针对历史漏洞的复现/防回归，判据写在下表里，可照着重写。
 
 所有套件都通过 `test/fixture.mjs` 自建临时 `DSH_HOME`（`os.tmpdir()` 下），跑完自删——**不读也不改真实 `~/.dsh`**，所以在任何机器、任何数据状态下结果一致。功能面的 F 编号是本文与 `test/*.mjs` 注释共同引用的锚点，改动功能时两边一起改。
@@ -91,6 +91,8 @@
 | F44 | 锁 | `${file}.lock` 侧车 `wx` 独占（带 token，只删自己的）+ 包内 `LOCK.json`（同机判 pid 存活、异机 15 分钟窗口） |
 | F45 | 状态文件 | `{paths,lastDir,autosave,stamps,stale}`，原子写；损坏则回落空状态而不是崩 |
 | F46 | 中文路径 | `.ps1` 带 BOM；结果经 `-ResultFile` 以 UTF-8 回传，stdout 只兜底 |
+| F47 | 平台隔离 | `dialog/index.mjs` 按「依赖在不在」选实现（不看系统版本号）：缺 `SystemRoot`、`powershell.exe` 不存在 → 返回 `null`，调用方降级到网页里的路径输入框；Windows 且解释器在 → 加载 `dialog/windows.mjs`。缓存键是 `platform`，假平台的「不可用」结论不会漏给真实平台 |
+| F48 | 非 Windows 原生面板 | macOS 走 `osascript` 的 `choose file name` / `choose file`（`POSIX file` 包 alias、`POSIX path of` 转回 `/Users/...`、文件名冒号换 `-`、双引号转义、取消按 `-128` 判）；Linux/BSD 按 zenity → kdialog → qarma → matedialog 探测，GTK 系与 KDE 系各用一套开关，一个都没装（无头/容器）→ 降级。三平台统一补 `.dsproj` 扩展名、统一 `RESULT:` 单行契约 |
 
 ## 二、测试矩阵（用例 → 期望 → 覆盖）
 
@@ -98,14 +100,14 @@
 
 | 套件 | 条数 | 覆盖功能 | 关键期望 |
 | --- | --- | --- | --- |
-| `test/dialog.mjs` | 7 | F3、F46 | 脚本带 BOM、`OutputEncoding`、`-ResultFile` 三件套齐；中文路径往返不乱码；取消 → `null`；脚本缺失 → `undefined`；乱码 stdout 不覆盖结果文件 |
+| `test/dialog.mjs` | 16 | F3、F46、F47、F48 | 三平台选择器各自按依赖存在性判定（win32 看 `powershell.exe`、darwin 看 `/usr/bin/osascript`、linux/BSD 找 zenity/kdialog/qarma/matedialog，都没有 → `null` 降级），并用注入的假探测函数在 Windows 上验 mac/linux 分支；实现缓存按平台隔离（先问无用平台不污染真实平台）；共用工具 `lookPath`/`ensureExtension`/`sanitizeForAppleScript`/`resultLine`；macOS 的 AppleScript 文本（`POSIX file` 包装、引号转义、冒号消毒）；Linux 的 zenity 与 kdialog 两套开关分别拼对（`--getsavefilename` 收完整建议路径 vs `--filename=`，kdialog 空目录回落 `.`）；zenity 优先级高于 kdialog；Windows 脚本带 BOM、`OutputEncoding`、`-ResultFile` 三件套齐；中文路径往返不乱码；取消 → `null`；脚本缺失 → `undefined`；乱码 stdout 不覆盖结果文件 |
 | `test/client.mjs` | 6 | F34、F35、F37 | 5 个插槽项 id/order/插槽名正确；另存为是独立图标且点击带 `ask=1`；hero 按钮点击打 `api/session.open`；源码不含 `document.`/`MutationObserver`；7 个记忆相关 i18n 键中英各一份 |
 | `test/smoke.mjs` | 1（12 处 throw 检查） | F1、F8、F10、F12 | 夹具会话 → 打包 → 回读 ZIP 首条目 zstd magic、必有 `manifest.json`/`SUMMARY.md`/`session/`；二次保存复用同一路径；默认文件名规则与非法字符替换；无标题兜底名 |
 | `test/open.mjs` | 35 | F13–F21、F23 | 复用不写盘；新 cwd 落地并改写 header；`need-workspace` 列工作区；选好工作区后打开；帧 1..n 原字节一致；坏路径 404 且不回显 |
 | `test/conflict.mjs` | 67 | F5–F7、F11、F28–F32、F44 | 四种冲突顺序 ask→reuse→copy→overwrite；覆盖前留 `.bak`；异机新鲜锁给理由；CAS 409 与 `force`；自动保存钩子写盘并递增 `writes`；关闭后不再写；同步盘识别；目录复原 |
 | `test/security.mjs` | 100 | F22–F27、F38–F43 | V1 越界条目读包即拒；V2 恶意 `fileName` 被收敛；V3 200 MB / 1026:1 在解压前拒绝；V4 目录外 400 且不建树；V5 非 id 400；V6 不回显路径；V7 `parts` 不符 500；V8 跨站 403；R1 未声明条目拒绝；R4 默认永不落原名；R6 restore 只覆盖已有、`memory=new` 才新建 |
 
-合计 **216 条**。
+合计 **225 条**。
 
 ### 审计验收脚本（未随仓库分发）
 
@@ -127,7 +129,9 @@
 | 路由越权 | 任意网页/远端可调用 | F38 覆盖，含「`headers.get` 抛异常」这一条——本轮实测发现 `requestGate` 未兜住会 reject，已修 |
 | 数据丢失（覆盖/半截写） | 用户工程被毁 | F5/F6/F7/F12/F45 覆盖：覆盖确认、CAS、锁、原子写 |
 | 会话 id 冲突 | 两条历史混成一条 | F17 覆盖：id 全机唯一，relocate 换新 id |
-| 汉名乱码 | 文件名/路径损坏 | F46 覆盖，`dialog.mjs` 7 条 |
+| 汉名乱码 | 文件名/路径损坏 | F46 覆盖，`dialog.mjs` 里有独立断言 |
+| 平台判断错 | 点保存才抛 ENOENT / 非 Windows 崩 | F47 覆盖：开窗前按依赖存在性判掉，`dialog.mjs` 有选择器（三平台各一组）与缓存隔离两组断言 |
+| 非 Windows 没有原生窗口 | macOS / Linux 用户只能用网页输入框 | F48：macOS 有 `osascript` 就用 Finder 面板，Linux 探到 zenity/kdialog 就用 GTK/KDE 面板，都没有才降级 |
 
 **已修**：`requestGate` 读 `headers.get('host'/'origin'/'sec-fetch-site')` 时未加保护，畸形 `Headers` 实现（或 `get` 抛异常）会让 handler reject，请求变成非 JSON 失败。现为一次性 try 包住三个头读取，失败即返回「请求头读不出来，拒绝处理」→ 403。`probe-p0.mjs` 42/42。
 

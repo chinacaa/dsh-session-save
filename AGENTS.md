@@ -8,8 +8,8 @@
 
 - 语言/运行时：纯 ESM（`"type": "module"`），零运行时依赖，只用 `node:` 内置模块；客户端只 `require('react')`。
 - 宿主：DSH `>=0.2.1-rc.1`（`engines.dsh`），Cordis `^4.0.1`（peer）。
-- 平台：Windows 优先（原生对话框走 `powershell.exe` + WinForms），没有 PowerShell 时退回网页里的路径输入框。
-- 规模：`index.js` ≈1930 行、`client.js` ≈1950 行、六套测试共 216 行 ✅（`smoke.mjs` 另有 12 处 throw 检查，只打一行汇总）。逐条覆盖见 `docs/TEST-MATRIX.md`。
+- 平台：Windows 优先（原生对话框走 `powershell.exe` + WinForms）；macOS 走 `osascript` 的 Finder 面板；Linux/BSD 探 zenity / kdialog / qarma / matedialog。三者都没有时退回网页里的路径输入框。平台相关代码全部隔离在 `dialog/` 下（`index.mjs` 选实现、`shared.mjs` 共用工具、`windows.mjs` / `macos.mjs` / `linux.mjs` 各平台实现），`index.js` 只 import `dialog/index.mjs`，不认识具体实现。
+- 规模：`index.js` ≈1870 行、`client.js` ≈1950 行、六套测试共 225 条 ✅（`smoke.mjs` 另有 12 处 throw 检查，只打一行汇总）。逐条覆盖见 `docs/TEST-MATRIX.md`。
 
 ## 红线（改之前先看，违反会静默坏掉）
 
@@ -31,14 +31,19 @@
 index.js            Host 半：四条 HTTP 路由 + 打包/导入 + 锁 + CAS
 client.js           Client 半：5 个插槽项 + 各模态 + 内联图标
 cordis.patch.yml    bundle 补丁层（insert id=session-save）
-save-dialog.ps1     原生「保存会话」对话框
-open-dialog.ps1     原生「打开会话工程」对话框
+dialog/index.mjs    平台选择器：探测当前平台有没有原生窗口实现（不看版本号）
+dialog/shared.mjs   三平台共用：lookPath / ensureExtension / 结果行契约
+dialog/windows.mjs  Windows 实现：拉 PowerShell 5.1 + WinForms 对话框
+dialog/macos.mjs    macOS 实现：osascript 的 choose file name / choose file
+dialog/linux.mjs    Linux/BSD 实现：zenity → kdialog → qarma → matedialog
+dialog/save-dialog.ps1  原生「保存会话」对话框（WinForms SaveFileDialog）
+dialog/open-dialog.ps1  原生「打开会话工程」对话框（WinForms OpenFileDialog）
 marketplace/        上架条目（提 PR 到 awesome-dsh-plugin 用）
 scripts/bump.mjs    改版本（package.json + CHANGELOG）
 scripts/set-repo.mjs 把 OWNER 占位换成真实 GitHub 名字
 test/fixture.mjs    临时 DSH_HOME 夹具（六套测试共用）
 test/*.mjs          六套自检（见「测试」）
-docs/TEST-MATRIX.md 功能面 → 测试覆盖矩阵（46 条 F 编号）
+docs/TEST-MATRIX.md 功能面 → 测试覆盖矩阵（48 条 F 编号）
 assets/             截图与方形图标（市场用）
 ```
 
@@ -46,7 +51,7 @@ assets/             截图与方形图标（市场用）
 
 ```bash
 node test/client.mjs      # 客户端接线：5 个插槽项、图标指纹、点击打到的路由
-node test/dialog.mjs      # 中文路径往返：PS 结果文件 + UTF-8（要 Windows PowerShell）
+node test/dialog.mjs      # 三平台原生窗口：选择器判据、缓存隔离、三套参数拼装、中文路径往返
 node test/smoke.mjs       # Host 冒烟：夹具会话 → 打包 → 回读 ZIP → 二次保存复用路径
 node test/open.mjs        # 打开链路：复用 / 换 cwd 落地 / need-workspace / 逐帧比对
 node test/conflict.mjs    # 锁、四种冲突、CAS、自动保存（约 30 秒，含 2.6 秒等待）
@@ -56,7 +61,7 @@ node --check index.js client.js            # 语法
 node scripts/bump.mjs patch --dry          # 版本号预演
 node scripts/set-repo.mjs <owner>          # 填掉 OWNER 占位
 
-pwsh -c "foreach($f in 'save-dialog.ps1','open-dialog.ps1'){$t=$null;$e=$null;[void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f).Path,[ref]$t,[ref]$e);\"$f => $($e.Count)\"}"
+pwsh -c "foreach($f in 'dialog/save-dialog.ps1','dialog/open-dialog.ps1'){$t=$null;$e=$null;[void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f).Path,[ref]$t,[ref]$e);\"$f => $($e.Count)\"}"
 ```
 
 本地装载（改完必须重启 DSH，bundle 只在启动时组合）：
@@ -154,7 +159,7 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
 三条硬规矩：
 
 1. **别在文档里复述代码**。默认文件名规则的真源是 `index.js` 的 `suggestPath()`、上限常量在 `index.js` 顶部；文档只说结论和例子，不抄正则、不抄常量值。抄了就会在下次改代码时变成谎言。
-2. **数字必须当场能验**。文档里出现"11 条红线""216 行 ✅""F1–F46""≈1930 行"这类计数时，要能用一条命令复现（见「改完之后」）。改完顺手核一遍，别让读者去发现数字过期。
+2. **数字必须当场能验**。文档里出现"11 条红线""225 条 ✅""F1–F48""≈1870 行"这类计数时，要能用一条命令复现（见「改完之后」）。改完顺手核一遍，别让读者去发现数字过期。
 3. **中英必须同一次改完**。`README.md` 与 `README.en.md` 是同一份文档的两种语言：小标题顺序、表格列、示例文件名一一对应。只改一份等于给另一半读者发过期信息。
 
 还有两条不写在文档里的东西：进度和计划（放 issue / PR / 提交信息，不写进 README 的"路线图"）、本机路径与个人环境（`C:\Users\...`、profile 名、私有 registry）——后者写进文档等于把私有环境当契约。
@@ -171,7 +176,7 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
    wc -l index.js client.js                                  # 对应 AGENTS.md「规模」
    awk '/^## 红线/,/^## 目录/' AGENTS.md | grep -c '^[0-9]\+\. \*\*'   # 红线条数（必须限在红线节内：本文别处也有编号列表）
    grep -oE 'F[0-9]+' docs/TEST-MATRIX.md | sort -u | wc -l  # 功能面条数
-   for f in client dialog smoke open conflict security; do node test/$f.mjs | grep -c '✅' ; done   # 六行相加 = 216
+   for f in client dialog smoke open conflict security; do node test/$f.mjs | grep -c '✅' ; done   # 六行相加 = 225
    ```
 
 6. 确认测试没有留下垃圾：跑完 `git status` 应为只有你改的源文件，`os.tmpdir()` 下不该残留 `dshss-fx-*` / `dshss-sec-*` 目录（`autoCleanup` 会删，残留说明收尾路径漏了信号处理）。
