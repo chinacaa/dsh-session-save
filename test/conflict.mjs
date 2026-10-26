@@ -15,16 +15,20 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { apply, scanZstdFrames, zipRead, zipWrite, lockBlocks, cloudMarkOf, staleOf, LOCK_FORMAT } from '../index.js';
+import { autoCleanup, loadRoutes, makeFixture } from './fixture.mjs';
 
-const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
-const SESSIONS = path.join(DSH_HOME, 'sessions');
-const MEMORY = path.join(DSH_HOME, 'memory', 'workspaces');
+// 夹具必须先建好：index.js 在模块顶层读 DSH_HOME 决定数据根。
+const fx = makeFixture();
+autoCleanup(fx);
+const DSH_HOME = fx.home;
+const SESSIONS = fx.sessions;
+const MEMORY = fx.memory;
 const STATE_FILE = path.join(DSH_HOME, 'storages', 'session-save.json');
 
-const handlers = new Map();
 const hooks = new Map();
-apply({
+const { mod, routes: handlers } = await loadRoutes('../index.js');
+const { scanZstdFrames, zipRead, zipWrite, lockBlocks, cloudMarkOf, LOCK_FORMAT } = mod;
+mod.apply({
   connection: { fetch: { register: (spec) => handlers.set(spec.path, spec.fetch) } },
   effect: (fn) => {
     fn();
@@ -58,23 +62,9 @@ const listDirs = (root) => {
   }
 };
 
+/** 夹具里的目标会话 */
 function pickSession() {
-  const found = [];
-  for (const project of fs.readdirSync(SESSIONS, { withFileTypes: true })) {
-    if (!project.isDirectory()) continue;
-    const projectDir = path.join(SESSIONS, project.name);
-    for (const session of fs.readdirSync(projectDir, { withFileTypes: true })) {
-      if (!session.isDirectory()) continue;
-      const dir = path.join(projectDir, session.name);
-      for (const name of fs.readdirSync(dir)) {
-        if (!/^session(\.[0-9A-Za-z]+)?\.jsonl(\.zstd)?$/.test(name)) continue;
-        const file = path.join(dir, name);
-        found.push({ id: session.name, file, size: fs.statSync(file).size });
-      }
-    }
-  }
-  found.sort((a, b) => a.size - b.size);
-  return found[0];
+  return fx.session;
 }
 
 const readHeaderOf = (file) => {
@@ -94,14 +84,10 @@ const sessionsBefore = listDirs(SESSIONS);
 const memoryBefore = listDirs(MEMORY);
 
 const target = pickSession();
-if (target === undefined) {
-  console.error('✗ 本机没有会话文件可测');
-  process.exit(1);
-}
 const packageHeader = readHeaderOf(target.file);
-console.log(`会话：${target.id} · ${(target.size / 1024).toFixed(1)} KB`);
+console.log(`会话：${target.id}（夹具）· ${(target.size / 1024).toFixed(1)} KB`);
 
-const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dshss-conflict-'));
+const tmpDir = fs.mkdtempSync(path.join(fx.base, 'conflict-'));
 const pkg = path.join(tmpDir, 'base.dsproj');
 
 // 保存路由只允许写到「上次用的目录」或已记住文件的目录下。测试前把 lastDir 指到本次临时目录，
