@@ -64,6 +64,17 @@ jobs:
           node test/dialog.mjs
           node test/security.mjs
 
+      # client.js 按 navigator.language 选词表（/^en\b/i → EN，否则 ZH）。runner 是英文机，
+      # 不钉 locale 就只能测到 EN 一路，中文词表等于没测；本地中文机反过来。两边各跑一轮，
+      # 才不会出现「CI 绿、本地红」或反之。
+      - name: 双语词表回归
+        shell: bash
+        run: |
+          for loc in zh-CN en-US; do
+            echo "── DSH_TEST_LOCALE=$loc ──"
+            DSH_TEST_LOCALE=$loc node test/client.mjs
+          done
+
       - name: 打包预览（dry run）
         if: ${{ inputs.dry_run }}
         shell: bash
