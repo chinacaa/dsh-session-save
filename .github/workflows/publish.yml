@@ -5,8 +5,16 @@ name: Publish to npm
 #   npm trust github dsh-session-save --file publish.yml --repo chinacaa/dsh-session-save --allow-publish
 # 配好之后，手动触发本工作流或发布 Release 即可发布，并自动附带 provenance。
 #
-# 为什么跑在 windows-latest：test/dialog.mjs 要真的拉起 Windows PowerShell + WinForms
-# 保存/打开对话框，Linux runner 上跑不了。这个插件本身也只支持 Windows，测试环境跟运行环境一致。
+# 本工作流**只负责发布**，不跑测试。测试在干净 runner 上没有可靠前提（会话夹具曾依赖
+# 「本机恰好有会话」，干净机器必然失败），而发布链路要的是「一条命令、结果确定」。
+# 测试回归放在本机手动跑：
+#   node test/client.mjs && node test/smoke.mjs && node test/open.mjs \
+#     && node test/conflict.mjs && node test/dialog.mjs && node test/security.mjs
+# 客户端词表按 navigator.language 分流，本机是中文机只测得到 ZH 一路，两条都要跑：
+#   DSH_TEST_LOCALE=zh-CN node test/client.mjs && DSH_TEST_LOCALE=en-US node test/client.mjs
+#
+# windows-latest 保留：test/dialog.mjs 要真的拉起 Windows PowerShell + WinForms 保存/打开
+# 对话框，Linux runner 上跑不了；这个插件本身也只支持 Windows。
 
 on:
   workflow_dispatch:
