@@ -28,7 +28,7 @@ on:
     types: [published]
 
 permissions:
-  contents: read
+  contents: write # 发布成功后往 Release 附件上传 tarball
   id-token: write # 换 OIDC token 用，Trusted Publishing 的必要条件
 
 concurrency:
@@ -72,3 +72,43 @@ jobs:
         if: ${{ !inputs.dry_run }}
         shell: bash
         run: npm publish --provenance --access public
+
+      # 发布成功后把 npm 实际收下的那个 tarball 传成 Release 附件。
+      #
+      # 为什么不是「npm pack 出来的那个」：npm publish 会在 tarball 里补写
+      # package.json 的 _id/_integrity 等字段，所以 pack 的产物与最终发布物
+      # 字节不同（实测 122550 vs 122159）。这里从 registry 按版本取回落盘，
+      # 再核对 sha1 与 shasum 字段一致，传上去的才是用户 `npm install` 拿到的
+      # 同一份字节。核不上就跳过上传 —— 宁可没有附件，也不放一个挂错哈希的包。
+      - name: 取回已发布的 tarball
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          NAME=$(node -p "require('./package.json').name")
+          VER=$(node -p "require('./package.json').version")
+          META=$(curl -fsS --retry 3 --retry-delay 5 "https://registry.npmjs.org/$NAME/$VER")
+          URL=$(printf '%s' "$META" | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).dist.tarball")
+          WANT=$(printf '%s' "$META" | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).dist.shasum")
+          echo "tarball: $URL"
+          curl -fsSL --retry 3 --retry-delay 5 -o "$NAME-$VER.tgz" "$URL"
+          GOT=$(node -e "console.log(require('crypto').createHash('sha1').update(require('fs').readFileSync(process.argv[1])).digest('hex'))" "$NAME-$VER.tgz")
+          echo "期望 sha1 $WANT"
+          echo "实际 sha1 $GOT"
+          if [ "$WANT" != "$GOT" ]; then
+            echo "::warning::tarball 的 sha1 与 registry 记录的 shasum 不一致，跳过上传"
+            echo "SKIP_UPLOAD=1" >> "$GITHUB_ENV"
+          fi
+          echo "TARBALL=$NAME-$VER.tgz" >> "$GITHUB_ENV"
+
+      - name: 上传 tarball 到 Release
+        # 只在由 Release 触发时传（workflow_dispatch 手跑没有 Release 可挂）
+        if: ${{ !inputs.dry_run && github.event_name == 'release' && env.SKIP_UPLOAD != '1' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${{ github.event.release.tag_name }}" "$TARBALL" --clobber
+          gh release view "${{ github.event.release.tag_name }}" --json assets \
+            --jq '.assets[] | "\(.name)  \(.size) bytes  \(.state)"'
