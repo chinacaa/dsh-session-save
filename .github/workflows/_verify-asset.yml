@@ -1,0 +1,35 @@
+name: _verify release asset upload
+
+# 一次性探针：验证 GITHUB_TOKEN + contents:write 能往 Release 传附件。
+# 验证完即删，不要留在仓库里。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    steps:
+      - name: 用 GITHUB_TOKEN 往 v0.2.0 传一个探针文件
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "probe $(date -u +%FT%TZ)" > _probe.txt
+          gh release upload v0.2.0 _probe.txt --clobber
+          echo "--- 上传后回读"
+          gh release view v0.2.0 --json assets --jq '.assets[] | "\(.name)  \(.size) bytes  \(.state)"'
+
+      - name: 删掉探针文件
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release delete-asset v0.2.0 _probe.txt --yes
+          echo "--- 删除后回读"
+          gh release view v0.2.0 --json assets --jq '.assets[] | "\(.name)  \(.size) bytes  \(.state)"'
