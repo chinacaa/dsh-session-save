@@ -11,8 +11,10 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="license"></a>
-  <img src="https://img.shields.io/badge/dsh-%E2%89%A50.2.1--rc.1-4c6ef5" alt="dsh">
-  <img src="https://img.shields.io/badge/platform-Windows%20%C2%B7%20Web-555" alt="platform">
+  <a href="https://www.npmjs.com/package/dsh-session-save"><img src="https://img.shields.io/npm/v/dsh-session-save?color=cb3837" alt="npm version"></a>
+  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fchinacaa%2Fdsh-session-save%2Fmain%2Fpackage.json&query=%24.engines.dsh&label=dsh&color=4c6ef5" alt="requires dsh">
+  <img src="https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux%20%C2%B7%20Web-555" alt="platform">
+  <a href="https://github.com/chinacaa/dsh-session-save/actions/workflows/publish.yml"><img src="https://img.shields.io/github/actions/workflow/status/chinacaa/dsh-session-save/publish.yml" alt="build"></a>
   <a href="https://github.com/chinacaa/dsh-session-save/stargazers"><img src="https://img.shields.io/github/stars/chinacaa/dsh-session-save?style=flat" alt="stars"></a>
 </p>
 
