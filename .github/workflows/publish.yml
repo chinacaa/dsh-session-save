@@ -63,10 +63,16 @@ jobs:
         shell: bash
         run: node --check index.js client.js
 
+      # 用 npm pack 而不是 npm publish --dry-run：后者会真的去 registry 查重，
+      # 版本一旦发过就报 `You cannot publish over the previously published
+      # versions` 并让整条流水线变红（run 40493108185 就是这么红的）。dry run
+      # 要验的是「这个版本能打出什么包」，不该依赖 registry 状态。
       - name: 打包预览（dry run）
         if: ${{ inputs.dry_run }}
         shell: bash
-        run: npm publish --dry-run --access public
+        run: |
+          npm pack --dry-run
+          npm pkg get name version
 
       - name: 发布
         if: ${{ !inputs.dry_run }}
