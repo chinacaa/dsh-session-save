@@ -13,6 +13,8 @@ jobs:
   probe:
     runs-on: windows-latest
     steps:
+      - uses: actions/checkout@v5
+
       - name: 用 GITHUB_TOKEN 往 v0.2.0 传一个探针文件
         shell: bash
         env:
