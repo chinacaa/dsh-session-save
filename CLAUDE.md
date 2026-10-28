@@ -16,9 +16,10 @@ node test/smoke.mjs                      # 碰到打包 / 保存路由
 node test/open.mjs                       # 碰到导入 / 落地规则
 node test/conflict.mjs                   # 碰到锁 / CAS / 自动保存（约 30 秒）
 node test/security.mjs                   # 碰到任何校验、或说不准有没有碰到（最该跑）
+node test/pathkey.mjs                    # 升级 DSH 后第一件事：路径键与官方逐字比对（几十毫秒）
 ```
 
-**收工前跑全部六套**，不是只跑改到的那一个；改过客户端再加一轮 `DSH_TEST_LOCALE=en-US node test/client.mjs`（中英词表两条路径都要过）。
+**收工前跑全部七套**，不是只跑改到的那一个；改过客户端再加一轮 `DSH_TEST_LOCALE=en-US node test/client.mjs`（中英词表两条路径都要过）。
 
 测试自己建临时 `DSH_HOME`（`test/fixture.mjs`），跑完自己删——**不需要**再手工核对 `~/.dsh` 里的目录数，也不要让新测试去读真实 `~/.dsh`。
 

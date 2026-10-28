@@ -45,30 +45,60 @@ const sessionsRoot = () => path.join(dshHome(), 'sessions');
 const memoryRoot = () => path.join(dshHome(), 'memory', 'workspaces');
 const stateFile = () => path.join(dshHome(), 'storages', 'session-save.json');
 
-/** Official `encodeSegment`: safe characters pass, everything else becomes ~XXXX. */
-function encodeSegment(raw) {
+/**
+ * Official `encodeSegment`: safe characters pass, everything else becomes ~XXXX.
+ *
+ * 逐 UTF-16 码元转义（`charCodeAt`，不是 `codePointAt`）——官方如此，因此
+ * 增补平面字符会拆成代理对两段（`😀` → `~D83D~DE00`）。用 `codePointAt`
+ * 得到 `~1F600`，与磁盘上的真实目录名对不上。
+ */
+export function encodeSegment(raw) {
   const text = String(raw);
   if (text === '.') return '~002E';
   if (text === '..') return '~002E~002E';
   let out = '';
-  for (const ch of text) {
-    if (/[A-Za-z0-9._-]/.test(ch)) out += ch;
-    else out += '~' + ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0');
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    const ch = String.fromCharCode(code);
+    if (ch !== '~' && /^[A-Za-z0-9._-]$/.test(ch)) out += ch;
+    else out += '~' + code.toString(16).toUpperCase().padStart(4, '0');
   }
   return out;
 }
 
-/** Official `projectKey`: separators collapse, then the segment is hex-escaped. */
-function projectKey(cwd) {
+/**
+ * Official `projectKey`: separators collapse, then the segment is hex-escaped.
+ *
+ * 与官方逐字一致的三处细节，漏一个就会指错目录：
+ *   ① 连续分隔符只折叠成**一个** `-`（`separatorRun`），且**不剪掉尾部** `-`
+ *      ——`C:\x\` 的官方键是 `--C-x---`（尾部分隔符贡献一个 `-`，外加包裹的两条）。
+ *   ② 前导 `-` 剥掉后若为空则兜底 `root`（官方 `|| "root"`），根路径 `/` 才成 `--root--`。
+ *   ③ 转义按 UTF-16 码元，同 {@link encodeSegment}。
+ *
+ * 唯一有意的偏离：`cwd` 为空串时官方 `projectKey` 抛错，这里退回 `_no-cwd`
+ * （即官方 `projectDir(root, undefined)` 的目录名）。本函数的使用方都是
+ * 「找到就返回、找不到给 undefined」的查找逻辑，抛错只会中断整轮扫描。
+ */
+export function projectKey(cwd) {
   const raw = String(cwd ?? '');
   if (raw === '') return '_no-cwd';
-  const folded = raw.replace(/[/\\:]+/g, '-').replace(/^-+/, '');
-  let safe = '';
-  for (const ch of folded) {
-    if (/[A-Za-z0-9._-]/.test(ch)) safe += ch;
-    else safe += '~' + ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0');
+  let readable = '';
+  let separatorRun = false;
+  for (let i = 0; i < raw.length; i += 1) {
+    const code = raw.charCodeAt(i);
+    const ch = String.fromCharCode(code);
+    if (ch === '/' || ch === '\\' || ch === ':') {
+      if (!separatorRun) readable += '-';
+      separatorRun = true;
+    } else if (ch !== '~' && /^[A-Za-z0-9._-]$/.test(ch)) {
+      readable += ch;
+      separatorRun = false;
+    } else {
+      readable += '~' + code.toString(16).toUpperCase().padStart(4, '0');
+      separatorRun = false;
+    }
   }
-  return `--${safe.slice(0, 251).replace(/-+$/, '')}--`;
+  return `--${(readable.replace(/^-+/, '') || 'root').slice(0, 251)}--`;
 }
 
 const normSlug = (value) => String(value).toLowerCase().replace(/[^a-z0-9]/g, '');

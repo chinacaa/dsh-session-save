@@ -4,7 +4,8 @@
 
 适配时从上到下过一遍，任何一条对不上就是必须改的点。
 
-- 核对基线：DSH **0.2.1-rc.3**（`C:\Users\aa\AppData\Roaming\dsh-tauri\dependencies\dsh\package.json`）、`@deepseek-ai/cordis` **4.0.5**、会话格式 `SESSION_FORMAT_VERSION = 4`。
+- 核对基线：DSH **0.2.1-rc.4**（`C:\Users\aa\AppData\Roaming\dsh-tauri\dependencies\dsh\package.json`）、`@deepseek-ai/cordis` **4.0.5**、会话格式 `SESSION_FORMAT_VERSION = 4`。
+- 上一次全面核对是 rc.3；rc.3 → rc.4 的差异见文末「§6 版本差异账」。
 - 下文 `index.js:NNN` / `client.js:NNN` 均指本仓库同行号；行号会漂，**以函数名和代码形状为准**。
 - 取证方式分三类，每条都标注了：**Inspect 实测**（本机运行中的 DSH 通过 `cordis_inspect_query` 直读）、**源码核对**（读 `node_modules/@deepseek-ai/*` 的 `lib/`）、**运行时实测**（跑本仓库测试或 curl 本机 HTTP 接口）。
 
@@ -102,22 +103,39 @@ if (typeof ctx.effect === 'function' && typeof ctx.on === 'function') {
 | 数据根 | `index.js:43` | `process.env.DSH_HOME \|\| <homedir>/.dsh` |
 | 会话目录 | `index.js:167` `findSessionFile()` | `<DSH_HOME>/sessions/<projectKey>/<encodeSegment(sessionId)>/session.v?.jsonl[.zstd]` |
 | 记忆目录 | `index.js:77` `resolveMemoryDir()` | `<DSH_HOME>/memory/workspaces/<slug>/` |
-| 工作区表 | `index.js:519` `readWorkspaces()` | `<DSH_HOME>/storages/workspace.json` → `tables.workspaces[<id>] = { path, title }` |
-| `projectKey` | `index.js:64` | 分隔符折叠成 `-`，再去掉前导 `-`，非 `[A-Za-z0-9._-]` 转 `~XXXX`，驼峰包 `--…--`，截 251 字符 |
-| `encodeSegment` | `index.js:50` | 同上但不折叠，`.`/`..` 特判为 `~002E`/`~002E~002E` |
-| 日志文件名 | `index.js:360` `LOG_NAME_RE` | `/^session(\.[0-9A-Za-z]+)?\.jsonl(\.zstd)?$/` |
-| 帧结构 | `index.js:108` `scanZstdFrames()` | 单文件多帧 zstd 流，第 0 帧是 JSON header，后续帧是 JSONL 事件 |
-| 写回方式 | `index.js:854` `rewriteHeader()` | **只重写第 0 帧**，其余帧字节原样保留 |
+| 工作区表 | `index.js:550` `readWorkspaces()` | `<DSH_HOME>/storages/workspace.json` → `tables.workspaces[<id>] = { path, title }` |
+| `projectKey` | `index.js:82` | 见下节逐字对照表 |
+| `encodeSegment` | `index.js:55` | 见下节逐字对照表 |
+| 日志文件名 | `index.js:390` `LOG_NAME_RE` | `/^session(\.[0-9A-Za-z]+)?\.jsonl(\.zstd)?$/` |
+| 帧结构 | `index.js:138` `scanZstdFrames()` | 单文件多帧 zstd 流，第 0 帧是 JSON header，后续帧是 JSONL 事件 |
+| 写回方式 | `index.js:888` `rewriteHeader()` | **只重写第 0 帧**，其余帧字节原样保留 |
 
-`projectKey` / `encodeSegment` 是**复刻官方实现**（注释已写明）。升级核对方法：
+#### `projectKey` / `encodeSegment`（**错一个字符就找错目录**）
+
+这两个函数是「本机会话在哪」的唯一真相，且官方**不 export** 它们
+（`dsh-session-persistence-jsonl/lib/index.js` 只导出 `Config, JsonlCompressionSchema, apply, name`），
+没法 import 来对比。所以判据是**逐字复刻 + 自带 oracle 的回归测试**：
+
+| 细节 | 官方行为 | 这里的实现 |
+|---|---|---|
+| 分隔符 | `/` `\` `:` 都是分隔符，**连续一段只折叠成一个** `-` | 同 |
+| 尾部分隔符 | **不剪**。`C:\x\` → `--C-x---`（尾部贡献一个 `-`，外加包裹的两条） | 同 |
+| 前导 `-` | 剥掉；剥空了兜底 `root`，故 `/` → `--root--` | 同 |
+| 转义粒度 | 按 **UTF-16 码元**（`charCodeAt`）。`😀` → `~D83D~DE00`，不是 `~1F600` | 同 |
+| `~` 自身 | 同样转义成 `~007E`，防解码歧义 | 同 |
+| 截断 | `slice(0, 251)`，**截完不再剪尾 `-`** | 同 |
+| 空串 | 官方**抛错**（`cannot encode an empty project path`） | 退回 `_no-cwd`（有意偏离：调用方是「找到就返回、找不到给 undefined」的扫描逻辑，抛错会中断整轮） |
+
+官方原文位置（rc.4）：`dsh-session-persistence-jsonl/lib/index.js:858`（`encodeSegment`）、`:880`（`projectKey`）、`:907`（`projectDir`，`cwd === undefined` 时选 `_no-cwd`）。
+
+核对命令（**每次升级 DSH 后跑一遍**，比读源码快）：
 
 ```bash
-# 拿 DSH 自己的实现比一遍（node_modules 里找 projectKey / encodeSegment）
-grep -rn "function projectKey\|function encodeSegment" \
-  "$APPDATA/../Roaming/dsh-tauri/dependencies/dsh/node_modules/@deepseek-ai/dsh-session/lib/"*.js
+node test/pathkey.mjs   # 35 条：16 档 cwd × oracle 对照 + 4 条钉死形态 + 空串偏离 + 8 档 id + 磁盘实例
 ```
 
-对本机实测：`C:\Users\aa\workspace` → `--C-Users-aa-workspace--`，与目录实际命名一致。
+`test/pathkey.mjs` 里抄了一份官方实现当 oracle；官方若改算法，更新那份 oracle 与用例即可，
+`index.js` 侧对不上会立刻红。本机实测：`C:\Users\aa\workspace` → `--C-Users-aa-workspace--`。
 
 ### 1.5 子进程（`node:child_process`）
 
@@ -266,8 +284,8 @@ fetch(`${ROUTE}?${search.toString()}`, { method: 'GET', headers: { accept: 'appl
 2. **四个路由在不在**：`curl 'http://127.0.0.1:3080/api/session.workspaces'`（带 Host 头）应返回 JSON 列表而不是 404。
 3. **插槽还在不在**：`cordis_inspect_query` → `client/Slots.listSubTree` 传 `conversation.session.header.utilities`，看 5 个 occupant 是否全 `active`。
 4. **事件名没变**：`cordis_inspect_query` → `host/Event.listEvents` 传 `session/event`，确认签名仍是 `(session, event)`；再确认 `event.type` 仍可能是 `step/end` / `turn/end`。
-5. **会话文件还能读**：`node test/smoke.mjs`（打包 + 回读）与 `node test/open.mjs`（35 条，导入与冲突）。六套测试全部通过 `test/fixture.mjs` 自建临时 `DSH_HOME`，不读真实 `~/.dsh`。
-6. **跑满回归**：`node test/client.mjs && node test/dialog.mjs && node test/smoke.mjs && node test/open.mjs && node test/conflict.mjs && node test/security.mjs`，应共 225 条 ✅（详见 `docs/TEST-MATRIX.md`）。
+5. **会话文件还能读**：`node test/smoke.mjs`（打包 + 回读）与 `node test/open.mjs`（35 条，导入与冲突）。七套测试全部通过 `test/fixture.mjs` 自建临时 `DSH_HOME`，不读真实 `~/.dsh`。
+6. **跑满回归**：`for f in client dialog smoke open conflict security pathkey; do node test/$f.mjs || exit 1; done`，应共 **260** 条 ✅（详见 `docs/TEST-MATRIX.md`）。其中 `pathkey.mjs` 是 rc.4 适配时新增的目录名派生回归。
 7. **客户端能调 Host 吗**：`node test/client.mjs` 里已断言 `inject` 含 `remote` 与 `remote.session`、且源码不含 `uiWorkspace.openPath`。「打开记忆目录」失效是**静默**的（按钮点了没反应、不报错），只能靠这条断言兜住。
 
 ---
@@ -289,3 +307,31 @@ client/Builtin.listBuiltins     { }                                # 客户端�
 Remote 类方法（如 `openWorkspacePath`）**不在** Service 目录里，Inspect 也查不到它——要去 `node_modules/@deepseek-ai/dsh-api-session-controller/lib/typert.host.js` 找 zod schema，`lib/index.js` 里找同名实现方法。
 
 **注意**：Inspect 只能读，不能当成插件代码可调用的业务 Service。插件代码仍然只能走 `ctx.*`。
+
+---
+
+## 6. 版本差异账（rc.3 → rc.4）
+
+rc.3 的核对结论大部分仍然成立；rc.4 逐条复查后**只有目录名派生这一处真偏差**，其余全是「名字变了但行为没变」。
+
+| # | 项目 | rc.3 → rc.4 | 对本插件的影响 |
+|---|---|---|---|
+| 1 | `projectKey` / `encodeSegment` | 实现未变，但**本插件当年抄错了三处**：尾部分隔符被剪、`codePointAt` 而非 `charCodeAt`、前导剪裁位置不对 | **已修**（`index.js:55`/`:82`）。真实数据从未触发（本机 5 个会话目录全部对得上），但构造路径必错。新增 `test/pathkey.mjs` 35 条钉住 |
+| 2 | 官方 `encodeSegment` 空串 | 抛错（`cannot encode an empty path segment`） | 插件侧 `findSessionFile()` 先用 `isSessionId()` 挡掉非 id，不会走到这里 |
+| 3 | `projectDir(root, undefined)` | 回落 `_no-cwd` | 插件 `projectKey('')` 也回落 `_no-cwd`，一致 |
+| 4 | `session.openWorkspacePath` | 仍在 `dsh-api-remotes/lib/client.js`，参数 object、结果 `{ opened: true }` | 无需改动 |
+| 5 | `dsh.client.inject` 里的 `@deepseek-ai/dsh-client-runtime` | **该包在 rc.4 的 node_modules 里不存在** | 无害：`inject` 只是声明「我想要这个服务」，不存在时不阻塞；`test/client.mjs` 仍绿 |
+| 6 | `Slots` 插槽根 `conversation.session.header.utilities` | 未变，5 个 occupant 仍全部 `active` | 无需改动 |
+| 7 | `session/event` 事件签名 `(session, event)`、`step/end`·`turn/end` | 未变 | 自动保存无需改动 |
+| 8 | `@deepseek-ai/cordis` | 4.0.5（未变） | `peerDependencies ^4.0.1` 仍成立 |
+| 9 | `SESSION_FORMAT_VERSION` | 仍为 `4` | 日志读写与 header 重写无需改动 |
+| 10 | `dsh-session-persistence-jsonl` 的导出面 | 仍只有 `Config, JsonlCompressionSchema, apply, name` —— `projectKey`/`encodeSegment` **不可 import** | 只能靠复刻 + oracle 测试（见 §1.4） |
+
+**升级核对只需两条命令**：
+
+```bash
+node test/pathkey.mjs    # 目录名派生没漂
+node test/client.mjs     # 插槽 / inject / 前端接线没断
+```
+
+其余五套（`dialog` `smoke` `open` `conflict` `security`）覆盖的是插件自己的落盘与安全逻辑，与 DSH 版本弱相关，但**改动后必须全跑**（合计 219 条；加上上面两条命令的 41 条 = 全部 260 条）。

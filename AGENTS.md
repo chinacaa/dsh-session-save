@@ -9,7 +9,7 @@
 - 语言/运行时：纯 ESM（`"type": "module"`），零运行时依赖，只用 `node:` 内置模块；客户端只 `require('react')`。
 - 宿主：DSH `>=0.2.1-rc.1`（`engines.dsh`），Cordis `^4.0.1`（peer）。
 - 平台：Windows 优先（原生对话框走 `powershell.exe` + WinForms）；macOS 走 `osascript` 的 Finder 面板；Linux/BSD 探 zenity / kdialog / qarma / matedialog。三者都没有时退回网页里的路径输入框。平台相关代码全部隔离在 `dialog/` 下（`index.mjs` 选实现、`shared.mjs` 共用工具、`windows.mjs` / `macos.mjs` / `linux.mjs` 各平台实现），`index.js` 只 import `dialog/index.mjs`，不认识具体实现。
-- 规模：`index.js` ≈1870 行、`client.js` ≈1950 行、六套测试共 225 条 ✅（`smoke.mjs` 另有 12 处 throw 检查，只打一行汇总）。逐条覆盖见 `docs/TEST-MATRIX.md`。
+- 规模：`index.js` ≈1900 行、`client.js` ≈1950 行、七套测试共 260 条 ✅（`smoke.mjs` 另有 12 处 throw 检查，只打一行汇总）。逐条覆盖见 `docs/TEST-MATRIX.md`。
 
 ## 红线（改之前先看，违反会静默坏掉）
 
@@ -42,8 +42,8 @@ marketplace/        上架条目（提 PR 到 awesome-dsh-plugin 用）
 scripts/bump.mjs    改版本（package.json + CHANGELOG）
 scripts/release-notes.mjs 从 CHANGELOG 摘某版本正文当 Release 说明
 scripts/set-repo.mjs 把 OWNER 占位换成真实 GitHub 名字
-test/fixture.mjs    临时 DSH_HOME 夹具（六套测试共用）
-test/*.mjs          六套自检（见「测试」）
+test/fixture.mjs    临时 DSH_HOME 夹具（七套测试共用）
+test/*.mjs          七套自检（见「测试」）
 docs/TEST-MATRIX.md 功能面 → 测试覆盖矩阵（49 条 F 编号）
 docs/DSH-API-SURFACE.md 用到的 DSH 接口清单（升级 DSH 时逐条核对）
 assets/             截图与方形图标（市场用）
@@ -58,6 +58,7 @@ node test/smoke.mjs       # Host 冒烟：夹具会话 → 打包 → 回读 ZIP
 node test/open.mjs        # 打开链路：复用 / 换 cwd 落地 / need-workspace / 逐帧比对
 node test/conflict.mjs    # 锁、四种冲突、CAS、自动保存（约 30 秒，含 2.6 秒等待）
 node test/security.mjs    # 安全回归：条目名穿越 / 落点文件名 / 解压炸弹 / 路由闸 / parts 校验
+node test/pathkey.mjs     # 路径键：projectKey / encodeSegment 与官方实现逐字对齐（含分隔符、emoji、根路径边界）
 
 node --check index.js client.js            # 语法
 node scripts/bump.mjs patch --dry          # 版本号预演
@@ -89,8 +90,20 @@ New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\profiles\web\node_modul
 
 数据路径规则（**两套 slug，别混**）：
 
-- 会话：`$DSH_HOME/sessions/<projectKey(cwd)>/<encodeSegment(id)>/session.v4.jsonl.zstd`。`projectKey` 把 `/ \ :` 的连续段折成一个 `-`；`encodeSegment` 把非 `[A-Za-z0-9._-]` 的字符转成 `~XXXX`。
+- 会话：`$DSH_HOME/sessions/<projectKey(cwd)>/<encodeSegment(id)>/session.v4.jsonl.zstd`。
 - 记忆：`$DSH_HOME/memory/workspaces/--C--Users-aa-workspace--` 这种，**每个**分隔符各变一个 `-`。所以记忆目录要「先精确、再按去掉非字母数字后相等」两级模糊匹配，不能照会话那套算。
+
+`projectKey` / `encodeSegment` 是**照 DSH 官方实现逐字复刻**的（`dsh-session-persistence-jsonl/lib/index.js` 的 `projectKey` / `encodeSegment`，rc.4 在 855–905 行），不是自己设计的规则。三个「看起来像 bug、其实必须这样」的细节，**别顺手"优化"掉**：
+
+| 细节 | 官方行为 | 改错会怎样 |
+| --- | --- | --- |
+| 尾部分隔符 | 连续分隔符折叠成**一个** `-`，且**不剪掉尾部**——`C:\x\` → `--C-x---`（尾部贡献一个 `-`，外加包裹的两条） | 少一个 `-` 就指到不存在的目录 → 表现成「本机没有这个会话」 |
+| 根路径 | 剥掉前导 `-` 后若为空，兜底 `root`——`/` → `--root--` | 得到 `----`，`/` 下的会话永远找不到 |
+| 转义单位 | 按 **UTF-16 码元**（`charCodeAt`）逐位转义，不是码点——`😀` → `~D83D~DE00` | 用 `codePointAt` 得到 `~1F600`，emoji 路径的会话全部定位失败 |
+
+另一处**有意偏离**：`cwd` 为空串时官方 `projectKey` 抛错，这里返回 `_no-cwd`（即官方 `projectDir(root, undefined)` 的目录名）。因为本函数的使用方都是「找到就返回、找不到给 undefined」的查找逻辑，抛错会中断整轮扫描。改这条前先看 `test/pathkey.mjs` 里那条「oracle 确实抛错」的对照用例。
+
+判据由 `test/pathkey.mjs` 盯着：它内置一份官方实现的原样副本当 oracle，逐档比对本仓库的实现。**官方算法若在未来的 DSH 里变了，这个测试不会自己发现**——升级 DSH 后要人工重抄一次 oracle（从上面那个文件的对应函数原样复制，连注释一起），再跑一遍；这是「官方函数不可 import」（该包只导出 `Config, JsonlCompressionSchema, apply, name`）下能做到的最强验证。
 
 `importPackage` 的判定顺序（别调换）：
 
@@ -123,8 +136,8 @@ autoCleanup(fx);            // 正常退出/异常/^C 都会删掉
 const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixture 之后
 ```
 
-- **顺序不能换**：`index.js` 在模块顶层读 `DSH_HOME` 决定数据根，所以夹具必须先建好再 `loadRoutes`。
-- **夹具的 slug 规则必须抄 `index.js`**：`projectKey(cwd)` 与记忆目录 slug 是**两套**算法（见「架构」），夹具里自己重写一套近似规则就会让 `findSessionFile()` 扫不到会话。`fixture.mjs` 导出的 `projectKeyOf` / `memorySlugOf` 就是照 `index.js` 抄的，改 `index.js` 的 slug 逻辑时两边一起改。
+- **顺序：先建夹具，再 `loadRoutes`**。`index.js` 的 `dshHome()` / `sessionsRoot()` 是懒求值（每次调用才读 `process.env.DSH_HOME`），所以顺序其实已经不敏感；但**保持这个顺序**——一旦哪天有人在模块顶层读了环境变量，先建夹具才不会踩坑。
+- **夹具的项目目录名直接 import `index.js` 的 `projectKey`**（`fixture.mjs` 里 `const projectKeyOf = projectKey`），不再自己抄一份。**记忆目录 slug 是另一套算法**（见「架构」，每个分隔符各变一个 `-`），测试里要造记忆条目时按那套拼（`security.mjs` 里是直接写字面量 `memory/workspaces/--demo--/…`）。改 `index.js` 的 slug 逻辑时，`test/pathkey.mjs` 会立刻红。
 - **夹具命令行可传**：`makeFixture({ sessionId, cwd, title })` 覆盖默认值。
 - **自定义 set-cwd 类用例别自己拼路径**，用 `fx.home` + `fx.session.id`，否则 relocate 之后 id 对不上。
 
@@ -169,7 +182,7 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
 三条硬规矩：
 
 1. **别在文档里复述代码**。默认文件名规则的真源是 `index.js` 的 `suggestPath()`、上限常量在 `index.js` 顶部；文档只说结论和例子，不抄正则、不抄常量值。抄了就会在下次改代码时变成谎言。
-2. **数字必须当场能验**。文档里出现"11 条红线""225 条 ✅""F1–F49""≈1870 行"这类计数时，要能用一条命令复现（见「改完之后」）。改完顺手核一遍，别让读者去发现数字过期。
+2. **数字必须当场能验**。文档里出现"11 条红线""260 条 ✅""F1–F49""≈1900 行"这类计数时，要能用一条命令复现（见「改完之后」）。改完顺手核一遍，别让读者去发现数字过期。
 3. **中英必须同一次改完**。`README.md` 与 `README.en.md` 是同一份文档的两种语言：小标题顺序、表格列、示例文件名一一对应。只改一份等于给另一半读者发过期信息。
 
 还有两条不写在文档里的东西：进度和计划（放 issue / PR / 提交信息，不写进 README 的"路线图"）、本机路径与个人环境（`C:\Users\...`、profile 名、私有 registry）——后者写进文档等于把私有环境当契约。
@@ -177,7 +190,7 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
 ## 改完之后
 
 1. `node --check index.js client.js`（改过 .ps1 再加语法检查）。
-2. 跑**全部六套**测试，别只跑改到的那一个；改过客户端再补一轮 `DSH_TEST_LOCALE=en-US node test/client.mjs`。
+2. 跑**全部七套**测试，别只跑改到的那一个；改过客户端再补一轮 `DSH_TEST_LOCALE=en-US node test/client.mjs`。
 3. 改过行为 → `CHANGELOG.md` 的 `[Unreleased]` 加一条。
 4. 改过任何一个断言或功能点 → 同步 `docs/TEST-MATRIX.md` 的覆盖表（它按 F 编号列，条数对不上就是漏改）。
 5. 改过文档 → 按「文档怎么改」那张表核对：中英两份是否同改、有没有把代码细节抄进文档、文中的计数是否仍成立：
@@ -186,7 +199,7 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
    wc -l index.js client.js                                  # 对应 AGENTS.md「规模」
    awk '/^## 红线/,/^## 目录/' AGENTS.md | grep -c '^[0-9]\+\. \*\*'   # 红线条数（必须限在红线节内：本文别处也有编号列表）
    grep -oE 'F[0-9]+' docs/TEST-MATRIX.md | sort -u | wc -l  # 功能面条数
-   for f in client dialog smoke open conflict security; do node test/$f.mjs | grep -c '✅' ; done   # 六行相加 = 225
+   for f in client dialog smoke open conflict security pathkey; do node test/$f.mjs | grep -c '✅' ; done   # 七行相加 = 260
    ```
 
 6. 确认测试没有留下垃圾：跑完 `git status` 应为只有你改的源文件，`os.tmpdir()` 下不该残留 `dshss-fx-*` / `dshss-sec-*` 目录（`autoCleanup` 会删，残留说明收尾路径漏了信号处理）。

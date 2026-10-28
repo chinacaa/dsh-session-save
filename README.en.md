@@ -238,13 +238,14 @@ node test/open.mjs                # open paths: reuse / new cwd / need-workspace
 node test/conflict.mjs            # locks, four conflict modes, CAS, autosave (~30 s)
 node test/dialog.mjs              # three-platform native dialogs: selector + argument assembly + CJK round trip
 node test/security.mjs            # traversal / landing names / zip bombs / route gate / parts
+node test/pathkey.mjs             # path keys: byte-for-byte check against DSH's own directory naming (run this first after a DSH upgrade)
 ```
 
 To check the English word list after touching the client: `DSH_TEST_LOCALE=en-US node test/client.mjs`.
 
-All six suites run against their own temporary `DSH_HOME` (a fixture directory under `os.tmpdir()` built by `test/fixture.mjs`) and delete it afterwards, so **your real `~/.dsh` is never touched** and no session has to "happen to exist".
+All seven suites run against their own temporary `DSH_HOME` (a fixture directory under `os.tmpdir()` built by `test/fixture.mjs`) and delete it afterwards, so **your real `~/.dsh` is never touched** and no session has to "happen to exist".
 
-Two exceptions: `test/client.mjs` is a pure in-memory wiring test with no fixture directory and no disk IO; in `test/dialog.mjs` the selector checks, the AppleScript / zenity argument assembly and the script BOM checks are pure static verification and run anywhere, while only the few assertions that launch the real `powershell.exe` to verify CJK encoding are skipped off Windows (they print `⏭  跳过` — a skip is not a pass). The other five are cross-platform.
+Two exceptions: `test/client.mjs` is a pure in-memory wiring test with no fixture directory and no disk IO, and `test/pathkey.mjs` only calls two pure functions, so it writes nothing either. In `test/dialog.mjs` the selector checks, the AppleScript / zenity argument assembly and the script BOM checks are pure static verification and run anywhere, while only the few assertions that launch the real `powershell.exe` to verify CJK encoding are skipped off Windows (they print `⏭  跳过` — a skip is not a pass). The other four are cross-platform.
 
 Read [`AGENTS.md`](AGENTS.md) before touching code — the hard rules, the four host routes, the `importPackage` branch order and testing recipes all live there. [`CLAUDE.md`](CLAUDE.md) is the short entry point and [`docs/TEST-MATRIX.md`](docs/TEST-MATRIX.md) maps every feature to the test that covers it.
 

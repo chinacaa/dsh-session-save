@@ -15,14 +15,18 @@
  *   fx.writeSession({ id, createdAt }) // 再造一份会话（冲突用例用）
  *   fx.cleanup()                       // 删掉整个临时根
  *
- * 顺序很重要：index.js 在模块顶层读 DSH_HOME 决定数据根，所以测试里必须
- * 「先 import 本模块 → 调 makeFixture() → 再 import '../index.js'」。
+ * 顺序说明：早期这里是「先 import fixture → makeFixture() → 再 import index.js」，
+ * 理由是「index.js 顶层读 DSH_HOME」。实际上 index.js 的 dshHome() 是懒箭头函数，
+ * 每次调用才读 process.env，所以顺序并不重要；而项目目录名现在已经直接从
+ * index.js 静态 import，这个模块本来就会在 import 时拉起 index.js。
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { randomUUID } from 'node:crypto';
+
+import { projectKey } from '../index.js';
 
 /** zstd 帧参数：带 checksum，与 DSH 真实写出的帧一致。 */
 const ZSTD_OPTS = { params: { [zlib.constants.ZSTD_c_checksumFlag]: 1 } };
@@ -31,20 +35,14 @@ const ZSTD_OPTS = { params: { [zlib.constants.ZSTD_c_checksumFlag]: 1 } };
 const frame = (text) => zlib.zstdCompressSync(Buffer.from(text, 'utf8'), ZSTD_OPTS);
 
 /**
- * 项目目录名 —— 必须和 index.js 里的 projectKey() **逐字一致**，
- * 否则 findSessionFile() 扫不到夹具会话，open 会误判成「本机没有这个会话」。
+ * 项目目录名 —— 直接取 `index.js` 的实现，**不再各写一份**。
+ *
+ * 之前这里复制了一份 projectKey，与实现同源但独立演化：实现按官方改成
+ * 「分隔符折叠 + 不剪尾部 `-` + UTF-16 码元」之后，夹具仍是旧版，「保存 →
+ * 打开」链在带尾部分隔符或 emoji 的 cwd 上会去找另一个目录，表现为
+ * 「本机没有这个会话」的假失败。单一来源后夹具与实现不可能再漂移。
  */
-const projectKeyOf = (cwd) => {
-  const raw = String(cwd ?? '');
-  if (raw === '') return '_no-cwd';
-  const folded = raw.replace(/[/\\:]+/g, '-').replace(/^-+/, '');
-  let safe = '';
-  for (const ch of folded) {
-    if (/[A-Za-z0-9._-]/.test(ch)) safe += ch;
-    else safe += '~' + ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0');
-  }
-  return `--${safe.slice(0, 251).replace(/-+$/, '')}--`;
-};
+const projectKeyOf = projectKey;
 
 /** 会话 header。字段对齐 DSH v4 会话格式。 */
 const headerOf = (id, cwd, createdAt) =>

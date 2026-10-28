@@ -258,13 +258,14 @@ node test/open.mjs                # 打开链路：复用 / 换 cwd 落地 / 问
 node test/conflict.mjs            # 锁、四种冲突、CAS、自动保存（约 30 秒）
 node test/dialog.mjs              # 三平台原生窗口：选择器判据 + 参数拼装 + 中文路径往返
 node test/security.mjs            # 安全回归：条目名穿越 / 落点文件名 / 解压炸弹 / 路由闸 / 包校验
+node test/pathkey.mjs             # 路径键：与 DSH 官方的目录名算法逐字比对（升级 DSH 后第一件事）
 ```
 
 改客户端后想验英文词表：`DSH_TEST_LOCALE=en-US node test/client.mjs`。
 
-六套测试全部跑在自己的临时 `DSH_HOME`（`test/fixture.mjs` 在 `os.tmpdir()` 下建的夹具目录）里，跑完自动删掉，**不碰真实的 `~/.dsh`**，也不要求本机"恰好有会话"。
+七套测试全部跑在自己的临时 `DSH_HOME`（`test/fixture.mjs` 在 `os.tmpdir()` 下建的夹具目录）里，跑完自动删掉，**不碰真实的 `~/.dsh`**，也不要求本机"恰好有会话"。
 
-两套例外：`test/client.mjs` 是纯内存接线测试，不建夹具目录也不读写磁盘；`test/dialog.mjs` 里「选择器判据 / AppleScript 与 zenity 参数拼装 / 脚本 BOM」这几组是纯静态校验、跨平台可跑，只有真拉 `powershell.exe` 验中文编码的几条在非 Windows 上跳过（会打印 `⏭  跳过`，不算通过）。其余五套跨平台。
+两套例外：`test/client.mjs` 是纯内存接线测试，不建夹具目录也不读写磁盘；`test/pathkey.mjs` 只调两个纯函数，同样不落盘。`test/dialog.mjs` 里「选择器判据 / AppleScript 与 zenity 参数拼装 / 脚本 BOM」这几组是纯静态校验、跨平台可跑，只有真拉 `powershell.exe` 验中文编码的几条在非 Windows 上跳过（会打印 `⏭  跳过`，不算通过）。其余四套跨平台。
 
 想改代码先读 [`AGENTS.md`](AGENTS.md)：红线、四条路由的契约、`importPackage` 的分支顺序、测试怎么写，都在那里；[`CLAUDE.md`](CLAUDE.md) 是最短入口，[`docs/TEST-MATRIX.md`](docs/TEST-MATRIX.md) 是功能面与测试的对照表。
 

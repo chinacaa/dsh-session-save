@@ -2,7 +2,7 @@
 
 本文从代码反推功能面（`index.js` 四条路由 + `client.js` 五个插槽项），逐条列出可观测行为、期望结果，以及由哪套测试覆盖。测试分两层：
 
-- **六套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共打印 225 行 ✅。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
+- **七套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共打印 260 行 ✅。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
 - **审计验收脚本**（未随仓库分发）：针对历史漏洞的复现/防回归，判据写在下表里，可照着重写。
 
 所有套件都通过 `test/fixture.mjs` 自建临时 `DSH_HOME`（`os.tmpdir()` 下），跑完自删——**不读也不改真实 `~/.dsh`**，所以在任何机器、任何数据状态下结果一致。功能面的 F 编号是本文与 `test/*.mjs` 注释共同引用的锚点，改动功能时两边一起改。
@@ -97,10 +97,11 @@
 
 ## 二、测试矩阵（用例 → 期望 → 覆盖）
 
-### 六套回归
+### 七套回归
 
 | 套件 | 条数 | 覆盖功能 | 关键期望 |
 | --- | --- | --- | --- |
+| `test/pathkey.mjs` | 35 | F13（`findSessionFile` 的目录派生）、F21 | `projectKey`/`encodeSegment` 与官方 rc.4 逐字一致：16 档 cwd 与内置 oracle 全等（含尾部分隔符不剪 `-`、根路径 `--root--`、emoji 拆代理对 `~D83D~DE00`、`~` 自身转义、251 截断）；4 条钉死形态独立断言；空串退回 `_no-cwd` 且 oracle 确实抛错（证明是有意偏离）；8 档 session id；磁盘实例形状核对 |
 | `test/dialog.mjs` | 16 | F3、F46、F47、F48 | 三平台选择器各自按依赖存在性判定（win32 看 `powershell.exe`、darwin 看 `/usr/bin/osascript`、linux/BSD 找 zenity/kdialog/qarma/matedialog，都没有 → `null` 降级），并用注入的假探测函数在 Windows 上验 mac/linux 分支；实现缓存按平台隔离（先问无用平台不污染真实平台）；共用工具 `lookPath`/`ensureExtension`/`sanitizeForAppleScript`/`resultLine`；macOS 的 AppleScript 文本（`POSIX file` 包装、引号转义、冒号消毒）；Linux 的 zenity 与 kdialog 两套开关分别拼对（`--getsavefilename` 收完整建议路径 vs `--filename=`，kdialog 空目录回落 `.`）；zenity 优先级高于 kdialog；Windows 脚本带 BOM、`OutputEncoding`、`-ResultFile` 三件套齐；中文路径往返不乱码；取消 → `null`；脚本缺失 → `undefined`；乱码 stdout 不覆盖结果文件 |
 | `test/client.mjs` | 6 | F34、F35、F37、F49 | 5 个插槽项 id/order/插槽名正确；另存为是独立图标且点击带 `ask=1`；hero 按钮点击打 `api/session.open`；源码不含 `document.`/`MutationObserver`；7 个记忆相关 i18n 键中英各一份；`inject` 含 `remote`/`remote.session` 且源码不含 `uiWorkspace.openPath`、含 `openWorkspacePath` 与 `action: 'reveal'` |
 | `test/smoke.mjs` | 1（12 处 throw 检查） | F1、F8、F10、F12 | 夹具会话 → 打包 → 回读 ZIP 首条目 zstd magic、必有 `manifest.json`/`SUMMARY.md`/`session/`；二次保存复用同一路径；默认文件名规则与非法字符替换；无标题兜底名 |
@@ -108,7 +109,7 @@
 | `test/conflict.mjs` | 67 | F5–F7、F11、F28–F32、F44 | 四种冲突顺序 ask→reuse→copy→overwrite；覆盖前留 `.bak`；异机新鲜锁给理由；CAS 409 与 `force`；自动保存钩子写盘并递增 `writes`；关闭后不再写；同步盘识别；目录复原 |
 | `test/security.mjs` | 100 | F22–F27、F38–F43 | V1 越界条目读包即拒；V2 恶意 `fileName` 被收敛；V3 200 MB / 1026:1 在解压前拒绝；V4 目录外 400 且不建树；V5 非 id 400；V6 不回显路径；V7 `parts` 不符 500；V8 跨站 403；R1 未声明条目拒绝；R4 默认永不落原名；R6 restore 只覆盖已有、`memory=new` 才新建 |
 
-合计 **225 条**。
+合计 **260 条**。
 
 ### 审计验收脚本（未随仓库分发）
 
@@ -147,6 +148,11 @@ node test/smoke.mjs
 node test/open.mjs
 node test/conflict.mjs
 node test/security.mjs
+node test/pathkey.mjs
+# 或一把梭：260 条全绿
+for f in client dialog smoke open conflict security pathkey; do node test/$f.mjs || exit 1; done
 ```
+
+`pathkey.mjs` 只依赖 `index.js` 里的两个纯函数，不建夹具、不写盘，跑起来几十毫秒——**每次升级 DSH 后第一件事就是跑它**，比读官方源码快。
 
 跑完看末尾是否都打印「自检通过」，以及 `test/` 自己报的临时目录清理行。**不需要**再去核对 `~/.dsh` 里的会话/记忆目录数——夹具从不碰真实 `~/.dsh`（早期版本会碰，那正是"换台机器必红"的原因）。

@@ -5,6 +5,11 @@
 
 ## [Unreleased]
 
+### 修复
+
+- 会话目录名与 DSH 官方实现有三处不一致，某些工作区会定位到不存在的目录（表现为「本机没有这个会话」，或换机打开后找不到原会话）：①连续分隔符以前被折算并**剪掉尾部** `-`，官方只折叠不剪——`C:\x\` 的官方键是 `--C-x---`；②前导 `-` 剥完若为空，官方兜底 `root`（根路径 `/` → `--root--`），以前得到 `----`；③转义以前按 Unicode 码点，官方按 UTF-16 码元——emoji 的 `😀` 官方是 `~D83D~DE00`，以前写成 `~1F600`。现在两个函数与官方逐字对齐，并新增 `test/pathkey.mjs`（35 条）把每一种边界钉住，防止下次升级 DSH 时再漂。
+- `test/fixture.mjs` 不再自己抄一份 `projectKey`，改为直接 `import` 实现（`const projectKeyOf = projectKey`）。以前两份同源但独立演化，实现一改夹具就静默找错目录。
+
 ### 变更
 
 - 发版从「手工几步」变成「推 tag 就完事」：`publish.yml` 现在由 `push tag v*` 触发，一条链路做完 校验 tag↔版本一致 → `npm publish --provenance` → 轮询 registry → 从 registry 取回 tarball 核对 sha1 → **用 `CHANGELOG.md` 自动建 GitHub Release** → 把 tarball 传成 Release 附件。以前发一版要手工建 Release、手工写发布说明、手工上传附件，三步都靠人记。
