@@ -5,10 +5,13 @@
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-28
+
 ### 修复
 
 - 会话目录名与 DSH 官方实现有三处不一致，某些工作区会定位到不存在的目录（表现为「本机没有这个会话」，或换机打开后找不到原会话）：①连续分隔符以前被折算并**剪掉尾部** `-`，官方只折叠不剪——`C:\x\` 的官方键是 `--C-x---`；②前导 `-` 剥完若为空，官方兜底 `root`（根路径 `/` → `--root--`），以前得到 `----`；③转义以前按 Unicode 码点，官方按 UTF-16 码元——emoji 的 `😀` 官方是 `~D83D~DE00`，以前写成 `~1F600`。现在两个函数与官方逐字对齐，并新增 `test/pathkey.mjs`（35 条）把每一种边界钉住，防止下次升级 DSH 时再漂。
 - `test/fixture.mjs` 不再自己抄一份 `projectKey`，改为直接 `import` 实现（`const projectKeyOf = projectKey`）。以前两份同源但独立演化，实现一改夹具就静默找错目录。
+- 发布流水线取回 tarball 时不再被 npm registry 的传播延迟打成 failure：该步骤改为自己轮询 registry（30 次 × 10 秒），等不到只告警并跳过上传、不判失败；下载改用 `--retry-all-errors`。这是 v0.2.1 那次「包已经发出去了，但 Release 附件没传成」的根因修复——当时只有 `curl -f --retry 3`，而 `--retry` 不重试 404。
 
 ### 变更
 
@@ -21,7 +24,7 @@
 ### 修复
 
 - 「打开记忆目录」按钮以前点了没反应：它调的是 `host.uiWorkspace.openPath`，而 DSH 的 `uiWorkspace` 服务根本没有这个方法（只有 `openSession` / `pickDirectory` / `listDirectory` 等 10 个），`typeof … === 'function'` 判断恒假 → 静默什么都不做。现在改走 Session Remote 的 `remote.session.openWorkspacePath({ path, action: 'reveal' })`，并在 `inject` 里声明 `remote` / `remote.session` 两个服务依赖。路径由 Host 侧 `verifyDesktopPath` 校验，不认的路径仍然只显示而不弹错。
-- 发版流水线在 v0.2.1 首次发布时把整个 job 打成 failure：`npm publish` 成功返回后 registry 还没能读到新版本（npm 自己就提示「being processed and may take a few minutes」），紧接着的「取回已发布的 tarball」拿到 404，`curl -f` 退 22。包其实已经发出去，只有 Release 附件没传成。现在该步骤自己轮询 registry（30 次 × 10 秒），等不到就只告警并跳过上传、不判失败；下载改用 `--retry-all-errors`。
+- 发版流水线在 v0.2.1 首次发布时把整个 job 打成 failure：`npm publish` 成功返回后 registry 还没能读到新版本（npm 自己就提示「being processed and may take a few minutes」），紧接着的「取回已发布的 tarball」拿到 404，`curl -f` 退 22。包其实已经发出去，只有 Release 附件没传成（当日手工补传）。**这条修复没赶上 v0.2.1 的包，随 0.2.2 发布**——见 0.2.2「修复」。
 
 ### 变更
 
