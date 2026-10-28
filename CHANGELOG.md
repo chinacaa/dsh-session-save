@@ -5,6 +5,12 @@
 
 ## [Unreleased]
 
+### 变更
+
+- 发版从「手工几步」变成「推 tag 就完事」：`publish.yml` 现在由 `push tag v*` 触发，一条链路做完 校验 tag↔版本一致 → `npm publish --provenance` → 轮询 registry → 从 registry 取回 tarball 核对 sha1 → **用 `CHANGELOG.md` 自动建 GitHub Release** → 把 tarball 传成 Release 附件。以前发一版要手工建 Release、手工写发布说明、手工上传附件，三步都靠人记。
+- 新增 `scripts/release-notes.mjs`：按版本号从 `CHANGELOG.md` 摘出对应小节当 Release 正文。发布说明从此只有一个真源，不再手写第二份。
+- 流水线改为**幂等**，同一个 tag 重跑不会红：版本已在 npm 上就跳过 publish（registry 会硬拒重复版本号），Release 已存在就跳过创建，附件用 `--clobber` 覆盖。上次「附件没传成」这类事故，重跑一次就补上，不用再手工 `gh release upload`。
+
 ## [0.2.1] - 2026-10-28
 
 ### 修复

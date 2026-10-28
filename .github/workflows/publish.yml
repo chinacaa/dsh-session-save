@@ -1,14 +1,24 @@
 name: Publish to npm
 
-# 用 npm Trusted Publishing（OIDC）发布：不需要 NPM_TOKEN，也不需要一次性验证码。
-# npm 侧要有一条指向本文件的 trusted publisher 配置：
+# 一条命令走完发版：推 tag → 发布到 npm → 建 GitHub Release → 把 npm 实际收下的
+# tarball 传成 Release 附件。用 npm Trusted Publishing（OIDC），不需要 NPM_TOKEN，
+# 也不需要一次性验证码。npm 侧要有一条指向本文件、本分支的 trusted publisher 配置：
 #   npm trust github dsh-session-save --file publish.yml --repo chinacaa/dsh-session-save --allow-publish
-# 配好之后，手动触发本工作流或发布 Release 即可发布，并自动附带 provenance。
+#
+# 三个入口，做的是同一件事：
+#   push tag v*      —— 主路径。`git push origin v1.2.3` 之后全自动。
+#   release published —— 有人在网页上手建 Release 时照旧能发（tag 已存在、没推过 tag 的情况）。
+#   workflow_dispatch —— 手动兜底（可 dry_run 只打包）。
+# 由本工作流自己建的 Release 用的是 github.token，而 GitHub 不会因为 github.token 产生的
+# 事件再触发工作流，所以「推 tag 建 Release」不会递归跑出第二次发布。
+#
+# 幂等：每一步都先问「这件事是不是已经做过了」。同一个 tag 重跑不会因为
+# 「版本已发布过」「Release 已存在」变红——重跑只补缺的那一块（比如上次附件没传上）。
 #
 # 本工作流**只负责发布**，不跑测试。测试要真跑起来得拉起 Windows PowerShell + WinForms
 # 对话框、要写临时数据根，属于「本机发布前动作」而不是「发布链路的确定性步骤」；发布链路
-# 只保留一条命令、结果确定的路径。测试回归在本机手动跑：
-#   node test/client.mjs && node test/smoke.mjs && node test/open.mjs \
+# 只保留结果确定的路径。测试回归在本机手动跑：
+#   node test/client.mjs && node test/smoke.mjs && node test/open.mjs \\
 #     && node test/conflict.mjs && node test/dialog.mjs && node test/security.mjs
 # 客户端词表按 navigator.language 分流，中英两条都要跑：
 #   DSH_TEST_LOCALE=zh-CN node test/client.mjs && DSH_TEST_LOCALE=en-US node test/client.mjs
@@ -18,17 +28,19 @@ name: Publish to npm
 # macOS / Linux 的对话框实现在本机另有验证。
 
 on:
+  push:
+    tags: ['v*']
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       dry_run:
-        description: '只打包不发布（npm publish --dry-run）'
+        description: '只打包不发布（npm pack --dry-run），也不碰 Release'
         type: boolean
         default: false
-  release:
-    types: [published]
 
 permissions:
-  contents: write # 发布成功后往 Release 附件上传 tarball
+  contents: write # 建 Release + 上传附件
   id-token: write # 换 OIDC token 用，Trusted Publishing 的必要条件
 
 concurrency:
@@ -52,6 +64,30 @@ jobs:
           # 依赖“恰好没这个字段”这种偶然——写死关掉更稳。
           package-manager-cache: false
 
+      # tag 与 package.json 版本必须一致，否则会出现「npm 上是 1.2.3、Release 叫 v1.2.4」
+      # 这种事后很难对的错位。这里在发布之前就拦掉，不留到发出去之后才发现。
+      - name: 解析版本并校验 tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER=$(node -p "require('./package.json').version")
+          case "${{ github.event_name }}" in
+            push)    RAW="${{ github.ref_name }}" ;;
+            release) RAW="${{ github.event.release.tag_name }}" ;;
+            *)       RAW="" ;;
+          esac
+          if [ -n "$RAW" ]; then
+            if [ "${RAW#v}" != "$VER" ]; then
+              echo "::error::tag $RAW 与 package.json 的版本 $VER 不一致（期望 v$VER）"
+              exit 1
+            fi
+            echo "tag 校验通过：$RAW ↔ $VER"
+          else
+            echo "手动触发，不带 tag；将按 package.json 的版本发 $VER"
+          fi
+          echo "VER=$VER" >> "$GITHUB_ENV"
+          echo "TAG=v$VER" >> "$GITHUB_ENV"
+
       - name: 确认 npm 版本支持 OIDC
         shell: bash
         run: |
@@ -63,10 +99,24 @@ jobs:
         shell: bash
         run: node --check index.js client.js
 
+      # 幂等第一道：这个版本已经在 npm 上了就别再 publish（registry 会硬拒
+      # "cannot publish over the previously published versions"，把重跑打成红）。
+      # 重跑的价值在补 Release 附件，不在重发包。
+      - name: 该版本是否已在 npm 上
+        shell: bash
+        run: |
+          set -euo pipefail
+          NAME=$(node -p "require('./package.json').name")
+          if curl -fsS --max-time 20 "https://registry.npmjs.org/$NAME/$VER" >/dev/null 2>&1; then
+            echo "::notice::$NAME@$VER 已在 registry 上，跳过 npm publish，只补 Release"
+            echo "SKIP_PUBLISH=1" >> "$GITHUB_ENV"
+          else
+            echo "$NAME@$VER 还没发布，继续"
+          fi
+
       # 用 npm pack 而不是 npm publish --dry-run：后者会真的去 registry 查重，
       # 版本一旦发过就报 `You cannot publish over the previously published
-      # versions` 并让整条流水线变红（run 40493108185 就是这么红的）。dry run
-      # 要验的是「这个版本能打出什么包」，不该依赖 registry 状态。
+      # versions` 并让整条流水线变红（run 40493108185 就是这么红的）。
       - name: 打包预览（dry run）
         if: ${{ inputs.dry_run }}
         shell: bash
@@ -75,7 +125,7 @@ jobs:
           npm pkg get name version
 
       - name: 发布
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && env.SKIP_PUBLISH != '1' }}
         shell: bash
         run: npm publish --provenance --access public
 
@@ -92,7 +142,6 @@ jobs:
         run: |
           set -euo pipefail
           NAME=$(node -p "require('./package.json').name")
-          VER=$(node -p "require('./package.json').version")
 
           # npm publish 返回成功 ≠ registry 已能读到这个版本：它的回执里就写着
           # "Your package is being processed and may take a few minutes to become
@@ -132,14 +181,41 @@ jobs:
           fi
           echo "TARBALL=$NAME-$VER.tgz" >> "$GITHUB_ENV"
 
-      - name: 上传 tarball 到 Release
-        # 只在由 Release 触发时传（workflow_dispatch 手跑没有 Release 可挂）
-        if: ${{ !inputs.dry_run && github.event_name == 'release' && env.SKIP_UPLOAD != '1' }}
+      # 发版说明只有 CHANGELOG 一个真源：按版本号把对应小节摘出来当 Release 正文。
+      # 以前是手写一份 notes 再粘进去，同一份内容维护两遍，发几次就一定漂。
+      # 只有远端真有这个 tag 才建 Release（--verify-tag 不认本地 tag），
+      # 手动 dispatch 时若没推 tag 就跳过、只发 npm。
+      - name: 建 Release（已存在则跳过）
+        if: ${{ !inputs.dry_run }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release upload "${{ github.event.release.tag_name }}" "$TARBALL" --clobber
-          gh release view "${{ github.event.release.tag_name }}" --json assets \
+          if ! git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::warning::远端没有 tag $TAG，跳过建 Release（先 git push origin $TAG 再重跑即可补上）"
+            echo "SKIP_UPLOAD=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，跳过创建"
+            exit 0
+          fi
+          node scripts/release-notes.mjs "$VER" \
+            --fallback "本版变更见 [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/CHANGELOG.md)。" \
+            > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --verify-tag
+
+      - name: 上传 tarball 到 Release
+        if: ${{ !inputs.dry_run && env.SKIP_UPLOAD != '1' && env.TARBALL != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" "$TARBALL" --clobber
+          gh release view "$TAG" --json assets \
             --jq '.assets[] | "\(.name)  \(.size) bytes  \(.state)"'

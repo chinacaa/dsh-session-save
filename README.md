@@ -235,6 +235,17 @@ node scripts/bump.mjs minor     # 新功能
 node scripts/bump.mjs major     # 破坏性
 ```
 
+改完提交、打 tag、推 tag，发布就全自动了——打 tag 之后 `publish.yml` 会做完整条链路：
+
+```bash
+git commit -am "发布 vX" && git tag -a vX -m "vX"
+git push origin main && git push origin vX
+```
+
+发布到 npm（带 provenance）→ 从 registry 取回那份 tarball 核对 sha1 → 用 `CHANGELOG.md` 里这一版的小节自动建 Release → 把 tarball 传成 Release 附件。**不用手工建 Release，也不用另写一份发布说明**：发版说明的真源只有 `CHANGELOG.md`，`node scripts/release-notes.mjs <版本>` 负责把它摘出来。
+
+重跑同一个 tag 是安全的：版本已在 npm 上就跳过发布、Release 已存在就跳过创建、附件直接覆盖。所以「上次附件没传上」这种事故，重跑一次就补齐了。
+
 ## 开发
 
 零运行时依赖，纯 ESM，只用 `node:` 内置模块；客户端只依赖 `react`。

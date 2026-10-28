@@ -40,6 +40,7 @@ dialog/save-dialog.ps1  原生「保存会话」对话框（WinForms SaveFileDia
 dialog/open-dialog.ps1  原生「打开会话工程」对话框（WinForms OpenFileDialog）
 marketplace/        上架条目（提 PR 到 awesome-dsh-plugin 用）
 scripts/bump.mjs    改版本（package.json + CHANGELOG）
+scripts/release-notes.mjs 从 CHANGELOG 摘某版本正文当 Release 说明
 scripts/set-repo.mjs 把 OWNER 占位换成真实 GitHub 名字
 test/fixture.mjs    临时 DSH_HOME 夹具（六套测试共用）
 test/*.mjs          六套自检（见「测试」）
@@ -140,8 +141,15 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
 
 - 版本真源是 `package.json` 的 `version`；`0.x` 阶段 MINOR 可带破坏性改动，`PATCH` 只修 bug；四条路由出入参 + 五个插槽座位 + 状态文件字段形状冻结时才升 `1.0.0`。
 - 不随包版本走的三个东西：`dshproj/1`（`FORMAT`）、`dshproj-lock/1`（`LOCK_FORMAT`）、宿主兼容范围（`engines.dsh` 与 peer cordis）。
-- 发版：`node scripts/bump.mjs minor` → `git commit -m "发布 vX"` → `git tag -a vX -m "vX"` → `git push --follow-tags`。
-- **CI 只发布、不跑测试**。`.github/workflows/publish.yml` 里只有：npm 版本自检（OIDC 需 `>= 11.5.1`）、`node --check`、可选 `--dry-run`、`npm publish --provenance --access public`。测试是发布前的**本机**动作（见「改完之后」）。别把 `node test/*.mjs` 塞回 workflow：发布链路要的是"一条命令、结果确定"，而 `dialog.mjs` 要真拉起 Windows PowerShell + WinForms、其余套件要建临时数据根，都属于本机动作；这也正是当初 CI 红过一轮后定的边界。
+- 发版三步，**推 tag 就够了**：
+  1. `node scripts/bump.mjs minor`（写 `package.json` + 把 `CHANGELOG.md` 的 `[Unreleased]` 顶成 `## [x.y.z]`）
+  2. `git commit -am "发布 vX"` → `git tag -a vX -m "vX"`
+  3. `git push origin main && git push origin vX`
+  推 tag 会触发 `publish.yml` 全套：校验 tag↔版本一致 → `npm publish --provenance` → 轮询 registry → 从 registry 取回 tarball 核对 sha1 → **用 `scripts/release-notes.mjs` 从 CHANGELOG 摘出正文建 Release** → 把 tarball 传成 Release 附件。不用手工建 Release，也不用写 release notes。
+- 重跑不会红：每个 step 先问「这件事做过没」。版本已在 registry 上就跳过 publish（registry 会硬拒重复版本号），Release 已存在就跳过创建，附件用 `--clobber` 覆盖。所以「上次附件没传成」这种事故，重跑同一个 tag 就补上了。
+- 三个入口做同一件事：`push tag v*`（主路径）、`release: published`（有人在网页上手建 Release）、`workflow_dispatch`（手动兜底，可 `dry_run` 只打包）。自己建的 Release 用 `github.token`，GitHub 不会因 `github.token` 的事件再触发工作流，不会递归发两次。
+- **CI 只发布、不跑测试**。测试是发布前的**本机**动作（见「改完之后」）。别把 `node test/*.mjs` 塞回 workflow：发布链路要的是"结果确定"，而 `dialog.mjs` 要真拉起 Windows PowerShell + WinForms、其余套件要建临时数据根，都属于本机动作；这也正是当初 CI 红过一轮后定的边界。
+- 发版说明**只有 `CHANGELOG.md` 一个真源**。`node scripts/release-notes.mjs <ver>` 按版本号摘出对应小节；找不到时带 `--fallback "..."` 就降级输出提示、不带就 exit 1。别再手写一份 notes 粘进 `gh release create --notes`——同一份内容维护两遍必然漂。
 - 上架：`marketplace/chinacaa__dsh-session-save.yml` 复制成 awesome-dsh-plugin 仓库的 `data/plugins/<owner>__<repo>.yml` 提 PR；硬门槛是 `dsh.bundle`（已满足）、仓库满 1 天、topic `dsh-plugin`、描述与代码对得上。
 
 ## 文档怎么改

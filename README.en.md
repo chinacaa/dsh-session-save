@@ -215,6 +215,17 @@ node scripts/bump.mjs minor     # feature
 node scripts/bump.mjs major     # breaking
 ```
 
+Commit, tag, push the tag — publishing takes care of itself. `publish.yml` runs the whole chain:
+
+```bash
+git commit -am "release vX" && git tag -a vX -m "vX"
+git push origin main && git push origin vX
+```
+
+Publish to npm (with provenance) → pull that exact tarball back from the registry and verify its sha1 → create the GitHub Release from this version's `CHANGELOG.md` section → attach the tarball to the Release. **No hand-written release notes and no manual Release step**: `CHANGELOG.md` is the single source, and `node scripts/release-notes.mjs <version>` extracts the right section for you.
+
+Re-running the same tag is safe: if the version is already on npm the publish is skipped, an existing Release is left alone, and the attachment is overwritten. So an earlier run that failed to attach the tarball is fixed by simply re-running.
+
 ## Development
 
 Zero runtime dependencies, plain ESM, `node:` builtins only; the client half only needs `react`.
