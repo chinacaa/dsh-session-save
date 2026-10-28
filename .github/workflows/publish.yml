@@ -93,11 +93,36 @@ jobs:
           set -euo pipefail
           NAME=$(node -p "require('./package.json').name")
           VER=$(node -p "require('./package.json').version")
-          META=$(curl -fsS --retry 3 --retry-delay 5 "https://registry.npmjs.org/$NAME/$VER")
+
+          # npm publish 返回成功 ≠ registry 已能读到这个版本：它的回执里就写着
+          # "Your package is being processed and may take a few minutes to become
+          # available"，而这一步在上一步结束后**立即**执行。v0.2.1 首次发布时
+          # 就撞上了：publish 02:40:06 结束，02:40:08 请求 /$NAME/$VER 拿到 404，
+          # `curl -f` 直接退 22 把整个 job 打成 failure（包其实已发出去，只是附件
+          # 没传成）。所以这里必须自己轮询等 CDN 灌好，不能只靠 --retry ——
+          # curl 的 --retry 只重试"连接/5xx"，404 是确定的 4xx，它不会重试。
+          META=""
+          for attempt in $(seq 1 30); do
+            if META=$(curl -fsS --max-time 20 "https://registry.npmjs.org/$NAME/$VER" 2>/dev/null); then
+              echo "registry 已就绪（第 $attempt 次尝试）"
+              break
+            fi
+            META=""
+            echo "registry 还没有 $NAME@$VER（第 $attempt/30 次），10 秒后重试"
+            sleep 10
+          done
+          if [ -z "$META" ]; then
+            # 已经等了 5 分钟还读不到，说明不是传播延迟而是真出了问题。
+            # 不当作失败：包已经发出去了，失败只会让整个发布标红、还要人工重跑。
+            echo "::warning::等了 5 分钟 registry 仍读不到 $NAME@$VER，跳过 Release 附件"
+            echo "SKIP_UPLOAD=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
           URL=$(printf '%s' "$META" | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).dist.tarball")
           WANT=$(printf '%s' "$META" | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).dist.shasum")
           echo "tarball: $URL"
-          curl -fsSL --retry 3 --retry-delay 5 -o "$NAME-$VER.tgz" "$URL"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$NAME-$VER.tgz" "$URL"
           GOT=$(node -e "console.log(require('crypto').createHash('sha1').update(require('fs').readFileSync(process.argv[1])).digest('hex'))" "$NAME-$VER.tgz")
           echo "期望 sha1 $WANT"
           echo "实际 sha1 $GOT"

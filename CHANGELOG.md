@@ -10,6 +10,7 @@
 ### 修复
 
 - 「打开记忆目录」按钮以前点了没反应：它调的是 `host.uiWorkspace.openPath`，而 DSH 的 `uiWorkspace` 服务根本没有这个方法（只有 `openSession` / `pickDirectory` / `listDirectory` 等 10 个），`typeof … === 'function'` 判断恒假 → 静默什么都不做。现在改走 Session Remote 的 `remote.session.openWorkspacePath({ path, action: 'reveal' })`，并在 `inject` 里声明 `remote` / `remote.session` 两个服务依赖。路径由 Host 侧 `verifyDesktopPath` 校验，不认的路径仍然只显示而不弹错。
+- 发版流水线在 v0.2.1 首次发布时把整个 job 打成 failure：`npm publish` 成功返回后 registry 还没能读到新版本（npm 自己就提示「being processed and may take a few minutes」），紧接着的「取回已发布的 tarball」拿到 404，`curl -f` 退 22。包其实已经发出去，只有 Release 附件没传成。现在该步骤自己轮询 registry（30 次 × 10 秒），等不到就只告警并跳过上传、不判失败；下载改用 `--retry-all-errors`。
 
 ### 变更
 
