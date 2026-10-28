@@ -5,7 +5,7 @@
 适配时从上到下过一遍，任何一条对不上就是必须改的点。
 
 - 核对基线：DSH **0.2.1-rc.4**（`C:\Users\aa\AppData\Roaming\dsh-tauri\dependencies\dsh\package.json`）、`@deepseek-ai/cordis` **4.0.5**、会话格式 `SESSION_FORMAT_VERSION = 4`。
-- 上一次全面核对是 rc.3；rc.3 → rc.4 的差异见文末「§6 版本差异账」。
+- 上一次全面核对是 rc.3；rc.3 → rc.4 与 rc.2（npm `latest`）→ rc.4 两轮差异、以及「为什么不需要旧版兼容 patch」，见文末「§6 版本差异账」。
 - 下文 `index.js:NNN` / `client.js:NNN` 均指本仓库同行号；行号会漂，**以函数名和代码形状为准**。
 - 取证方式分三类，每条都标注了：**Inspect 实测**（本机运行中的 DSH 通过 `cordis_inspect_query` 直读）、**源码核对**（读 `node_modules/@deepseek-ai/*` 的 `lib/`）、**运行时实测**（跑本仓库测试或 curl 本机 HTTP 接口）。
 
@@ -310,7 +310,9 @@ Remote 类方法（如 `openWorkspacePath`）**不在** Service 目录里，Insp
 
 ---
 
-## 6. 版本差异账（rc.3 → rc.4）
+## 6. 版本差异账（0.2.0 → rc.4）
+
+### 6.1 rc.3 → rc.4
 
 rc.3 的核对结论大部分仍然成立；rc.4 逐条复查后**只有目录名派生这一处真偏差**，其余全是「名字变了但行为没变」。
 
@@ -335,3 +337,31 @@ node test/client.mjs     # 插槽 / inject / 前端接线没断
 ```
 
 其余五套（`dialog` `smoke` `open` `conflict` `security`）覆盖的是插件自己的落盘与安全逻辑，与 DSH 版本弱相关，但**改动后必须全跑**（合计 219 条；加上上面两条命令的 41 条 = 全部 260 条）。
+
+### 6.2 rc.2 → rc.4（npm `latest` 与当前运行版之间的对照）
+
+npm 上 `@deepseek-ai/dsh` 的 `dist-tags`：`latest = 0.2.1-rc.2`（`alpha = 0.2.2-alpha.2`）。本机跑的是 `0.2.1-rc.4`。下面这轮把**两个版本对同一批包逐字 diff**，结论是：**插件用到的接口一个都没变。**
+
+核对方式：`npm pack` 两版 → 解包到 `/tmp/pkhist/cmp-dsh-<pkg>-0.2.1-rc.{2,4}/` → `diff -rq` 找出差异文件 → 再对差异文件按插件关心的符号 `grep`。
+
+| 包 | 文件级差异 | 插件关心的符号 |
+|---|---|---|
+| `dsh-session-persistence-jsonl` | **只有 `package.json`** | `encodeSegment` / `projectKey` / `projectDir` 三段 `diff` **完全一致** |
+| `dsh-session` | **只有 `package.json`** | `step/end`、`turn/end` 各 5 处，计数一致，签名未变 |
+| `dsh-api-remotes` | `lib/client.js` 130 行 + `package.json` | 差异**全是 telemetry event schema**（新增 `more_menu_item_click` / `agent_preset_switch` / `code_work_view_toggle`，新增字段 `is_new_session` / `agent_preset` / `timestamp` / `position`）。`grep 'openWorkspacePath\|fetch\|register\|workspace'` **零命中** |
+| `dsh-client-ui-conversation` | 14 个文件：3 个 README + 10 个 `.d.ts` + `lib/client.js`（305 行） | `grep 'header.utilities\|hero.options'` 在 `lib/client.js` **零命中** → 两个插槽声明块逐字未变（rc.2 在 `:19859`、rc.4 在 `:20062`，都是 `kind:"list", scope:"session"`） |
+
+**唯一真实的版本断崖在 0.2.0 系**：`@deepseek-ai/dsh-client-ui-conversation@0.2.0-rc.1` 里 `conversation.hero.options` 计数为 **0**（不存在），`conversation.session.header.utilities` 为 2；从 `0.2.1-rc.1` 起 hero 变成 2。也就是说 **hero 座位是 0.2.1 才有的**。
+
+但这条断崖不需要兼容代码：`ctx.slots.inject(key, cb)` 的契约是「声明已存在则同步执行回调，否则等下一次声明时才执行」——slot 不存在时插件那个 hero 按钮**静默不出现，不抛错**（见 §2.2）。而 `engines.dsh = ">=0.2.1-rc.1"` 已经把 0.2.0 系挡在门外（判定用 `semver.satisfies(..., { includePrerelease: true })`，见 `dsh-app-boot/lib/index.js:276-283`：`>=0.2.1-rc.1` 会 BLOCK `0.2.1-alpha.5` 及更早、放行 `rc.1`/`rc.2`/`rc.3`/`rc.4`/`0.2.2-alpha.*`/`0.3.x`）。
+
+### 6.3 为什么没有「旧版兼容 patch」
+
+`cordis.patch.yml` 的 patch 层**只能做两件事**（`dsh-app-boot/lib/index.js:61-110` `applyEntryPatches`）：`insert` 往 group 塞 entry，或按 `id` 覆盖已有 entry 的字段（`config` / `name` / `disabled`）。它**拿不到 DSH 版本号**：
+
+- `!!js` 表达式在 `@deepseek-ai/cordis-plugin-loader/lib/index.js:230-237` 里求值，作用域是 `with (ctx)`——只能取 **Cordis 服务**，取不到 `package.json` 的版本字符串。
+- DSH 也**不提供版本服务**：`grep -rn "provide(['\"]version\|dshVersion"` 在 `dsh-app-boot/lib/index.js` 与 `dsh-shell*/lib/*.js` 零命中；`ProfileContext` 类型字段只有 `name / packageManager? / dir / patchPath / installAnchor / cwd / home / startedBundles / overlays / telemetryDisabledEnv`。
+
+所以 patch 层无法「按版本号分流」。真要给某个旧版留后门，只有两条路：主干暴露一个 `config` 开关、由 patch 覆盖 `config` 打开（客户端 `apply(ctx, config)` 确实收 config，`dsh-cordis-client-runner/lib/client.js:627`）；或用 `disabled: !!js ...` 按**某个服务在不在**做能力探测。
+
+当前**没有任何需要这样做的项**：rc.2 ↔ rc.4 零接口差异，0.2.0 系已被 `engines.dsh` 挡住，且 hero 座位缺失本来就是优雅降级。所以 `cordis.patch.yml` 保持只有那一条 `insert`。

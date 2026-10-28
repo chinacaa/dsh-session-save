@@ -154,6 +154,8 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
 
 - 版本真源是 `package.json` 的 `version`；`0.x` 阶段 MINOR 可带破坏性改动，`PATCH` 只修 bug；四条路由出入参 + 五个插槽座位 + 状态文件字段形状冻结时才升 `1.0.0`。
 - 不随包版本走的三个东西：`dshproj/1`（`FORMAT`）、`dshproj-lock/1`（`LOCK_FORMAT`）、宿主兼容范围（`engines.dsh` 与 peer cordis）。
+- `engines.dsh` 是**真拦截**，不是给人看的：`dsh-app-boot` 用 `semver.satisfies(runtime, range, { includePrerelease: true })` 判定（`lib/index.js:276-283`），预发布版**参与**比较。所以 `>=0.2.1-rc.1` 会挡住 `0.2.1-alpha.5` 及更早，放行 `rc.1`/`rc.2`/`rc.3`/`rc.4`/`0.2.2-alpha.*`。一旦写了 `engines.dsh`，`peerDependencies` 里的 `@deepseek-ai/dsh*` 就**完全不参与判定**（`unmetRequirements` 只走一条分支）。
+- **别在主干里写按 DSH 版本分流的分支，也别指望 patch 层能按版本分流**。patch（`cordis.patch.yml`）只能 `insert` 或按 `id` 覆盖字段；`!!js` 表达式的作用域是 `with (ctx)`，只拿得到 Cordis 服务，拿不到版本号，DSH 也不提供版本服务（`ProfileContext` 无 `version`）。真要给旧版留后门只有两条路：主干暴露 `config` 开关由 patch 覆盖，或用 `disabled: !!js ...` 做**能力探测**（某服务在不在）。当前**没有任何需要这么做的项**——理由与逐包对照见 `docs/DSH-API-SURFACE.md` §6.2/§6.3。
 - 发版三步，**推 tag 就够了**：
   1. `node scripts/bump.mjs minor`（写 `package.json` + 把 `CHANGELOG.md` 的 `[Unreleased]` 顶成 `## [x.y.z]`）
   2. `git commit -am "发布 vX"` → `git tag -a vX -m "vX"`
