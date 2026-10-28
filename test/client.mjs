@@ -111,7 +111,21 @@ assert.equal(loaded.id, 'dsh-session-save', 'module id');
 
 const mod = loaded.module;
 assert.ok(mod && typeof mod.apply === 'function', 'apply 缺失');
-assert.deepEqual(mod.inject, ['slots', 'sessions', 'uiWorkspace'], 'inject 声明');
+assert.deepEqual(
+  mod.inject,
+  ['slots', 'sessions', 'uiWorkspace', 'remote', 'remote.session'],
+  'inject 声明',
+);
+
+// 「打开记忆目录」必须走 Session Remote 的 openWorkspacePath。
+// DSH 的 UiWorkspace 没有 openPath 方法（只有 openSession / openWorkspace /
+// forkSession / connectWorkspace / startSession / archiveSession /
+// unarchiveSession / pinSession / unpinSession / pickDirectory /
+// listDirectory / createDirectory），早先那行
+// `typeof host?.uiWorkspace?.openPath === 'function'` 恒为假，按钮点了没有反应。
+assert.equal(/uiWorkspace\s*\??\.\s*openPath/.test(source), false, '不得调用不存在的 uiWorkspace.openPath');
+assert.ok(source.includes('openWorkspacePath'), '打开目录应走 remote.session.openWorkspacePath');
+assert.ok(source.includes("action: 'reveal'"), '打开目录应用 reveal（交给文件管理器而非默认应用）');
 
 const registered = [];
 const injected = [];

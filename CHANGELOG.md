@@ -5,6 +5,14 @@
 
 ## [Unreleased]
 
+### 修复
+
+- 「打开记忆目录」按钮以前点了没反应：它调的是 `host.uiWorkspace.openPath`，而 DSH 的 `uiWorkspace` 服务根本没有这个方法（只有 `openSession` / `pickDirectory` / `listDirectory` 等 10 个），`typeof … === 'function'` 判断恒假 → 静默什么都不做。现在改走 Session Remote 的 `remote.session.openWorkspacePath({ path, action: 'reveal' })`，并在 `inject` 里声明 `remote` / `remote.session` 两个服务依赖。路径由 Host 侧 `verifyDesktopPath` 校验，不认的路径仍然只显示而不弹错。
+
+### 变更
+
+- 新增 `docs/DSH-API-SURFACE.md`：把插件用到的每一条 DSH 接口（包清单声明、Host 的 `connection` 与 `session/event`、客户端的 `slots` / `sessions` / `uiWorkspace` / `remote.session`、四条自建 HTTP 路由）连同契约签名、调用行号、失效后果、复查用的 Inspect 命令列成核对表，升级 DSH 时照着逐条过。
+
 ## [0.2.0] - 2026-10-26
 
 ### 新增

@@ -43,7 +43,8 @@ scripts/bump.mjs    改版本（package.json + CHANGELOG）
 scripts/set-repo.mjs 把 OWNER 占位换成真实 GitHub 名字
 test/fixture.mjs    临时 DSH_HOME 夹具（六套测试共用）
 test/*.mjs          六套自检（见「测试」）
-docs/TEST-MATRIX.md 功能面 → 测试覆盖矩阵（48 条 F 编号）
+docs/TEST-MATRIX.md 功能面 → 测试覆盖矩阵（49 条 F 编号）
+docs/DSH-API-SURFACE.md 用到的 DSH 接口清单（升级 DSH 时逐条核对）
 assets/             截图与方形图标（市场用）
 ```
 
@@ -101,7 +102,7 @@ New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\profiles\web\node_modul
 
 状态文件 `$DSH_HOME/storages/session-save.json`：`{ paths, lastDir, autosave, stamps, stale }`，按 `sessionId` 索引，形状变了要进 CHANGELOG 并考虑升 MINOR。
 
-**Client（`client.js`）** 用 `window.__ModuleLoader__.load({ id:'dsh-session-save', factory(require){...} })`，`exports.inject = ['slots','sessions','uiWorkspace']`，注册 5 项：
+**Client（`client.js`）** 用 `window.__ModuleLoader__.load({ id:'dsh-session-save', factory(require){...} })`，`exports.inject = ['slots','sessions','uiWorkspace','remote','remote.session']`（点路径表示「取子服务」，官方 `dsh-client-ui-open-in-app` 同写法），注册 5 项：
 
 ```
 conversation.session.header.utilities   session-open@39  session-save@40  session-autosave@41  session-save-as@42
@@ -153,13 +154,14 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
 | `AGENTS.md` | 协作者视角：红线、目录、命令、架构契约（两套 slug、`importPackage` 判定顺序、三重写保护）、测试怎么写、发版与上架、本文档分工 | 面向用户的教程式叙述、历史流水账、"当初为什么"的完整复盘 | 踩到"会静默坏掉"的坑（→ 补红线）、路由/目录/发版流程变了、测试套路变了 |
 | `CLAUDE.md` | 最短入口：一句话定位、开工命令、最容易犯的错、收工约定 | 重复 AGENTS.md 的架构与安全细节（只留指针） | AGENTS.md 红线增删时同步条目数；开工命令或收工标准变了 |
 | `docs/TEST-MATRIX.md` | F 编号 → 功能面 → 期望结果 → 由哪套测试的哪几条覆盖；怎么跑、什么算通过 | 用户教程、发版流程、安全论证的长篇说明 | **任何功能点或断言变化**。F 编号是 `test/*.mjs` 注释里引用的锚点，改一边必须改另一边 |
+| `docs/DSH-API-SURFACE.md` | 插件用到的**每一条** DSH 接口：契约签名、在哪一行用、失效后果、怎么复查（Inspect 命令）。这是「别复述代码」的**唯一例外**——它记的是**外部**契约（DSH 的，不是本仓库的），必须抄准签名 | 本仓库自己的实现细节、"当初为什么这么写"、DSH 的使用教程 | 每次升级 DSH 后逐条核对；插件新增/删除对 DSH 的调用点时必须同改 |
 | `CHANGELOG.md` | 用户能感知的变化，按「新增 / 修复 / 变更 / 安全」分组，中文 | 纯文档改动、纯重构、内部改名、开发过程 | 行为变了就加一条 `[Unreleased]`；发版时由 `bump.mjs` 收口，别手写版本号标题 |
 | `marketplace/*.yml` | 上架条目：名称、描述、分类、仓库地址、必需字段 | README 的长篇说明（描述控制在平台限制内） | 插件定位/分类/描述变了，或上游条目格式变更 |
 
 三条硬规矩：
 
 1. **别在文档里复述代码**。默认文件名规则的真源是 `index.js` 的 `suggestPath()`、上限常量在 `index.js` 顶部；文档只说结论和例子，不抄正则、不抄常量值。抄了就会在下次改代码时变成谎言。
-2. **数字必须当场能验**。文档里出现"11 条红线""225 条 ✅""F1–F48""≈1870 行"这类计数时，要能用一条命令复现（见「改完之后」）。改完顺手核一遍，别让读者去发现数字过期。
+2. **数字必须当场能验**。文档里出现"11 条红线""225 条 ✅""F1–F49""≈1870 行"这类计数时，要能用一条命令复现（见「改完之后」）。改完顺手核一遍，别让读者去发现数字过期。
 3. **中英必须同一次改完**。`README.md` 与 `README.en.md` 是同一份文档的两种语言：小标题顺序、表格列、示例文件名一一对应。只改一份等于给另一半读者发过期信息。
 
 还有两条不写在文档里的东西：进度和计划（放 issue / PR / 提交信息，不写进 README 的"路线图"）、本机路径与个人环境（`C:\Users\...`、profile 名、私有 registry）——后者写进文档等于把私有环境当契约。

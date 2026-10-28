@@ -1051,12 +1051,17 @@ window.__ModuleLoader__.load({
     function MemoryNotice({ payload, busy, onMerge, onDismiss }) {
       const written = Number(payload?.memoryWritten) || 0;
       const dir = typeof payload?.memoryDir === 'string' ? payload.memoryDir : '';
+      // 在文件管理器里定位这个目录。走 Session Remote 的 openWorkspacePath：
+      // uiWorkspace 没有 openPath 这个方法（只有 openSession/pickDirectory/
+      // listDirectory 等），以前那行判断恒假，按钮点了什么都不发生。
+      // reveal 归文件管理器，open 归默认应用 —— 目录只能 reveal。
       const openDir = () => {
-        try {
-          if (typeof host?.uiWorkspace?.openPath === 'function' && dir !== '') host.uiWorkspace.openPath(dir);
-        } catch {
-          /* 没有这个入口就只显示路径 */
-        }
+        if (dir === '') return;
+        const session = host?.remote?.session;
+        if (typeof session?.openWorkspacePath !== 'function') return;
+        session.openWorkspacePath({ path: dir, action: 'reveal' }).catch(() => {
+          /* Host 不认这个路径就只显示路径，不弹错 */
+        });
       };
       const link = (label, onClick) =>
         React.createElement(
@@ -1890,7 +1895,9 @@ window.__ModuleLoader__.load({
     }
 
     let host = null;
-    const inject = ['slots', 'sessions', 'uiWorkspace'];
+    // remote / remote.session 是点路径形式声明的服务依赖（Cordis 按路径取服务）。
+    // 少了它们 ctx.remote 是 undefined，"打开记忆目录"就只能静默失败。
+    const inject = ['slots', 'sessions', 'uiWorkspace', 'remote', 'remote.session'];
 
     function apply(ctx) {
       host = ctx;
