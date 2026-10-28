@@ -24,6 +24,7 @@
   <a href="https://dshfind.com/plugins/chinacaa/dsh-session-save"><img src="https://img.shields.io/badge/dshfind.com-%E2%9C%93-2ea44f" alt="dshfind"></a>
   <a href="https://deepseek1024.com/plugins/chinacaa/dsh-session-save"><img src="https://img.shields.io/badge/deepseek1024-%E2%9C%93-8b5cf6" alt="deepseek1024"></a>
   <a href="https://dsh.market/"><img src="https://img.shields.io/badge/dsh.market-%E2%9C%93-f59e0b" alt="dsh.market"></a>
+  <a href="https://awesome-dsh-plugin.com/p/chinacaa/dsh-session-save/"><img src="https://img.shields.io/badge/awesome--dsh--plugin-%E2%9C%93-0969da" alt="awesome-dsh-plugin"></a>
 </p>
 
 <p align="center">English · <a href="README.md">中文</a></p>
