@@ -4,7 +4,7 @@
 
 适配时从上到下过一遍，任何一条对不上就是必须改的点。
 
-- 核对基线：DSH **0.2.1-rc.2**（`C:\Users\aa\AppData\Roaming\dsh-tauri\dependencies\dsh\package.json`）、`@deepseek-ai/cordis` **4.0.5**、会话格式 `SESSION_FORMAT_VERSION = 4`。
+- 核对基线：DSH **0.2.1-rc.3**（`C:\Users\aa\AppData\Roaming\dsh-tauri\dependencies\dsh\package.json`）、`@deepseek-ai/cordis` **4.0.5**、会话格式 `SESSION_FORMAT_VERSION = 4`。
 - 下文 `index.js:NNN` / `client.js:NNN` 均指本仓库同行号；行号会漂，**以函数名和代码形状为准**。
 - 取证方式分三类，每条都标注了：**Inspect 实测**（本机运行中的 DSH 通过 `cordis_inspect_query` 直读）、**源码核对**（读 `node_modules/@deepseek-ai/*` 的 `lib/`）、**运行时实测**（跑本仓库测试或 curl 本机 HTTP 接口）。
 

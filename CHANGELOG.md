@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-28
+
 ### 修复
 
 - 「打开记忆目录」按钮以前点了没反应：它调的是 `host.uiWorkspace.openPath`，而 DSH 的 `uiWorkspace` 服务根本没有这个方法（只有 `openSession` / `pickDirectory` / `listDirectory` 等 10 个），`typeof … === 'function'` 判断恒假 → 静默什么都不做。现在改走 Session Remote 的 `remote.session.openWorkspacePath({ path, action: 'reveal' })`，并在 `inject` 里声明 `remote` / `remote.session` 两个服务依赖。路径由 Host 侧 `verifyDesktopPath` 校验，不认的路径仍然只显示而不弹错。
