@@ -436,7 +436,7 @@ function safeJoin(root, ...parts) {
 /* ───────────────────────── 记住的路径 ───────────────────────── */
 
 function readState() {
-  const empty = { paths: {}, lastDir: undefined, autosave: {}, stamps: {}, stale: {} };
+  const empty = { paths: {}, lastDir: undefined, autosave: {}, stamps: {}, stale: {}, missing: {} };
   try {
     const raw = JSON.parse(fs.readFileSync(stateFile(), 'utf8'));
     return {
@@ -445,6 +445,7 @@ function readState() {
       autosave: raw?.autosave && typeof raw.autosave === 'object' ? raw.autosave : {},
       stamps: raw?.stamps && typeof raw.stamps === 'object' ? raw.stamps : {},
       stale: raw?.stale && typeof raw.stale === 'object' ? raw.stale : {},
+      missing: raw?.missing && typeof raw.missing === 'object' ? raw.missing : {},
     };
   } catch {
     return empty;
@@ -499,9 +500,19 @@ export function staleOf(state, sessionId, target) {
   return { expected: stamp.sha256, actual: now.sha256, bytes: now.bytes, since: stamp.at };
 }
 
-/** 先写临时文件再改名：同步盘不会看到写了一半的包。 */
-export function writeAtomic(target, bytes) {
-  fs.mkdirSync(path.dirname(target), { recursive: true });
+/**
+ * 先写临时文件再改名：同步盘不会看到写了一半的包。
+ *
+ * `createDir: false` 时父目录必须已经存在，不存在就抛错。
+ * 工程包的写入必须用这个模式：`mkdirSync(recursive)` 会在原目录被删掉/改名/
+ * 磁盘没挂上时把整条目录树重新造出来，然后安静地写一个崭新的包 ——
+ * 用户以为在更新原来那份，实际多出一份谁也找不到的孤儿文件。
+ */
+export function writeAtomic(target, bytes, options = {}) {
+  const createDir = options.createDir !== false;
+  const dir = path.dirname(target);
+  if (createDir) fs.mkdirSync(dir, { recursive: true });
+  else if (!fs.existsSync(dir)) throw new Error(`目标目录不存在：${dir}`);
   const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
   fs.writeFileSync(tmp, bytes);
   try {
@@ -540,6 +551,7 @@ function rememberSource(state, id, sourcePath) {
     state.stamps[id] = { path: sourcePath, sha256: stamp.sha256, at: new Date().toISOString() };
   }
   delete state.stale[id];
+  if (state.missing !== undefined && typeof state.missing === 'object') delete state.missing[id];
   return state;
 }
 
@@ -1407,6 +1419,17 @@ async function autosaveOnce(sessionId) {
     const blocked = lockBlocks(existingLock);
     if (blocked !== undefined) { return; }
 
+    // 记住的位置上文件已经没了（被删、被移走、磁盘没挂上）→ 停掉自动保存并记下来。
+    // 绝不能让它在这个位置重新造一份：用户下次打开的是自己以为还在的旧包，
+    // 而自动保存已经悄悄另起了一个新文件。
+    if (!fs.existsSync(target)) {
+      delete state.autosave[sessionId];
+      state.missing = state.missing && typeof state.missing === 'object' ? state.missing : {};
+      state.missing[sessionId] = { path: target, detectedAt: new Date().toISOString() };
+      writeState(state);
+      return;
+    }
+
     // 文件已被别处改过 → 停掉自动保存，别把别人的版本盖掉
     const stale = staleOf(state, sessionId, target);
     if (stale !== undefined) {
@@ -1426,14 +1449,30 @@ async function autosaveOnce(sessionId) {
     // 只有用户主动要（Alt 点击 / ?memory=1）才把工作区记忆一起打包。
     const out = buildPackage(sessionFile, buf, header, readStats(buf), lock, { includeMemory: false });
     withSidecarLock(target, () => {
-      writeAtomic(target, out.zip);
+      writeAtomic(target, out.zip, { createDir: false });
     });
     state.stamps = state.stamps && typeof state.stamps === 'object' ? state.stamps : {};
     state.stamps[sessionId] = { path: target, sha256: cryptoHash(out.zip), at: new Date().toISOString() };
     if (state.stale !== undefined && typeof state.stale === 'object') delete state.stale[sessionId];
+    if (state.missing !== undefined && typeof state.missing === 'object') delete state.missing[sessionId];
     writeState(state);
-  } catch {
-    /* 自动保存失败不打扰用户，下一次 step 会重试 */
+  } catch (error) {
+    // 目标目录在检查之后消失了（U 盘拔出、网络盘掉线）：不能只吞掉，
+    // 否则每一步都失败一次、用户永远等不到那份自动保存，也不知道为什么。
+    if (error?.code === 'ENOENT' || String(error?.message ?? '').includes('目标目录不存在')) {
+      try {
+        const fresh = readState();
+        if (fresh.autosave?.[sessionId] === true) {
+          delete fresh.autosave[sessionId];
+          fresh.missing = fresh.missing && typeof fresh.missing === 'object' ? fresh.missing : {};
+          fresh.missing[sessionId] = { path: target, detectedAt: new Date().toISOString() };
+          writeState(fresh);
+        }
+      } catch {
+        /* 状态写不进去就算了，反正不会静默造文件 */
+      }
+    }
+    /* 其余自动保存失败不打扰用户，下一次 step 会重试 */
   } finally {
     autosaveBusy.delete(sessionId);
   }
@@ -1473,6 +1512,7 @@ async function handleAutosave(request) {
       path: state.paths[sessionId],
       cloud: cloudMarkOf(state.paths[sessionId]),
       stale: state.stale?.[sessionId],
+      missing: state.missing?.[sessionId],
     });
   }
 
@@ -1624,6 +1664,8 @@ async function handleSave(request) {
   const roots = saveRootsOf(state);
   const forceAsk = query.ask === '1' || query.mode === 'dialog';
   const force = query.force === '1' || query.force === 'true';
+  // 记住的文件不见了之后，用户明确点了「就在这里重新建一份」才允许落盘。
+  const recreate = query.recreate === '1' || query.recreate === 'true';
   const includeMemory = query.memory === '1' || query.memory === 'true';
   const explicitRaw = typeof query.path === 'string' && query.path.trim() !== '' ? query.path.trim() : null;
   const remembered = state.paths[sessionId];
@@ -1632,6 +1674,7 @@ async function handleSave(request) {
 
   let target = null;
   let fromDialog = false;
+  let reusedRemembered = false;
 
   if (explicitRaw !== null) {
     const abs = path.resolve(explicitRaw);
@@ -1646,6 +1689,7 @@ async function handleSave(request) {
     target = abs;
   } else if (!forceAsk && rememberedAbs !== undefined) {
     target = rememberedAbs;
+    reusedRemembered = true;
   }
 
   if (target === null) {
@@ -1668,6 +1712,24 @@ async function handleSave(request) {
   if (!/\.dsproj$/i.test(target)) target = `${target}.dsproj`;
   if (!isInsideAny(target, roots) && !fromDialog) {
     return jsonResponse({ status: 'error', message: '不允许写入这个位置' }, 400);
+  }
+
+  // 复用「记住的路径」时必须确认那个文件还在。
+  // 这条路径是默认保存路径，用户点一下按钮就落盘，中间没有任何确认机会 ——
+  // 文件被删、被移到别的盘、U 盘没插、网络盘没挂上时，旧行为是直接在同名位置
+  // 造一个全新的包：用户以为在更新原来那份，实际原来那份早已不在，新包也没人打开过。
+  if (reusedRemembered && !recreate && !fs.existsSync(target)) {
+    return jsonResponse(
+      {
+        status: 'missing-target',
+        path: target,
+        name: path.basename(target),
+        dir: path.dirname(target),
+        suggested: suggested(),
+        message: '上次保存的那个文件已经不在了（被删除、移走，或所在磁盘没挂上）。',
+      },
+      409,
+    );
   }
 
   // 锁先判：文件里带着别人正在写的锁时，比「要不要覆盖」更该先说。
@@ -1727,9 +1789,24 @@ async function handleSave(request) {
 
   try {
     withSidecarLock(target, () => {
-      writeAtomic(target, out.zip);
+      writeAtomic(target, out.zip, { createDir: false });
     });
   } catch (error) {
+    // 目录在检查之后、写入之前消失了（U 盘拔出、网络盘掉线、父目录被删）。
+    // 这时 writeAtomic 不会替我们建目录，报 ENOENT —— 同样不能含糊成一句「写入失败」。
+    if (error?.code === 'ENOENT') {
+      return jsonResponse(
+        {
+          status: 'missing-target',
+          path: target,
+          name: path.basename(target),
+          dir: path.dirname(target),
+          suggested: suggested(),
+          message: '保存位置所在的文件夹不在了（磁盘没挂上或被删）。',
+        },
+        409,
+      );
+    }
     return jsonResponse({ status: 'error', message: `写入失败：${target} — ${error?.message ?? error}` }, 500);
   }
 
@@ -1739,6 +1816,7 @@ async function handleSave(request) {
   state.stamps = state.stamps && typeof state.stamps === 'object' ? state.stamps : {};
   state.stamps[sessionId] = { path: target, sha256: cryptoHash(out.zip), at: new Date().toISOString() };
   if (state.stale !== undefined && typeof state.stale === 'object') delete state.stale[sessionId];
+  if (state.missing !== undefined && typeof state.missing === 'object') delete state.missing[sessionId];
   writeState(state);
 
   return jsonResponse({

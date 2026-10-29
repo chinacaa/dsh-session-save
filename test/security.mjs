@@ -747,6 +747,75 @@ const exists = (file) => {
   check(bareSave.status === 403, 'R3 保存路由同样拒绝裸调用', `HTTP ${bareSave.status}`);
 }
 
+/* ── V12：记住的保存位置上文件没了，不许静默重建 ──────────────── */
+{
+  const sessionId = `session-${randomUUID()}`;
+  write(path.join(SESSIONS, '--demo--', sessionId, 'session.v4.jsonl.zstd'), frame(`${headerOf(sessionId)}
+`));
+
+  // 先正常存一份，让它成为「这个会话记住的路径」。
+  const remembered = path.join(OUT, 'remembered.dsproj');
+  const first = await call(save, '/api/session.save', { sessionId, path: remembered });
+  check(first.status === 200 && first.body?.status === 'saved', 'V12 先正常保存一次', `HTTP ${first.status}`);
+  check(exists(remembered), 'V12 第一份文件确实写出来了');
+
+  // 文件被删掉（用户自己删、或被移到别的盘、或那个盘没挂上）。
+  fs.rmSync(remembered);
+  check(!exists(remembered), 'V12 目标文件已删除');
+
+  // 不带 path 再点一次保存：这是默认路径，中间没有任何确认机会。
+  // 旧行为是在原地造一个新的同名文件然后报「已保存」——用户以为更新了原来那份。
+  const second = await call(save, '/api/session.save', { sessionId });
+  check(
+    second.status === 409 && second.body?.status === 'missing-target',
+    'V12 记住的文件不见了要停下来问',
+    `HTTP ${second.status} · ${String(second.body?.status)}`,
+  );
+  check(!exists(remembered), 'V12 没有静默重建同名文件');
+  check(second.body?.path === remembered, 'V12 响应里说明原来那个路径', String(second.body?.path));
+
+  // 明确点了「就在这里新建」才落盘。
+  const recreated = await call(save, '/api/session.save', { sessionId, recreate: '1' });
+  check(
+    recreated.status === 200 && recreated.body?.status === 'saved',
+    'V12 recreate=1 才允许原地新建',
+    `HTTP ${recreated.status}`,
+  );
+  check(exists(remembered), 'V12 recreate=1 之后文件才出现');
+
+  // 新建成功之后，「文件不见了」的记录要清掉，否则按钮一直挂着旧提示。
+  const cleared = await call(autosave, '/api/session.autosave', { sessionId });
+  check(cleared.body?.missing === undefined, 'V12 保存成功后清掉 missing 标记', JSON.stringify(cleared.body?.missing));
+}
+
+/* ── V12b：自动保存遇到目标文件消失 → 停掉并留下原因 ───────────── */
+{
+  const sessionId = `session-${randomUUID()}`;
+  write(path.join(SESSIONS, '--demo--', sessionId, 'session.v4.jsonl.zstd'), frame(`${headerOf(sessionId)}
+`));
+
+  const target = path.join(OUT, 'auto-gone.dsproj');
+  const first = await call(save, '/api/session.save', { sessionId, path: target });
+  check(first.status === 200, 'V12b 先存一份作为自动保存目标', `HTTP ${first.status}`);
+
+  const on = await call(autosave, '/api/session.autosave', { sessionId, enabled: '1' });
+  check(on.status === 200 && on.body?.enabled === true, 'V12b 自动保存已开启', `HTTP ${on.status}`);
+
+  // 打开自动保存之后、下一次自动写入之前，文件被删掉。
+  fs.rmSync(target);
+  // 等一个自动保存窗口（AUTOSAVE_DELAY_MS = 1500）过去。
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+
+  const after = await call(autosave, '/api/session.autosave', { sessionId });
+  check(after.body?.enabled === false, 'V12b 文件消失后自动保存自己停掉', JSON.stringify(after.body?.enabled));
+  check(
+    after.body?.missing !== undefined && after.body?.missing?.path === target,
+    'V12b 停掉的原因（原路径）带得回来',
+    JSON.stringify(after.body?.missing),
+  );
+  check(!exists(target), 'V12b 自动保存没有原地重建同名文件');
+}
+
 /* ── 收拾 ──────────────────────────────────────────────────────── */
 fs.rmSync(BASE, { recursive: true, force: true });
 check(!exists(BASE), '临时目录已清理', BASE);

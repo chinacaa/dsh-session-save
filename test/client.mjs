@@ -298,3 +298,30 @@ assert.ok(
   '没有可覆盖文件时要有明确文案，不能让用户以为「没事」',
 );
 console.log('✅ 合并弹窗分「将覆盖 / 将新建」两段，并给出 memory=new 出路，中英文案齐全');
+
+/* ── R7：目标文件不在了必须停下来问（不能静默新建） ── */
+
+for (const key of [
+  'missingTarget',
+  'missingTargetHint',
+  'missingTargetRecreate',
+  'missingTargetSaveAs',
+  'missingAutoOff',
+]) {
+  const hits = source.split(`${key}:`).length - 1;
+  assert.equal(hits, 2, `${key} 必须中英各一份，实际 ${hits} 处`);
+}
+assert.ok(source.includes('MissingModal'), '要有专门的「文件不在了」弹窗组件');
+assert.ok(
+  source.includes("payload.status === 'missing-target'"),
+  '保存返回 missing-target 时前端必须接住，不能当成功处理',
+);
+assert.ok(
+  source.includes("recreate: '1'"),
+  '「就在这里新建」必须把 recreate=1 传给保存路由',
+);
+assert.ok(
+  source.includes('payload.missing') && source.includes('L.missingAutoOff'),
+  '自动保存被目标消失停掉时，界面要把原因（含原路径）说出来',
+);
+console.log('✅ 目标文件不在了会停下来问：missing-target 弹窗三选一、自动保存自停并说明原因，中英文案齐全');

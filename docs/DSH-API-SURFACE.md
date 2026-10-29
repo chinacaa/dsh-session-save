@@ -16,7 +16,7 @@
 | 位置 | 内容 | 失效后果 |
 |---|---|---|
 | `package.json` → `dsh.bundle.patch` | `"./cordis.patch.yml"` | DSH 不知道有 patch 层，插件根本不会被挂载 |
-| `package.json` → `dsh.client` | `{ platform: "web", inject: ["@deepseek-ai/dsh-client-runtime"] }` | 客户端半边不加载，界面里没有任何按钮 |
+| `package.json` → `dsh.client` | `{ platform: "web" }`（**不写 `inject`**，见 §6.1 第 5 条） | 客户端半边不加载，界面里没有任何按钮 |
 | `cordis.patch.yml` | `- insert: [{ id: session-save, name: dsh-session-save }]` | 同上；`name` 必须是**真实包名**，Cordis 按 `name` import |
 
 另有 `package.json` → `exports`：DSH 的 client-modules 要求声明了 `dsh.client` 的包**必须导出 `./client`**，否则启动即抛 `declares dsh.client but exports no "./client" bundle`（`dsh-client-modules/lib/index.js:738`）。本仓库导出 `"./client": "./client.js"`。
@@ -32,14 +32,14 @@
 ```js
 export const name = 'session-save'   // index.js:20  Loader 行名
 export const inject = ['connection'] // index.js:22  硬依赖：connection 不在就不 apply
-export function apply(ctx)           // index.js:1807
+export function apply(ctx)           // index.js:1915
 ```
 
 `inject` 声明的是 Cordis 服务名。写进数组 = 硬依赖（服务缺失则本插件不启动）；反之用 `ctx.get(name)` 拿的是可选依赖。
 
 ### 1.2 `ctx.connection`（Host 服务）
 
-- **取法**：`index.js:1808` `const connection = Reflect.get(ctx, 'connection')`。用 `Reflect.get` 而不是 `ctx.connection`，是为了在缺服务时拿到 `undefined` 而不是抛错。
+- **取法**：`index.js:1916` `const connection = Reflect.get(ctx, 'connection')`。用 `Reflect.get` 而不是 `ctx.connection`，是为了在缺服务时拿到 `undefined` 而不是抛错。
 - **只用了一个成员**：`connection.fetch.register(...)`。
 - **契约**（Inspect 实测 `host/Service.listService` → `connection`）：
 
@@ -59,16 +59,28 @@ interface ConnectionFetchRoute {
 
 | 路由 | 行号 | methods | requestBody |
 |---|---|---|---|
-| `/api/session.save` | `index.js:1810` | `['GET','POST']` | `buffered` |
-| `/api/session.open` | `index.js:1822` | `['GET','POST']` | `buffered` |
-| `/api/session.workspaces` | `index.js:1834` | `['GET','POST']` | `buffered` |
-| `/api/session.autosave` | `index.js:1840` | `['GET','POST']` | `buffered` |
+| `/api/session.save` | `index.js:1919` | `['GET','POST']` | `buffered` |
+| `/api/session.open` | `index.js:1931` | `['GET','POST']` | `buffered` |
+| `/api/session.workspaces` | `index.js:1943` | `['GET','POST']` | `buffered` |
+| `/api/session.autosave` | `index.js:1949` | `['GET','POST']` | `buffered` |
 
-`fetch` 收到的是标准 `Request`，返回标准 `Response`（`jsonResponse()`，`index.js:1555`）。四条都自己做了 `requestGate()` 来源校验（`index.js:1475`：回环 Host + 同源 Origin + 拒 cross-site），**不依赖 connection 的鉴权**——所以若 DSH 改变了 Host 头/Origin 的注入方式，这里会先拦住请求。
+`fetch` 收到的是标准 `Request`，返回标准 `Response`（`jsonResponse()`，`index.js:1625`）。四条都自己做了 `requestGate()` 来源校验（`index.js:1545`：回环 Host + 同源 Origin + 拒 cross-site），**不依赖 connection 的鉴权**——所以若 DSH 改变了 Host 头/Origin 的注入方式，这里会先拦住请求。
+
+四条路由的 409 语义（客户端按 `status` 字段分流，不是按 HTTP 码）：
+
+| `status` | 触发 | 客户端动作 |
+|---|---|---|
+| `confirm-overwrite` | 目标是个陌生 `.dsproj` | 弹「将覆盖 / 将新建」合并确认 |
+| `not-dsproj` | 目标存在但不是本插件的包 | 只给「换个位置」 |
+| `stale` | 内容 sha256 与 `stamps` 不符（别处改过） | 弹覆盖 / 另存为 |
+| `locked` | 侧车 `.lock` 或包内 `LOCK.json` 判活 | 只报错，不给覆盖入口 |
+| `missing-target` | **保存前发现原路径上的文件不在了**（见 `docs/TEST-MATRIX.md` F50） | 弹三选一：就在这里新建（`?recreate=1`）/ 另存到别处 / 取消；默认不写字节 |
+
+`missing-target` 是**插件自己发明的**，不对应任何 DSH 接口——列在这里是因为它出现在路由出参里，适配时若 DSH 改了 `connection.fetch` 的响应处理（比如对非 2xx 做统一包装），这条会先受影响。
 
 ### 1.3 `ctx.effect` / `ctx.on`（Cordis 生命周期 + 事件）
 
-- **用法**（`index.js:1854-1872`）：
+- **用法**（`index.js:1962-1973`）：
 
 ```js
 if (typeof ctx.effect === 'function' && typeof ctx.on === 'function') {
@@ -101,14 +113,14 @@ if (typeof ctx.effect === 'function' && typeof ctx.on === 'function') {
 | 事实 | 代码位置 | 当前值 |
 |---|---|---|
 | 数据根 | `index.js:43` | `process.env.DSH_HOME \|\| <homedir>/.dsh` |
-| 会话目录 | `index.js:167` `findSessionFile()` | `<DSH_HOME>/sessions/<projectKey>/<encodeSegment(sessionId)>/session.v?.jsonl[.zstd]` |
-| 记忆目录 | `index.js:77` `resolveMemoryDir()` | `<DSH_HOME>/memory/workspaces/<slug>/` |
-| 工作区表 | `index.js:550` `readWorkspaces()` | `<DSH_HOME>/storages/workspace.json` → `tables.workspaces[<id>] = { path, title }` |
+| 会话目录 | `index.js:197` `findSessionFile()` | `<DSH_HOME>/sessions/<projectKey>/<encodeSegment(sessionId)>/session.v?.jsonl[.zstd]` |
+| 记忆目录 | `index.js:107` `resolveMemoryDir()` | `<DSH_HOME>/memory/workspaces/<slug>/` |
+| 工作区表 | `index.js:562` `readWorkspaces()` | `<DSH_HOME>/storages/workspace.json` → `tables.workspaces[<id>] = { path, title }` |
 | `projectKey` | `index.js:82` | 见下节逐字对照表 |
 | `encodeSegment` | `index.js:55` | 见下节逐字对照表 |
 | 日志文件名 | `index.js:390` `LOG_NAME_RE` | `/^session(\.[0-9A-Za-z]+)?\.jsonl(\.zstd)?$/` |
 | 帧结构 | `index.js:138` `scanZstdFrames()` | 单文件多帧 zstd 流，第 0 帧是 JSON header，后续帧是 JSONL 事件 |
-| 写回方式 | `index.js:888` `rewriteHeader()` | **只重写第 0 帧**，其余帧字节原样保留 |
+| 写回方式 | `index.js:900` `rewriteHeader()` | **只重写第 0 帧**，其余帧字节原样保留 |
 
 #### `projectKey` / `encodeSegment`（**错一个字符就找错目录**）
 
@@ -154,7 +166,7 @@ window.__ModuleLoader__.load({ id: 'dsh-session-save', factory(require) { … re
 
 - `window.__ModuleLoader__` 由 `@deepseek-ai/dsh-client-modules/lib/client.js` 注入（`load` / `create`）。
 - **`require` 只用来取 `react`**。没有其他 require，也没有 import。
-- 工厂返回 `{ inject, apply }`：`inject` 是**客户端服务名数组**（`client.js:1895` → `['slots','sessions','uiWorkspace','remote','remote.session']`），`apply(ctx)` 在服务就绪后被调用。
+- 工厂返回 `{ inject, apply }`：`inject` 是**客户端服务名数组**（`client.js:2030` → `['slots','sessions','uiWorkspace','remote','remote.session']`），`apply(ctx)` 在服务就绪后被调用。
 - 数组元素可以是**点路径**：`'remote.session'` 表示「取 `ctx.remote.session` 这个子服务」，Cordis 按路径逐段取。官方 `@deepseek-ai/dsh-client-ui-open-in-app` 的 `inject` 就是这么写的（见其 `lib/client.js` 的 `const inject = ['sessions','slots','locale','remote','remote.session','shortcuts','layout']`）——照抄它的写法比自创更安全。
 - 写进数组 = **硬依赖**：服务缺失时整个 Client 半边不加载。所以只对「一定要有」的服务这么写；可选调用仍然用 `ctx.get(name)` 或可选链。
 
@@ -184,7 +196,7 @@ ctx.slots.register(...)   // 声明在 SlotCore
   label?: string | (() => string) }
 ```
 
-- **本插件的 5 个注册项**（`client.js:1897-1948`）：`session-open`(39)、`session-save`(40)、`session-autosave`(41)、`session-save-as`(42) 在 header 槽；`session-open-hero`(41) 在 hero 槽。本机 Inspect 实测这 5 个 occupant 全部 `active: true`。
+- **本插件的 5 个注册项**（`client.js:2036-2083`）：`session-open`(39)、`session-save`(40)、`session-autosave`(41)、`session-save-as`(42) 在 header 槽；`session-open-hero`(41) 在 hero 槽。本机 Inspect 实测这 5 个 occupant 全部 `active: true`。
 
 > ⚠️ **升级第一个要看的**：`replaceRisk` 当前是 `none`，但 `order` 含义是「同槽位内排序」。官方 `open-in-app` 占了 `-10`、`session-log-download` 无 order、`dsh-better-sidebar` 占 10/20。本插件用 39–42 是刻意排在所有官方项之后；若官方新增项也用 40 附近，图标顺序会混。
 
@@ -193,7 +205,7 @@ ctx.slots.register(...)   // 声明在 SlotCore
 Inspect `listSubTree` → `selected.catalog.standardProps` 列了 17 个 hook/prop。**本插件只用了其中一个**：
 
 ```js
-props.sessionId          // client.js:467 / 690 / 1703
+props.sessionId          // client.js:477 / 729 / 1830
 ```
 
 其余 16 个（`useSessions` / `useChat` / `useConversation` / `useSession` / `usePanelInfo` / `useWorkspaces` / …）一概没碰。`session-open-hero` 那个槽的 `ownerProps` 是空数组，同样只吃 `sessionId`。
@@ -218,8 +230,8 @@ await host?.sessions?.refresh?.()   // ISessions.refresh(): Promise<void>
 
 | 调用 | 行号 | 契约 |
 |---|---|---|
-| `host?.uiWorkspace?.pickDirectory?.()` | `client.js:864` | `pickDirectory(): Promise<string\|null>` |
-| `host?.sessions?.refresh?.()` 之后 `host?.uiWorkspace?.openSession?.(sessionId)` | `client.js:764` | `openSession(target: SessionTarget): void` |
+| `host?.uiWorkspace?.pickDirectory?.()` | `client.js:903` | `pickDirectory(): Promise<string\|null>` |
+| `host?.sessions?.refresh?.()` 之后 `host?.uiWorkspace?.openSession?.(sessionId)` | `client.js:798` / `:803` | `openSession(target: SessionTarget): void` |
 
 > **`uiWorkspace` 上没有 `openPath`。** Inspect 实测 `uiWorkspace` 的 10 个方法：`openSession` / `openWorkspace` / `forkSession` / `connectWorkspace` / `startSession` / `archiveSession` / `unarchiveSession` / `pickDirectory` / `listDirectory` / `createDirectory`，没有 `openPath`。早先「打开记忆目录」写成 `typeof host?.uiWorkspace?.openPath === 'function'` 导致**判断恒假、按钮点了没反应**（静默降级，不报错，所以很难发现）。现已改走下面的 Remote 调用。
 
@@ -228,7 +240,7 @@ await host?.sessions?.refresh?.()   // ISessions.refresh(): Promise<void>
 「在文件管理器里定位路径」的正确入口是 Session Remote，而不是 ctx 服务：
 
 ```ts
-// client.js:1055 附近
+// client.js:1093 附近
 const session = host?.remote?.session;
 if (typeof session?.openWorkspacePath !== 'function') return;
 session.openWorkspacePath({ path: dir, action: 'reveal' })
@@ -250,7 +262,7 @@ session.openWorkspacePath({ path: dir, action: 'reveal' })
 
 ```js
 fetch(`${ROUTE}?${search.toString()}`, { method: 'GET', headers: { accept: 'application/json' }, credentials: 'same-origin' })
-// client.js:487（保存）、client.js:698（requestJson，打开/自动保存/工作区）
+// client.js:497（保存）、client.js:735（requestJson，打开/自动保存/工作区）
 ```
 
 ⇒ 依赖两个非契约事实：**(a)** 插件注册的 `/api/*` 路由与页面同源；**(b)** `credentials: 'same-origin'` 能带上 DSH 的浏览器凭据。二者都由 `ctx.connection.fetch.register` 的实现保证，目前成立。
@@ -259,7 +271,7 @@ fetch(`${ROUTE}?${search.toString()}`, { method: 'GET', headers: { accept: 'appl
 
 ### 2.7 国际化
 
-`client.js:194` 读 `navigator.language`（`/^en\b/i` → 英文词表，否则中文）。**与 DSH 的 locale 服务无关**——那是浏览器语言，不是 DSH 的 `ctx.locale`。若想跟随 DSH 的语言切换，需改成 `ctx.locale`；当前是刻意不依赖。
+`client.js:204` 读 `navigator.language`（`/^en\b/i` → 英文词表，否则中文）。**与 DSH 的 locale 服务无关**——那是浏览器语言，不是 DSH 的 `ctx.locale`。若想跟随 DSH 的语言切换，需改成 `ctx.locale`；当前是刻意不依赖。
 
 ---
 
@@ -285,7 +297,7 @@ fetch(`${ROUTE}?${search.toString()}`, { method: 'GET', headers: { accept: 'appl
 3. **插槽还在不在**：`cordis_inspect_query` → `client/Slots.listSubTree` 传 `conversation.session.header.utilities`，看 5 个 occupant 是否全 `active`。
 4. **事件名没变**：`cordis_inspect_query` → `host/Event.listEvents` 传 `session/event`，确认签名仍是 `(session, event)`；再确认 `event.type` 仍可能是 `step/end` / `turn/end`。
 5. **会话文件还能读**：`node test/smoke.mjs`（打包 + 回读）与 `node test/open.mjs`（35 条，导入与冲突）。七套测试全部通过 `test/fixture.mjs` 自建临时 `DSH_HOME`，不读真实 `~/.dsh`。
-6. **跑满回归**：`for f in client dialog smoke open conflict security pathkey; do node test/$f.mjs || exit 1; done`，应共 **260** 条 ✅（详见 `docs/TEST-MATRIX.md`）。其中 `pathkey.mjs` 是 rc.4 适配时新增的目录名派生回归。
+6. **跑满回归**：`for f in client dialog smoke open conflict security pathkey; do node test/$f.mjs || exit 1; done`，应共 **275** 条 ✅（详见 `docs/TEST-MATRIX.md`）。其中 `pathkey.mjs` 是 rc.4 适配时新增的目录名派生回归。
 7. **客户端能调 Host 吗**：`node test/client.mjs` 里已断言 `inject` 含 `remote` 与 `remote.session`、且源码不含 `uiWorkspace.openPath`。「打开记忆目录」失效是**静默**的（按钮点了没反应、不报错），只能靠这条断言兜住。
 
 ---
@@ -322,7 +334,7 @@ rc.3 的核对结论大部分仍然成立；rc.4 逐条复查后**只有目录�
 | 2 | 官方 `encodeSegment` 空串 | 抛错（`cannot encode an empty path segment`） | 插件侧 `findSessionFile()` 先用 `isSessionId()` 挡掉非 id，不会走到这里 |
 | 3 | `projectDir(root, undefined)` | 回落 `_no-cwd` | 插件 `projectKey('')` 也回落 `_no-cwd`，一致 |
 | 4 | `session.openWorkspacePath` | 仍在 `dsh-api-remotes/lib/client.js`，参数 object、结果 `{ opened: true }` | 无需改动 |
-| 5 | `dsh.client.inject` 里的 `@deepseek-ai/dsh-client-runtime` | **该包在 rc.4 的 node_modules 里不存在** | 无害：`inject` 只是声明「我想要这个服务」，不存在时不阻塞；`test/client.mjs` 仍绿 |
+| 5 | `dsh.client.inject` 里的 `@deepseek-ai/dsh-client-runtime` | **该包在 rc.4 的 node_modules 里根本不存在**（全盘 grep 零命中） | **已删**（`package.json` 的 `dsh.client` 现在只有 `{ platform: "web" }`）。原来那条是无效声明：`dsh.client.inject` 列的是**客户端模块图里的包名**（`dsh-client-modules/lib/client.js:789` `arriveGraphRow()` 里 `this.graphRows.get(packageName)` 取不到就静默跳过），不是服务名——服务依赖由工厂返回的 `inject` 数组负责（`client.js:2030`）。留着它只是把「不存在的包」写成契约，下次适配会误以为有这个依赖 |
 | 6 | `Slots` 插槽根 `conversation.session.header.utilities` | 未变，5 个 occupant 仍全部 `active` | 无需改动 |
 | 7 | `session/event` 事件签名 `(session, event)`、`step/end`·`turn/end` | 未变 | 自动保存无需改动 |
 | 8 | `@deepseek-ai/cordis` | 4.0.5（未变） | `peerDependencies ^4.0.1` 仍成立 |
@@ -336,7 +348,7 @@ node test/pathkey.mjs    # 目录名派生没漂
 node test/client.mjs     # 插槽 / inject / 前端接线没断
 ```
 
-其余五套（`dialog` `smoke` `open` `conflict` `security`）覆盖的是插件自己的落盘与安全逻辑，与 DSH 版本弱相关，但**改动后必须全跑**（合计 219 条；加上上面两条命令的 41 条 = 全部 260 条）。
+其余五套（`dialog` `smoke` `open` `conflict` `security`）覆盖的是插件自己的落盘与安全逻辑，与 DSH 版本弱相关，但**改动后必须全跑**（合计 233 条；加上上面两条命令的 42 条 = 全部 275 条）。
 
 ### 6.2 rc.2 → rc.4（npm `latest` 与当前运行版之间的对照）
 

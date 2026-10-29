@@ -57,7 +57,7 @@
 
 | ID | 功能 | 入参 | 期望 |
 | --- | --- | --- | --- |
-| F28 | 查询状态 | `sessionId` | 200 `{status:'ok', enabled, path, cloud, stale}` |
+| F28 | 查询状态 | `sessionId` | 200 `{status:'ok', enabled, path, cloud, stale, missing}`；`missing` 只在目标文件消失过时出现，形如 `{path, detectedAt}` |
 | F29 | 开 / 关 | `sessionId`+`enabled=1|0` | 写状态文件；开启时立刻调度一次 |
 | F30 | 每步落盘 | 宿主 `session/event` 的 `step/end` / `turn/end` | 1.5 s 去抖后整包重写；`LOCK.json.writes` 递增 |
 | F31 | 撞 CAS 自杀 | 磁盘被别处改过 | **不写盘**、自动关闭该会话的自动保存、把冲突记进 `state.stale[id]` |
@@ -94,6 +94,7 @@
 | F47 | 平台隔离 | `dialog/index.mjs` 按「依赖在不在」选实现（不看系统版本号）：缺 `SystemRoot`、`powershell.exe` 不存在 → 返回 `null`，调用方降级到网页里的路径输入框；Windows 且解释器在 → 加载 `dialog/windows.mjs`。缓存键是 `platform`，假平台的「不可用」结论不会漏给真实平台 |
 | F48 | 非 Windows 原生面板 | macOS 走 `osascript` 的 `choose file name` / `choose file`（`POSIX file` 包 alias、`POSIX path of` 转回 `/Users/...`、文件名冒号换 `-`、双引号转义、取消按 `-128` 判）；Linux/BSD 按 zenity → kdialog → qarma → matedialog 探测，GTK 系与 KDE 系各用一套开关，一个都没装（无头/容器）→ 降级。三平台统一补 `.dsproj` 扩展名、统一 `RESULT:` 单行契约 |
 | F49 | 打开记忆目录 | `MemoryNotice` 走 `remote.session.openWorkspacePath({ path, action: 'reveal' })`，`inject` 里声明 `remote` 与 `remote.session`。**不得**调 `uiWorkspace.openPath`——DSH 的 `uiWorkspace` 没有这个方法，`typeof … === 'function'` 恒假，按钮点了没反应且不报错。目录只能用 `reveal`（省略 `action` 是「用默认应用打开」，对目录会失败） |
+| F50 | 保存前确认目标还在 | 保存的目标是「那个路径上的那个文件」，不是「那个路径」。①手动保存：走「记住的路径」（`reusedRemembered`）且没带 `recreate=1` 时先 `fs.existsSync(target)`，不在就返回 `409 {status:'missing-target', path, name, dir, suggested}`，**一个字节都不写**；写盘阶段抛 `ENOENT` 也归到这个状态而不是 500。②自动保存：`autosaveOnce` 在 `lockBlocks` 之后、`staleOf` 之前先查目标在不在，不在就 `delete state.autosave[id]` + 记 `state.missing[id] = {path, detectedAt}` 后直接返回；`catch` 里的 `ENOENT` / 「目标目录不存在」同样走这条熔断。③打包写入一律 `writeAtomic(..., { createDir: false })`，目录不存在抛「目标目录不存在」，不再 `mkdir -p` 顺手把目录和文件一起造出来。④`missing` 在打开成功、保存成功、自动保存成功后清掉 |
 
 ## 二、测试矩阵（用例 → 期望 → 覆盖）
 
@@ -103,13 +104,13 @@
 | --- | --- | --- | --- |
 | `test/pathkey.mjs` | 35 | F13（`findSessionFile` 的目录派生）、F21 | `projectKey`/`encodeSegment` 与官方 rc.4 逐字一致：16 档 cwd 与内置 oracle 全等（含尾部分隔符不剪 `-`、根路径 `--root--`、emoji 拆代理对 `~D83D~DE00`、`~` 自身转义、251 截断）；4 条钉死形态独立断言；空串退回 `_no-cwd` 且 oracle 确实抛错（证明是有意偏离）；8 档 session id；磁盘实例形状核对 |
 | `test/dialog.mjs` | 16 | F3、F46、F47、F48 | 三平台选择器各自按依赖存在性判定（win32 看 `powershell.exe`、darwin 看 `/usr/bin/osascript`、linux/BSD 找 zenity/kdialog/qarma/matedialog，都没有 → `null` 降级），并用注入的假探测函数在 Windows 上验 mac/linux 分支；实现缓存按平台隔离（先问无用平台不污染真实平台）；共用工具 `lookPath`/`ensureExtension`/`sanitizeForAppleScript`/`resultLine`；macOS 的 AppleScript 文本（`POSIX file` 包装、引号转义、冒号消毒）；Linux 的 zenity 与 kdialog 两套开关分别拼对（`--getsavefilename` 收完整建议路径 vs `--filename=`，kdialog 空目录回落 `.`）；zenity 优先级高于 kdialog；Windows 脚本带 BOM、`OutputEncoding`、`-ResultFile` 三件套齐；中文路径往返不乱码；取消 → `null`；脚本缺失 → `undefined`；乱码 stdout 不覆盖结果文件 |
-| `test/client.mjs` | 6 | F34、F35、F37、F49 | 5 个插槽项 id/order/插槽名正确；另存为是独立图标且点击带 `ask=1`；hero 按钮点击打 `api/session.open`；源码不含 `document.`/`MutationObserver`；7 个记忆相关 i18n 键中英各一份；`inject` 含 `remote`/`remote.session` 且源码不含 `uiWorkspace.openPath`、含 `openWorkspacePath` 与 `action: 'reveal'` |
+| `test/client.mjs` | 7 | F34、F35、F37、F49、F50 | 5 个插槽项 id/order/插槽名正确；另存为是独立图标且点击带 `ask=1`；hero 按钮点击打 `api/session.open`；源码不含 `document.`/`MutationObserver`；7 个记忆相关 i18n 键中英各一份；`inject` 含 `remote`/`remote.session` 且源码不含 `uiWorkspace.openPath`、含 `openWorkspacePath` 与 `action: 'reveal'`；5 个 missing 相关 i18n 键中英各一份、`MissingModal` 存在、`payload.status === 'missing-target'` 被接住、`recreate: '1'` 传给保存路由、自动保存自停时把原路径说出来 |
 | `test/smoke.mjs` | 1（12 处 throw 检查） | F1、F8、F10、F12 | 夹具会话 → 打包 → 回读 ZIP 首条目 zstd magic、必有 `manifest.json`/`SUMMARY.md`/`session/`；二次保存复用同一路径；默认文件名规则与非法字符替换；无标题兜底名 |
 | `test/open.mjs` | 35 | F13–F21、F23 | 复用不写盘；新 cwd 落地并改写 header；`need-workspace` 列工作区；选好工作区后打开；帧 1..n 原字节一致；坏路径 404 且不回显 |
 | `test/conflict.mjs` | 67 | F5–F7、F11、F28–F32、F44 | 四种冲突顺序 ask→reuse→copy→overwrite；覆盖前留 `.bak`；异机新鲜锁给理由；CAS 409 与 `force`；自动保存钩子写盘并递增 `writes`；关闭后不再写；同步盘识别；目录复原 |
-| `test/security.mjs` | 100 | F22–F27、F38–F43 | V1 越界条目读包即拒；V2 恶意 `fileName` 被收敛；V3 200 MB / 1026:1 在解压前拒绝；V4 目录外 400 且不建树；V5 非 id 400；V6 不回显路径；V7 `parts` 不符 500；V8 跨站 403；R1 未声明条目拒绝；R4 默认永不落原名；R6 restore 只覆盖已有、`memory=new` 才新建 |
+| `test/security.mjs` | 114 | F22–F27、F38–F43、F50 | V1 越界条目读包即拒；V2 恶意 `fileName` 被收敛；V3 200 MB / 1026:1 在解压前拒绝；V4 目录外 400 且不建树；V5 非 id 400；V6 不回显路径；V7 `parts` 不符 500；V8 跨站 403；R1 未声明条目拒绝；R4 默认永不落原名；R6 restore 只覆盖已有、`memory=new` 才新建；V12 记住的文件被删后再存必须 409 `missing-target` 且不重建、`recreate=1` 才落地、成功后清 `missing`；V12b 自动保存发现目标消失后自己关掉并带回原路径、不重建 |
 
-合计 **260 条**。
+合计 **275 条**。
 
 ### 审计验收脚本（未随仓库分发）
 
@@ -149,7 +150,7 @@ node test/open.mjs
 node test/conflict.mjs
 node test/security.mjs
 node test/pathkey.mjs
-# 或一把梭：260 条全绿
+# 或一把梭：275 条全绿
 for f in client dialog smoke open conflict security pathkey; do node test/$f.mjs || exit 1; done
 ```
 

@@ -93,6 +93,14 @@ Do not just add an `- id/name` row to the profile's `cordis.patch.yml` — that 
 
 On the other machine: click 📁, pick the file, the session appears and the UI switches to it.
 
+### It asks before writing into an empty spot
+
+The target of a save is *the file at that path*, not *the path*. So every write checks first that the file is still there:
+
+- **Manual save** finds it gone (deleted, moved, or the drive / network folder is not mounted) → a panel shows the original path and offers **create it here** / **save somewhere else** / **cancel**. Nothing is written by default — no same-named empty shell left behind.
+- **Autosave** finds it gone → **turns itself off** and tells you why (with the path); that round writes nothing.
+- The whole **folder** missing (an unmounted network drive, say) behaves the same: "target folder does not exist" instead of quietly `mkdir -p`-ing the directory and the file back into existence.
+
 ## How files are named
 
 ```
@@ -194,6 +202,8 @@ Code files are not included — a `.dsproj` holds the conversation and its memor
 **Is autosave expensive?** Each write re-packs the whole package (the log itself is append-only), debounced to at most one write per 1.5 s per step. For very large sessions prefer manual saves.
 
 **Linux / macOS?** Yes. The host side is platform-neutral and the Save As / Open dialogs are picked per platform: WinForms panels through `powershell.exe` on Windows, Finder panels through `osascript` (`choose file name` / `choose file`) on macOS, and the GTK or KDE panel of the first tool found among zenity → kdialog → qarma → matedialog on Linux and the BSDs. With none of them the UI falls back to an in-page path field.
+
+**I deleted the file — what happens if I hit 💾 now?** It stops and asks instead of silently creating a new one. The panel offers **create it here** (start a fresh package at the old path), **save somewhere else** (leave the old path alone), or **cancel** (write nothing). If autosave was on, it turns itself off and says so.
 
 **Will it clobber my memory files?** Memory is not packaged by default; when it is, importing writes `xxx.from-dsproj-<date>` copies; Merge memory only touches files you already have, after a `.bak-<timestamp>` backup.
 

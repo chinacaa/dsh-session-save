@@ -82,6 +82,11 @@ window.__ModuleLoader__.load({
       confirmOverwriteHint: '它不是这个会话记住的那个工程文件。覆盖会让原来的内容消失。',
       confirmOverwriteAlt: '换个位置另存为',
       notDsproj: '那个文件不是 .dsproj 工程包，不能覆盖',
+      missingTarget: '上次保存的文件不在了',
+      missingTargetHint: '这个位置原本有一份工程包，现在读不到了（被删除、移走，或所在磁盘没挂上）。直接写下去会在这里新建一个同名文件，看起来像保存成功，其实原来那份已经没了。',
+      missingTargetRecreate: '就在这里新建',
+      missingTargetSaveAs: '另存到别处',
+      missingAutoOff: '自动保存已停用：目标文件不在了',
       pathNotAllowed: '只能存到用过的目录，或者用另存为窗口挑位置',
       memoryHint: 'Alt 点击：连同工作区记忆一起打包',
       memoryTag: '含记忆',
@@ -168,6 +173,11 @@ window.__ModuleLoader__.load({
       confirmOverwriteHint: 'It is not the project file this session remembers. Overwriting drops what is in it.',
       confirmOverwriteAlt: 'Save somewhere else',
       notDsproj: 'That file is not a .dsproj project file — refusing to overwrite',
+      missingTarget: 'The file you saved last time is gone',
+      missingTargetHint: 'There used to be a project file here and it can no longer be read (deleted, moved, or its drive is not mounted). Writing anyway would create a new file with the same name — it would look like a successful save while the original is already gone.',
+      missingTargetRecreate: 'Create a new one here',
+      missingTargetSaveAs: 'Save somewhere else',
+      missingAutoOff: 'Autosave stopped: the target file is gone',
       pathNotAllowed: 'Only folders you have used before, or pick a spot in the Save As dialog',
       memoryHint: 'Alt+click: bundle the workspace memory too',
       memoryTag: 'with memory',
@@ -470,6 +480,7 @@ window.__ModuleLoader__.load({
       const [ask, setAsk] = useState(null); // { suggested }
       const [stale, setStale] = useState(null); // { path, stale, cloud }
       const [refuse, setRefuse] = useState(null); // { status, path, message }
+      const [missing, setMissing] = useState(null); // { path, name, dir }
       const [toast, setToast] = useState(null); // { tone, text }
       const [lastPath, setLastPath] = useState('');
       const mounted = useRef(true);
@@ -540,6 +551,12 @@ window.__ModuleLoader__.load({
             if (payload.status === 'confirm-overwrite' || payload.status === 'not-dsproj') {
               setAsk(null);
               setRefuse(payload);
+              return;
+            }
+            // 记住的位置上文件没了：不静默落盘，交给用户决定「另存」还是「就在这里新建」。
+            if (payload.status === 'missing-target') {
+              setAsk(null);
+              setMissing(payload);
               return;
             }
             setToast({ tone: 'error', text: `${L.failed} · ${payload.message || 'unknown'}` });
@@ -658,6 +675,28 @@ window.__ModuleLoader__.load({
             text: toast.text,
             onDone: () => {
               if (mounted.current) setToast(null);
+            },
+          }),
+        );
+      }
+
+      if (missing !== null) {
+        children.push(
+          React.createElement(MissingModal, {
+            key: 'missing',
+            payload: missing,
+            busy,
+            onSaveAs: () => {
+              setMissing(null);
+              save({ ask: '1' });
+            },
+            onRecreate: () => {
+              setMissing(null);
+              save({ mode: 'auto', recreate: '1' }, true);
+            },
+            onCancel: () => {
+              setMissing(null);
+              setToast({ tone: 'info', text: L.cancelled });
             },
           }),
         );
@@ -1380,6 +1419,89 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /**
+     * 记住的保存位置上空了。
+     *
+     * 这里必须停下来问一句：用户按的是「保存」，预期是更新原来那份；那个文件既然
+     * 已经不在了，直接落盘就是在原地造一个新文件，而界面上只会显示「已保存」。
+     * 三条出路：另存到别处、明确同意在这里新建、或者取消。
+     */
+    function MissingModal({ payload, busy, onSaveAs, onRecreate, onCancel }) {
+      const button = (label, onClick, primary, danger) =>
+        React.createElement(
+          'button',
+          {
+            type: 'button',
+            disabled: busy,
+            onClick,
+            style: {
+              padding: '6px 12px',
+              fontSize: 12.5,
+              fontFamily: 'inherit',
+              color: primary ? COLORS.accentLabel : danger ? COLORS.danger : COLORS.label,
+              background: primary ? COLORS.accent : 'transparent',
+              border: primary ? 'none' : `1px solid ${COLORS.border}`,
+              borderRadius: 6,
+              cursor: busy ? 'default' : 'pointer',
+            },
+          },
+          label,
+        );
+
+      return React.createElement(
+        'div',
+        {
+          key: 'missing',
+          style: {
+            position: 'fixed',
+            inset: 0,
+            zIndex: 9998,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'rgba(15,17,22,0.32)',
+          },
+          onMouseDown: (event) => {
+            if (event.target === event.currentTarget && !busy) onCancel();
+          },
+        },
+        React.createElement(
+          'div',
+          {
+            style: {
+              width: 460,
+              maxWidth: '92vw',
+              padding: 18,
+              background: COLORS.elevated,
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: COLORS.radius,
+              boxShadow: '0 24px 60px rgba(0,0,0,0.24)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              color: COLORS.label,
+            },
+          },
+          React.createElement('div', { style: { fontSize: 13.5, fontWeight: 600 } }, L.missingTarget),
+          React.createElement(
+            'div',
+            { style: { fontSize: 12, color: COLORS.secondary, lineHeight: 1.5 } },
+            L.missingTargetHint,
+          ),
+          payload?.path
+            ? React.createElement(MiniStat, { key: 'path', label: L.conflictCwd, value: String(payload.path) })
+            : null,
+          React.createElement(
+            'div',
+            { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 } },
+            button(L.cancel, onCancel, false),
+            button(L.missingTargetRecreate, onRecreate, false, true),
+            button(L.missingTargetSaveAs, onSaveAs, true),
+          ),
+        ),
+      );
+    }
+
     function StaleModal({ payload, busy, onOverwrite, onSaveAs, onCancel }) {
       const since = payload?.stale?.since;
       const when = typeof since === 'string' && since !== '' ? new Date(since).toLocaleString() : '未知';
@@ -1737,6 +1859,14 @@ window.__ModuleLoader__.load({
               setToast({
                 tone: 'error',
                 text: `${L.staleTitle} · ${String(payload.stale.path || payload.path || '')}`,
+              });
+            }
+            // 上次自动保存时目标文件就不在了：服务端已经停掉自动保存，这里把原因说出来，
+            // 否则按钮只是悄悄变回「关」，用户会以为是插件坏了。
+            if (payload.missing !== undefined && payload.missing !== null) {
+              setToast({
+                tone: 'error',
+                text: `${L.missingAutoOff} · ${String(payload.missing.path || payload.path || '')}`,
               });
             }
           } catch {
