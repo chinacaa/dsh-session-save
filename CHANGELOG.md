@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **图片跟着包走。** 会话日志里只留 `sha256:` 引用，图片和文件的字节在 `~/.dsh/attachments/v1` 下的独立对象库——只导出日志的包换一台机器打开必然 `ATTACHMENT_NOT_FOUND`，而且重试不会自愈（引用指向一段固定哈希）。现在打包时把**会话真正引用到的**对象一起塞进来：图片进 `attachments/objects/<前2>/<sha256>`，文件进 `attachments/files/<前2>/<sha256>`，读出来先重算哈希，对不上宁可不带。打开时按同样规则回填：目标已存在就跳过（内容寻址天然幂等）；条目名与哈希前缀不符、或内容哈希对不上，一律拒绝写入，宁可少恢复一个也不往对象库里塞来路不明的字节。本机本来就没有的对象记进 `manifest.attachments.missing` 并写进 `SUMMARY.md`，让接包的人知道「这个包天生缺东西」，而不是等他打开时炸一脸。导入返回值新增 `attachmentsWritten` / `attachmentsSkipped` / `attachmentsRejected`；`options.includeAttachments === false` 可关掉打包。
+
 ## [0.2.3] - 2026-10-29
 
 ### 修复

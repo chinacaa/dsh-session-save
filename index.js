@@ -389,6 +389,88 @@ const isSessionId = (value) => typeof value === 'string' && SESSION_ID_RE.test(v
 /** 会话日志文件名：`session.v4.jsonl.zstd` / `session-<uuid>.jsonl`。 */
 const LOG_NAME_RE = /^session(\.[0-9A-Za-z]+)?\.jsonl(\.zstd)?$/;
 
+/* ───────────── 附件对象：日志里只有哈希，字节在另一个对象库 ───────────── */
+
+/**
+ * 包里附件条目的唯一合法形态：`attachments/objects/<前两位>/<sha256>`、
+ * `attachments/files/<前两位>/<sha256>`。
+ * 包内用 `files` 这个名字，落到盘上对应 DSH 的 `file-objects` 目录 ——
+ * 目录名照抄 DSH 的约定，别在自己这里发明一套。
+ */
+const ATTACH_ENTRY_RE = /^attachments\/(objects|files)\/([0-9a-f]{2})\/([0-9a-f]{64})$/;
+const ATTACH_KIND_DIR = { objects: 'objects', files: 'file-objects' };
+const ATTACH_REF_RE = /(?:attachmentId|fileId)\\?"\s*:\s*\\?"sha256:([0-9a-f]{64})/g;
+
+/** 内容寻址对象在本机的根目录（按 kind 分 objects / file-objects）。 */
+function attachmentRootDir(kind) {
+  return path.join(dshHome(), 'attachments', 'v1', ATTACH_KIND_DIR[kind] ?? 'objects');
+}
+
+/** 解出会话日志全文：逐帧解压再拼，坏帧跳过（半写帧不该让整包打不出来）。 */
+function decodeLogText(buf) {
+  let text = '';
+  for (const frame of scanZstdFrames(buf)) {
+    try {
+      text += zlib.zstdDecompressSync(buf.subarray(frame.start, frame.end)).toString('utf8');
+    } catch {
+      /* 单帧解压失败不影响其余帧 */
+    }
+  }
+  return text;
+}
+
+/** 日志里引用到的附件哈希。只是引用，不代表本机真有这个对象。 */
+export function attachmentRefs(buf) {
+  const seen = new Set();
+  for (const match of decodeLogText(buf).matchAll(ATTACH_REF_RE)) seen.add(match[1]);
+  return seen;
+}
+
+/**
+ * 把包里的附件对象回填到本机对象库。
+ * 内容寻址天然幂等：目标已存在就是同一份，跳过即可，不需要问冲突。
+ * 三道校验——条目名合法、分片目录与哈希前缀一致、内容真的哈希成这个名字，
+ * 任何一条不成立就整条跳过：宁可少恢复一个对象，也不往对象库里写来路不明的字节。
+ */
+function restoreAttachments(entries) {
+  let written = 0;
+  let skipped = 0;
+  let rejected = 0;
+  for (const [name, data] of entries) {
+    const match = ATTACH_ENTRY_RE.exec(name);
+    if (match === null) continue;
+    const kind = match[1];
+    const shard = match[2];
+    const sha = match[3];
+    if (sha.slice(0, 2) !== shard) {
+      rejected += 1;
+      continue;
+    }
+    if (cryptoHash(data) !== sha) {
+      rejected += 1;
+      continue;
+    }
+    const root = attachmentRootDir(kind);
+    const dest = path.join(root, shard, sha);
+    if (!isInside(root, dest)) {
+      rejected += 1;
+      continue;
+    }
+    if (fs.existsSync(dest)) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, data);
+      written += 1;
+    } catch {
+      rejected += 1;
+    }
+  }
+  return { written, skipped, rejected };
+}
+
 /** dest 是否严格落在 root 之内（root 自身不算）。用 relative 判前缀，别用字符串 startsWith。 */
 function isInside(root, dest) {
   const rootAbs = path.resolve(root);
@@ -803,6 +885,36 @@ function buildPackage(
     }
   }
 
+  // 附件：会话日志里只留 `sha256:` 引用，图片/文件的字节在 DSH_HOME/attachments/v1 下。
+  // 不把命中的对象一起带走，换台机器打开就是 ATTACHMENT_NOT_FOUND —— 而且重试不自愈，
+  // 因为引用指向的是一段固定哈希。本机本来就没有的对象记进 manifest，让导入方知道
+  // 「这个包天生缺东西」，而不是等它打开时炸一脸。
+  const attachmentObjects = [];
+  const attachmentFiles = [];
+  const missingAttachments = [];
+  if (options.includeAttachments !== false) {
+    for (const sha of attachmentRefs(buf)) {
+      let found = false;
+      for (const kind of ['objects', 'files']) {
+        const source = path.join(attachmentRootDir(kind), sha.slice(0, 2), sha);
+        let data;
+        try {
+          data = fs.readFileSync(source);
+        } catch {
+          continue;
+        }
+        // 名字就是哈希：读出来对不上说明文件坏了，宁可不带也不能带坏字节
+        if (cryptoHash(data) !== sha) continue;
+        const entryName = `attachments/${kind}/${sha.slice(0, 2)}/${sha}`;
+        entries.push({ name: entryName, data, store: true });
+        parts[entryName] = { sha256: cryptoHash(data), bytes: data.length };
+        (kind === 'objects' ? attachmentObjects : attachmentFiles).push({ id: `sha256:${sha}`, bytes: data.length });
+        found = true;
+      }
+      if (!found) missingAttachments.push(`sha256:${sha}`);
+    }
+  }
+
   const manifest = {
     format: FORMAT,
     exportedAt: new Date().toISOString(),
@@ -821,6 +933,7 @@ function buildPackage(
     memorySlug: memory?.slug,
     memoryFiles,
     workspaceFiles: [],
+    attachments: { objects: attachmentObjects, files: attachmentFiles, missing: missingAttachments },
     lock,
     parts,
   };
@@ -854,6 +967,18 @@ function buildPackage(
     L.push('## 工作区记忆');
     L.push('');
     L.push('这个包只含会话本身，没有带 `~/.dsh/memory` 里的项目记忆、日志与白板。');
+    L.push('');
+  }
+  const attachTotal = attachmentObjects.length + attachmentFiles.length;
+  if (attachTotal > 0 || missingAttachments.length > 0) {
+    L.push('## 随包附件（图片 / 文件对象）');
+    L.push('');
+    L.push(`随包带走 ${attachTotal} 个（图片 ${attachmentObjects.length} / 文件 ${attachmentFiles.length}）。换台机器打开时按内容哈希回填，已存在就跳过。`);
+    if (missingAttachments.length > 0) {
+      L.push('');
+      L.push(`打包时就缺 ${missingAttachments.length} 个，这些引用在目标机器上会报 \`ATTACHMENT_NOT_FOUND\`：`);
+      for (const id of missingAttachments) L.push(`- \`${id}\``);
+    }
     L.push('');
   }
   entries.push({ name: 'SUMMARY.md', data: Buffer.from(L.join('\n'), 'utf8') });
@@ -950,6 +1075,7 @@ const ENTRY_ALLOW = [
   /^SUMMARY\.md$/,
   /^session\/[^/]+\.jsonl(\.zstd)?$/,
   /^memory\/workspaces\/[^/]+\/.+$/,
+  /^attachments\/(objects|files)\/[0-9a-f]{2}\/[0-9a-f]{64}$/,
 ];
 
 /**
@@ -957,7 +1083,7 @@ const ENTRY_ALLOW = [
  * `parts` 只登记这两类（元数据条目 manifest/LOCK/SUMMARY 不登记），
  * 所以「必须在 parts 里声明过」这条只能对它们提要求。
  */
-const CONTENT_ENTRY = /^(session\/|memory\/workspaces\/)/;
+const CONTENT_ENTRY = /^(session\/|memory\/workspaces\/|attachments\/)/;
 
 /**
  * 打开前的整包校验：条目白名单 + `manifest.parts` 的 sha256／体积比对。
@@ -1095,6 +1221,8 @@ function importPackage(sourcePath, options = {}) {
       typeof existingCwd === 'string' && path.resolve(existingCwd) === path.resolve(cwd);
     if (sameSession && sameCwd) {
       // 同一会话的另一份（同 id + 同 createdAt + 同工作区）→ 直接打开本机这份，不复制
+      // 直接打开本机这份，也照样回填附件：用户很可能就是拿这个包来补上次没带过来的图
+      const attachRestore = restoreAttachments(entries);
       const state = rememberSource(readState(), id, sourcePath);
       writeState(state);
       return {
@@ -1109,6 +1237,9 @@ function importPackage(sourcePath, options = {}) {
         memoryWritten: 0,
         memorySkipped: 0,
         memoryConflicts: [],
+        attachmentsWritten: attachRestore.written,
+        attachmentsSkipped: attachRestore.skipped,
+        attachmentsRejected: attachRestore.rejected,
         sourcePath,
         packageLock,
       };
@@ -1149,6 +1280,8 @@ function importPackage(sourcePath, options = {}) {
     }
 
     if (mode === 'reuse') {
+      // 直接打开本机这份，也照样回填附件：用户很可能就是拿这个包来补上次没带过来的图
+      const attachRestore = restoreAttachments(entries);
       const state = rememberSource(readState(), id, sourcePath);
       writeState(state);
       return {
@@ -1164,6 +1297,9 @@ function importPackage(sourcePath, options = {}) {
         memoryWritten: 0,
         memorySkipped: 0,
         memoryConflicts: [],
+        attachmentsWritten: attachRestore.written,
+        attachmentsSkipped: attachRestore.skipped,
+        attachmentsRejected: attachRestore.rejected,
         sourcePath,
         packageLock,
       };
@@ -1221,6 +1357,10 @@ function importPackage(sourcePath, options = {}) {
     throw new Error('目标位置已有同名会话文件，拒绝覆盖');
   }
   fs.writeFileSync(target, finalBuf);
+
+  // 会话日志落盘之后紧接着回填附件对象：日志里引用的是内容哈希，对象不在就等于
+  // 打开时必然 ATTACHMENT_NOT_FOUND。失败不抛错（包可能天生就缺），只回报计数。
+  const attached = restoreAttachments(entries);
 
   let memoryWritten = 0;
   let memorySkipped = 0;
@@ -1372,6 +1512,9 @@ function importPackage(sourcePath, options = {}) {
     stats: readStats(finalBuf),
     memoryWritten,
     memorySkipped,
+    attachmentsWritten: attached.written,
+    attachmentsSkipped: attached.skipped,
+    attachmentsRejected: attached.rejected,
     memoryConflicts,
     // 「本机没有、这次没写」的那批。界面据此提醒「有东西没写」，和 memoryConflicts 分开用。
     memoryCreated,

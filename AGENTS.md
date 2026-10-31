@@ -9,7 +9,7 @@
 - 语言/运行时：纯 ESM（`"type": "module"`），零运行时依赖，只用 `node:` 内置模块；客户端只 `require('react')`。
 - 宿主：DSH `>=0.2.1-rc.1`（`engines.dsh`），Cordis `^4.0.1`（peer）。
 - 平台：Windows 优先（原生对话框走 `powershell.exe` + WinForms）；macOS 走 `osascript` 的 Finder 面板；Linux/BSD 探 zenity / kdialog / qarma / matedialog。三者都没有时退回网页里的路径输入框。平台相关代码全部隔离在 `dialog/` 下（`index.mjs` 选实现、`shared.mjs` 共用工具、`windows.mjs` / `macos.mjs` / `linux.mjs` 各平台实现），`index.js` 只 import `dialog/index.mjs`，不认识具体实现。
-- 规模：`index.js` ≈1980 行、`client.js` ≈2090 行、七套测试共 275 条 ✅（`smoke.mjs` 另有 12 处 throw 检查，只打一行汇总）。逐条覆盖见 `docs/TEST-MATRIX.md`。
+- 规模：`index.js` ≈2120 行、`client.js` ≈2090 行、八套测试共 286 条 ✅（`smoke.mjs` 另有 12 处 throw 检查，只打一行汇总）。逐条覆盖见 `docs/TEST-MATRIX.md`。
 
 ## 红线（改之前先看，违反会静默坏掉）
 
@@ -42,9 +42,9 @@ marketplace/        上架条目（提 PR 到 awesome-dsh-plugin 用）
 scripts/bump.mjs    改版本（package.json + CHANGELOG）
 scripts/release-notes.mjs 从 CHANGELOG 摘某版本正文当 Release 说明
 scripts/set-repo.mjs 把 OWNER 占位换成真实 GitHub 名字
-test/fixture.mjs    临时 DSH_HOME 夹具（七套测试共用）
-test/*.mjs          七套自检（见「测试」）
-docs/TEST-MATRIX.md 功能面 → 测试覆盖矩阵（50 条 F 编号）
+test/fixture.mjs    临时 DSH_HOME 夹具（八套测试共用）
+test/*.mjs          八套自检（见「测试」）
+docs/TEST-MATRIX.md 功能面 → 测试覆盖矩阵（51 条 F 编号）
 docs/DSH-API-SURFACE.md 用到的 DSH 接口清单（升级 DSH 时逐条核对）
 assets/             截图与方形图标（市场用）
 ```
@@ -59,6 +59,7 @@ node test/open.mjs        # 打开链路：复用 / 换 cwd 落地 / need-worksp
 node test/conflict.mjs    # 锁、四种冲突、CAS、自动保存（约 30 秒，含 2.6 秒等待）
 node test/security.mjs    # 安全回归：条目名穿越 / 落点文件名 / 解压炸弹 / 路由闸 / parts 校验
 node test/pathkey.mjs     # 路径键：projectKey / encodeSegment 与官方实现逐字对齐（含分隔符、emoji、根路径边界）
+node test/attach.mjs      # 附件：引用提取、随包带走、缺失记账、导入回填与幂等、篡改条目拒绝
 
 node --check index.js client.js            # 语法
 node scripts/bump.mjs patch --dry          # 版本号预演
@@ -184,7 +185,7 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
 三条硬规矩：
 
 1. **别在文档里复述代码**。默认文件名规则的真源是 `index.js` 的 `suggestPath()`、上限常量在 `index.js` 顶部；文档只说结论和例子，不抄正则、不抄常量值。抄了就会在下次改代码时变成谎言。
-2. **数字必须当场能验**。文档里出现"11 条红线""275 条 ✅""F1–F50""≈1980 行"这类计数时，要能用一条命令复现（见「改完之后」）。改完顺手核一遍，别让读者去发现数字过期。
+2. **数字必须当场能验**。文档里出现"11 条红线""286 条 ✅""F1–F51""≈2120 行"这类计数时，要能用一条命令复现（见「改完之后」）。改完顺手核一遍，别让读者去发现数字过期。
 3. **中英必须同一次改完**。`README.md` 与 `README.en.md` 是同一份文档的两种语言：小标题顺序、表格列、示例文件名一一对应。只改一份等于给另一半读者发过期信息。
 
 还有两条不写在文档里的东西：进度和计划（放 issue / PR / 提交信息，不写进 README 的"路线图"）、本机路径与个人环境（`C:\Users\...`、profile 名、私有 registry）——后者写进文档等于把私有环境当契约。
@@ -192,7 +193,7 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
 ## 改完之后
 
 1. `node --check index.js client.js`（改过 .ps1 再加语法检查）。
-2. 跑**全部七套**测试，别只跑改到的那一个；改过客户端再补一轮 `DSH_TEST_LOCALE=en-US node test/client.mjs`。
+2. 跑**全部八套**测试，别只跑改到的那一个；改过客户端再补一轮 `DSH_TEST_LOCALE=en-US node test/client.mjs`。
 3. 改过行为 → `CHANGELOG.md` 的 `[Unreleased]` 加一条。
 4. 改过任何一个断言或功能点 → 同步 `docs/TEST-MATRIX.md` 的覆盖表（它按 F 编号列，条数对不上就是漏改）。
 5. 改过文档 → 按「文档怎么改」那张表核对：中英两份是否同改、有没有把代码细节抄进文档、文中的计数是否仍成立：
@@ -201,7 +202,7 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
    wc -l index.js client.js                                  # 对应 AGENTS.md「规模」
    awk '/^## 红线/,/^## 目录/' AGENTS.md | grep -c '^[0-9]\+\. \*\*'   # 红线条数（必须限在红线节内：本文别处也有编号列表）
    grep -oE 'F[0-9]+' docs/TEST-MATRIX.md | sort -u | wc -l  # 功能面条数
-   for f in client dialog smoke open conflict security pathkey; do node test/$f.mjs | grep -c '✅' ; done   # 七行相加 = 275
+   for f in client dialog smoke open conflict security pathkey attach; do node test/$f.mjs | grep -c '✅' ; done   # 八行相加 = 286
    ```
 
 6. 确认测试没有留下垃圾：跑完 `git status` 应为只有你改的源文件，`os.tmpdir()` 下不该残留 `dshss-fx-*` / `dshss-sec-*` 目录（`autoCleanup` 会删，残留说明收尾路径漏了信号处理）。

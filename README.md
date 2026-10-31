@@ -200,6 +200,8 @@ manifest.json                      会话元数据 + 每个条目的 sha256 + �
 LOCK.json                          谁写的、什么时候、写了几次
 session/session.v4.jsonl.zstd       会话日志原字节（zstd 帧一个不动）
 memory/workspaces/<slug>/**         该工作区的项目记忆（笔记 / 交接 / 反思）
+attachments/objects/<前2>/<sha256>  会话引用到的图片（按内容哈希存，去重）
+attachments/files/<前2>/<sha256>    会话引用到的其它文件（同上）
 SUMMARY.md                          人类可读摘要（ID / 工作区 / 帧数 / 行数 / 写入者）
 ```
 
@@ -211,7 +213,13 @@ dshproj info     会话.dsproj                      # 看标题、帧数、记�
 dshproj import   会话.dsproj --cwd D:\elsewhere   # 导进另一个工作区（换新 id）
 ```
 
-不打包工作区里的代码文件——`.dsproj` 只带会话与记忆。要把代码一起带走用 `dshproj export --files`。
+### 图片跟着包走
+
+会话日志里只留 `sha256:` 引用，图片和文件的字节在 `~/.dsh/attachments/v1` 下的独立对象库。两者不同步就会出「附件丢失」——而且重试不会自愈，因为引用指向的是一段固定哈希，重试还是同一段。所以打包时按内容哈希把**会话真正引用到的**对象一起塞进 `attachments/`，读出来先重算哈希，对不上宁可不带。
+
+打开时按同样规则回填：目标已存在就跳过（内容寻址天然幂等，两个包带同一张图不会打架）；条目名与哈希前缀不符、或内容哈希对不上，一律拒绝写入。本机本来就没有的对象记进 `manifest.attachments.missing` 并写进 `SUMMARY.md`——接包的人能提前知道「这个包天生缺几张图」，而不是打开时炸一脸。
+
+不打包工作区里的代码文件——`.dsproj` 只带会话、记忆与附件。要把代码一起带走用 `dshproj export --files`。
 
 ## 常见问题
 

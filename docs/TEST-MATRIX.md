@@ -2,7 +2,7 @@
 
 本文从代码反推功能面（`index.js` 四条路由 + `client.js` 五个插槽项），逐条列出可观测行为、期望结果，以及由哪套测试覆盖。测试分两层：
 
-- **七套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共打印 260 行 ✅。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
+- **八套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共打印 286 行 ✅。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
 - **审计验收脚本**（未随仓库分发）：针对历史漏洞的复现/防回归，判据写在下表里，可照着重写。
 
 所有套件都通过 `test/fixture.mjs` 自建临时 `DSH_HOME`（`os.tmpdir()` 下），跑完自删——**不读也不改真实 `~/.dsh`**，所以在任何机器、任何数据状态下结果一致。功能面的 F 编号是本文与 `test/*.mjs` 注释共同引用的锚点，改动功能时两边一起改。
@@ -95,6 +95,7 @@
 | F48 | 非 Windows 原生面板 | macOS 走 `osascript` 的 `choose file name` / `choose file`（`POSIX file` 包 alias、`POSIX path of` 转回 `/Users/...`、文件名冒号换 `-`、双引号转义、取消按 `-128` 判）；Linux/BSD 按 zenity → kdialog → qarma → matedialog 探测，GTK 系与 KDE 系各用一套开关，一个都没装（无头/容器）→ 降级。三平台统一补 `.dsproj` 扩展名、统一 `RESULT:` 单行契约 |
 | F49 | 打开记忆目录 | `MemoryNotice` 走 `remote.session.openWorkspacePath({ path, action: 'reveal' })`，`inject` 里声明 `remote` 与 `remote.session`。**不得**调 `uiWorkspace.openPath`——DSH 的 `uiWorkspace` 没有这个方法，`typeof … === 'function'` 恒假，按钮点了没反应且不报错。目录只能用 `reveal`（省略 `action` 是「用默认应用打开」，对目录会失败） |
 | F50 | 保存前确认目标还在 | 保存的目标是「那个路径上的那个文件」，不是「那个路径」。①手动保存：走「记住的路径」（`reusedRemembered`）且没带 `recreate=1` 时先 `fs.existsSync(target)`，不在就返回 `409 {status:'missing-target', path, name, dir, suggested}`，**一个字节都不写**；写盘阶段抛 `ENOENT` 也归到这个状态而不是 500。②自动保存：`autosaveOnce` 在 `lockBlocks` 之后、`staleOf` 之前先查目标在不在，不在就 `delete state.autosave[id]` + 记 `state.missing[id] = {path, detectedAt}` 后直接返回；`catch` 里的 `ENOENT` / 「目标目录不存在」同样走这条熔断。③打包写入一律 `writeAtomic(..., { createDir: false })`，目录不存在抛「目标目录不存在」，不再 `mkdir -p` 顺手把目录和文件一起造出来。④`missing` 在打开成功、保存成功、自动保存成功后清掉 |
+| F51 | 附件随包带走与回填 | 会话日志只存 `sha256:` 引用，图片/文件字节在 `DSH_HOME/attachments/v1/{objects,file-objects}/<前2>/<sha64>` 的独立对象库——只导日志的包换机打开必然 `ATTACHMENT_NOT_FOUND`，且重试不自愈。①打包：`attachmentRefs(buf)` 从解压后的日志文本抓 `attachmentId` / `fileId` 的 `sha256:` 引用（正则容忍 JSON 内嵌时被转义的引号），逐条去对象库读，**读出来重算哈希对不上就不带**，条目名 `attachments/<objects\|files>/<前2>/<sha256>`；本机没有的记进 `manifest.attachments.missing` 并写进 `SUMMARY.md`；`options.includeAttachments === false` 可关。②回填：`restoreAttachments(entries)` 三道校验——条目名匹配 `ATTACH_ENTRY_RE`、分片目录必须等于哈希前两位、`cryptoHash(data) === sha`，任一不成立计 `rejected` 跳过；目标已存在计 `skipped`（内容寻址幂等）；落盘映射 `objects → objects`、`files → file-objects`。③`ENTRY_ALLOW` 与 `CONTENT_ENTRY` 放行 `attachments/` 前缀，`verifyPackage` 仍要求这些条目在 `parts` 里声明。④导入返回值新增 `attachmentsWritten` / `attachmentsSkipped` / `attachmentsRejected` |
 
 ## 二、测试矩阵（用例 → 期望 → 覆盖）
 
@@ -110,7 +111,9 @@
 | `test/conflict.mjs` | 67 | F5–F7、F11、F28–F32、F44 | 四种冲突顺序 ask→reuse→copy→overwrite；覆盖前留 `.bak`；异机新鲜锁给理由；CAS 409 与 `force`；自动保存钩子写盘并递增 `writes`；关闭后不再写；同步盘识别；目录复原 |
 | `test/security.mjs` | 114 | F22–F27、F38–F43、F50 | V1 越界条目读包即拒；V2 恶意 `fileName` 被收敛；V3 200 MB / 1026:1 在解压前拒绝；V4 目录外 400 且不建树；V5 非 id 400；V6 不回显路径；V7 `parts` 不符 500；V8 跨站 403；R1 未声明条目拒绝；R4 默认永不落原名；R6 restore 只覆盖已有、`memory=new` 才新建；V12 记住的文件被删后再存必须 409 `missing-target` 且不重建、`recreate=1` 才落地、成功后清 `missing`；V12b 自动保存发现目标消失后自己关掉并带回原路径、不重建 |
 
-合计 **275 条**。
+| `test/attach.mjs` | 11 | F51 | A1 日志里只有 `sha256:` 引用、对象库有字节时，包内出现 1 个 `attachments/objects/<前2>/<sha>` 且 manifest 记账正确；A2 同一张图被引用两次只带一份（内容寻址去重）；A3 本机缺对象时包照常出、`manifest.attachments.missing` 记下该哈希、`SUMMARY.md` 说明缺几个；A4 对象库里的字节被改坏（哈希对不上）时不带；A5 导入回填把对象写进新 DSH_HOME 的 `objects/`；A6 再导一次是 `skipped` 不是 `written`、文件 mtime 不变；A7 被篡改的包内条目（内容与名字不符）计 `rejected` 且不落盘；A8 分片目录与哈希前缀不符同样 `rejected`；A9 `objects` 与 `file-objects` 两个池分开落盘；A10 `includeAttachments: false` 时一个附件条目都不带；A11 包内附件条目必须在 `parts` 里声明，否则 `verifyPackage` 拒绝 |
+
+合计 **286 条**。
 
 ### 审计验收脚本（未随仓库分发）
 
@@ -150,7 +153,7 @@ node test/open.mjs
 node test/conflict.mjs
 node test/security.mjs
 node test/pathkey.mjs
-# 或一把梭：275 条全绿
+# 或一把梭：286 条全绿
 for f in client dialog smoke open conflict security pathkey; do node test/$f.mjs || exit 1; done
 ```
 

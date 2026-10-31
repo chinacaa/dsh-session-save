@@ -32,14 +32,14 @@
 ```js
 export const name = 'session-save'   // index.js:20  Loader 行名
 export const inject = ['connection'] // index.js:22  硬依赖：connection 不在就不 apply
-export function apply(ctx)           // index.js:1915
+export function apply(ctx)           // index.js:2058
 ```
 
 `inject` 声明的是 Cordis 服务名。写进数组 = 硬依赖（服务缺失则本插件不启动）；反之用 `ctx.get(name)` 拿的是可选依赖。
 
 ### 1.2 `ctx.connection`（Host 服务）
 
-- **取法**：`index.js:1916` `const connection = Reflect.get(ctx, 'connection')`。用 `Reflect.get` 而不是 `ctx.connection`，是为了在缺服务时拿到 `undefined` 而不是抛错。
+- **取法**：`index.js:2059` `const connection = Reflect.get(ctx, 'connection')`。用 `Reflect.get` 而不是 `ctx.connection`，是为了在缺服务时拿到 `undefined` 而不是抛错。
 - **只用了一个成员**：`connection.fetch.register(...)`。
 - **契约**（Inspect 实测 `host/Service.listService` → `connection`）：
 
@@ -59,12 +59,12 @@ interface ConnectionFetchRoute {
 
 | 路由 | 行号 | methods | requestBody |
 |---|---|---|---|
-| `/api/session.save` | `index.js:1919` | `['GET','POST']` | `buffered` |
-| `/api/session.open` | `index.js:1931` | `['GET','POST']` | `buffered` |
-| `/api/session.workspaces` | `index.js:1943` | `['GET','POST']` | `buffered` |
-| `/api/session.autosave` | `index.js:1949` | `['GET','POST']` | `buffered` |
+| `/api/session.save` | `index.js:2062` | `['GET','POST']` | `buffered` |
+| `/api/session.open` | `index.js:2074` | `['GET','POST']` | `buffered` |
+| `/api/session.workspaces` | `index.js:2086` | `['GET','POST']` | `buffered` |
+| `/api/session.autosave` | `index.js:2092` | `['GET','POST']` | `buffered` |
 
-`fetch` 收到的是标准 `Request`，返回标准 `Response`（`jsonResponse()`，`index.js:1625`）。四条都自己做了 `requestGate()` 来源校验（`index.js:1545`：回环 Host + 同源 Origin + 拒 cross-site），**不依赖 connection 的鉴权**——所以若 DSH 改变了 Host 头/Origin 的注入方式，这里会先拦住请求。
+`fetch` 收到的是标准 `Request`，返回标准 `Response`（`jsonResponse()`，`index.js:1768`）。四条都自己做了 `requestGate()` 来源校验（`index.js:1688`：回环 Host + 同源 Origin + 拒 cross-site），**不依赖 connection 的鉴权**——所以若 DSH 改变了 Host 头/Origin 的注入方式，这里会先拦住请求。
 
 四条路由的 409 语义（客户端按 `status` 字段分流，不是按 HTTP 码）：
 

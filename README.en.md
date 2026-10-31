@@ -182,6 +182,8 @@ manifest.json                      metadata + per-entry sha256 + lock mirror
 LOCK.json                          who wrote it, when, how many writes
 session/session.v4.jsonl.zstd       the raw session log (zstd frames untouched)
 memory/workspaces/<slug>/**         that workspace's project memory
+attachments/objects/<2>/<sha256>    images the session references (stored by content hash)
+attachments/files/<2>/<sha256>      other files it references (same scheme)
 SUMMARY.md                          human-readable digest
 ```
 
@@ -193,7 +195,13 @@ dshproj info     session.dsproj                     # title, frame count, memory
 dshproj import   session.dsproj --cwd D:\elsewhere  # import under a new id
 ```
 
-Code files are not included — a `.dsproj` holds the conversation and its memory. Use `dshproj export --files` to carry the workspace too.
+### Images travel with the package
+
+The session log only carries `sha256:` references; the bytes live in a separate object store under `~/.dsh/attachments/v1`. Let the two drift and you get the "attachment missing" error — and retrying does not heal it, because the reference is a fixed hash and the retry asks for the same hash again. So packaging now walks the references the session actually makes and stores those objects under `attachments/`, re-hashing each one on the way in and dropping anything that does not match.
+
+Opening applies the same rule in reverse: an object that already exists is skipped (content addressing is idempotent, so two packages carrying the same image cannot fight); an entry whose shard does not match its hash prefix, or whose content does not hash to its name, is refused. Objects this machine never had are listed in `manifest.attachments.missing` and repeated in `SUMMARY.md`, so the recipient knows up front that this package is missing a few images instead of discovering it in a wall of errors.
+
+Code files are not included — a `.dsproj` holds the conversation, its memory and its attachments. Use `dshproj export --files` to carry the workspace too.
 
 ## FAQ
 
