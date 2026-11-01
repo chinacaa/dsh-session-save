@@ -2,7 +2,7 @@
 
 本文从代码反推功能面（`index.js` 四条路由 + `client.js` 五个插槽项），逐条列出可观测行为、期望结果，以及由哪套测试覆盖。测试分两层：
 
-- **十一套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共打印 361 行 ✅。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
+- **十二套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共打印 394 行 ✅。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
 - **审计验收脚本**（未随仓库分发）：针对历史漏洞的复现/防回归，判据写在下表里，可照着重写。
 
 所有套件都通过 `test/fixture.mjs` 自建临时 `DSH_HOME`（`os.tmpdir()` 下），跑完自删——**不读也不改真实 `~/.dsh`**，所以在任何机器、任何数据状态下结果一致。功能面的 F 编号是本文与 `test/*.mjs` 注释共同引用的锚点，改动功能时两边一起改。
@@ -99,7 +99,7 @@
 
 ## 二、测试矩阵（用例 → 期望 → 覆盖）
 
-### 十一套回归
+### 十二套回归
 
 | 套件 | 条数 | 覆盖功能 | 关键期望 |
 | --- | --- | --- | --- |
@@ -109,7 +109,7 @@
 | `test/smoke.mjs` | 1（12 处 throw 检查） | F1、F8、F10、F12 | 夹具会话 → 打包 → 回读 ZIP 首条目 zstd magic、必有 `manifest.json`/`SUMMARY.md`/`session/`；二次保存复用同一路径；默认文件名规则与非法字符替换；无标题兜底名 |
 | `test/open.mjs` | 40 | F13–F21、F23 | 复用不写盘；新 cwd 落地并改写 header；`need-workspace` 列工作区；选好工作区后打开；帧 1..n 原字节一致；坏路径 404 且不回显 |
 | `test/conflict.mjs` | 67 | F5–F7、F11、F28–F32、F44 | 四种冲突顺序 ask→reuse→copy→overwrite；覆盖前留 `.bak`；异机新鲜锁给理由；CAS 409 与 `force`；自动保存钩子写盘并递增 `writes`；关闭后不再写；同步盘识别；目录复原 |
-| `test/security.mjs` | 158 | F22–F27、F38–F43、F50 | V1 越界条目读包即拒；V2 恶意 `fileName` 被收敛；V3 200 MB / 1026:1 在解压前拒绝；V4 目录外 400 且不建树；V5 非 id 400；V6 不回显路径；V7 `parts` 不符 500；V8 跨站 403；R1 未声明条目拒绝；R4 默认永不落原名；R6 restore 只覆盖已有、`memory=new` 才新建；V12 记住的文件被删后再存必须 409 `missing-target` 且不重建、`recreate=1` 才落地、成功后清 `missing`；V12b 自动保存发现目标消失后自己关掉并带回原路径、不重建；R7 附件条目 64 KB 起就算压缩比（3 MiB 全零 → 500 且对象库零写入）、2001 个附件只写 2000、超 128 MB 截断、正常包不受影响、已存在的不占配额；R8 六处解压单帧 64 MB 上限（900 MB 炸弹抛 `ERR_BUFFER_TOO_LARGE` 而**不是**当成坏帧静默跳过）、打包与体检的全解路径另有 512 MB 累计预算；R9 cwd 是普通文件或不存在的目录 → 400 `bad-workspace` 且不建目录、拒绝理由不含盘符，`ws` 与 `ws\` 落到两个记忆目录且不覆盖原 `MEMORY.md`；R10 打开失败只回通用文案、会话日志用临时文件 + `rename` 原子落盘、`wx` 撞名重试、部分失败时目录不残留 |
+| `test/security.mjs` | 167 | F22–F27、F38–F43、F50 | V1 越界条目读包即拒；V2 恶意 `fileName` 被收敛；V3 200 MB / 1026:1 在解压前拒绝；V4 目录外 400 且不建树；V5 非 id 400；V6 不回显路径；V7 `parts` 不符 500；V8 跨站 403；R1 未声明条目拒绝；R4 默认永不落原名；R6 restore 只覆盖已有、`memory=new` 才新建；V12 记住的文件被删后再存必须 409 `missing-target` 且不重建、`recreate=1` 才落地、成功后清 `missing`；V12b 自动保存发现目标消失后自己关掉并带回原路径、不重建；R7 附件条目 64 KB 起就算压缩比（3 MiB 全零 → 500 且对象库零写入）、2001 个附件只写 2000、超 128 MB 截断、正常包不受影响、已存在的不占配额；R8 六处解压单帧 64 MB 上限（900 MB 炸弹抛 `ERR_BUFFER_TOO_LARGE` 而**不是**当成坏帧静默跳过）、打包与体检的全解路径另有 512 MB 累计预算；R9 cwd 是普通文件或不存在的目录 → 400 `bad-workspace` 且不建目录、拒绝时回显包内原路径 + `reason`（`not-directory` / `missing`）+ 本机可用工作区，`ws` 与 `ws\` 落到两个记忆目录且不覆盖原 `MEMORY.md`；R10 打开失败只回通用文案、会话日志用临时文件 + `rename` 原子落盘、`wx` 撞名重试、部分失败时目录不残留 |
 
 | F52 | 打开前体检自愈 | 包可能来自别的机器、中间也可能有文件被删过，会话里就会留下打不开的东西。`repairSession(buffer, options)` 在导入落盘前扫一遍：①逐帧 `zstdDecompressSync`，解不开的帧**原样保留原字节**并计 `frames.broken`（不替用户丢帧）；②逐行 `JSON.parse`，失败计 `lines.dropped` 并丢弃该行，同帧其余事件照常保留；③`repairPartNode` 递归遍历，**两种 image 形状都认**——`node.attachment` 对象（含 `attachmentId`/`mediaType`/`bytes`/`width`/`height`/`name`）与扁平 `node.attachmentId`。对象在本机不存在（`hasAttachmentObject('objects', sha)` 为假）→ 换成 `{type:'text', text:'[图片已丢失：<name>]'}`，计 `parts.missing`/`parts.dropped`；`keepMissing: true` 时只计数不改字节。对象在但 `width`/`height`/`bytes` 缺失或非正数、或 `mediaType` 不在 `image/png\|jpeg\|webp\|gif` 白名单 → 用 `imageInfoOf(buf)` 按文件头（PNG/GIF/WebP/JPEG）补齐，计 `parts.patched`；扁平形状没有这些字段，对象在就原样返回（不凭猜补）。④只有真改过的帧用 `zstdCompressSync(payload, CHECKSUM_OPTIONS)` 重压，未改帧逐字节沿用，帧结构不变；⑤返回 `{ buffer, report }`，`report = { frames:{total,broken}, lines:{total,dropped}, parts:{total,missing,patched,dropped}, changed, notes }`。⑥`importPackage` 里顺序固定为「先 `restoreAttachments(entries)` 回填附件 → 再 `repairSession(finalBuf)` → 才 `fs.writeFileSync`」：反了就会把包里自带的图判成缺失换成占位。⑦「本机已经有这份会话」的两条早退分支（同 id 同 cwd 的 `reused`、`mode === 'reuse'`）也走 `repairInPlace(existing.file)`，只在 `changed` 为真时 `writeAtomic` 写回——用户在同一台机器上重开自己的包走的正是这条路。⑧导入返回值新增 `repair` 报告 |
 | `test/attach.mjs` | 11 | F51 | A1 日志里只有 `sha256:` 引用、对象库有字节时，包内出现 1 个 `attachments/objects/<前2>/<sha>` 且 manifest 记账正确；A2 同一张图被引用两次只带一份（内容寻址去重）；A3 本机缺对象时包照常出、`manifest.attachments.missing` 记下该哈希、`SUMMARY.md` 说明缺几个；A4 对象库里的字节被改坏（哈希对不上）时不带；A5 导入回填把对象写进新 DSH_HOME 的 `objects/`；A6 再导一次是 `skipped` 不是 `written`、文件 mtime 不变；A7 被篡改的包内条目（内容与名字不符）计 `rejected` 且不落盘；A8 分片目录与哈希前缀不符同样 `rejected`；A9 `objects` 与 `file-objects` 两个池分开落盘；A10 `includeAttachments: false` 时一个附件条目都不带；A11 包内附件条目必须在 `parts` 里声明，否则 `verifyPackage` 拒绝 |
@@ -122,7 +122,10 @@
 | `test/version.mjs` | 7 | F53 | V1 `compareVersions` 五种情形（9.9.9 > 0.3.1、0.3.10 > 0.3.9 按数值比、1.0.0 > 0.9.9、自己跟自己相等、`0.3.0-rc.1` 丢后缀后等于 `0.3.0`）；V2 打出来的包 `manifest.plugin.name === 'dsh-session-save'` 且 `version` 等于 `package.json` 的版本；V3 把包改成「9.9.9 写的」并塞一条本版不认识的 `previews/…` 条目 → 打开返回 500，提示含「更新版本」「9.9.9」本机版本「升级」，且不含盘符路径；V4 同版本 + 陌生条目 → 仍报「不认识的条目」，不说「更新版本」；V5 删掉 `plugin` 字段的老包 + 陌生条目 → 照旧拒绝、不崩；V6 正常包照常打开（改了校验不等于改了放行） |
 | `test/open-repair.mjs` | 6 | F52 | 端到端走真实路由 save → open：O1 会话里放一个本机没有的 image 对象，打包照常成功；O2 打开返回 `repair.parts.missing=1` / `dropped=1` / `changed=true` 且 `notes` 非空；O3 落盘的会话文件里已无 `"type":"image"`、留有可读占位；O4 同一份包再打开不再报缺失（体检幂等）；O5 全程不碰夹具外的路径 |
 
-合计 **361 条**。
+| F57 | 三处「只能报错」给出下一步 | ①`replaceFile=1`：`landingCwd` 判 `not-directory` 时把占位文件改名成 `<原名>.bak-<时间戳>` 并建目录，失败改回原名；返回体 `canReplace` / `replacedFile`。②`ignoreLock=1`：锁判定改成 `!force && !ignoreLock`，409 带 `canIgnoreLock: true`；`stale` / 覆盖确认 / 类型判断不受影响。③`repairPackage=1`：`verifyPackage(..., { lenient: true })` 摘掉白名单外、哈希或体积不符、未声明的条目并返回 `dropped`；`importPackage` 重读一次再宽松校验，`session/` 被摘光仍拒绝；成功则 `packageRepair = { dropped, reason }` 并收窄 `manifest.attachments`。`packageBrokenReport()` 生成可复制的 `prompt`。 |
+| F58 | 界面语言由语言包驱动 | `locales/<tag>.json` 是唯一真源（`zh-CN.json` 为源语言，114 键）；`index.js` 的 `listLocaleTags()` 只列目录里的 `*.json`，`resolveLocaleTag()` 先精确、再主语言前缀（`en` → `en-US`）、最后回 `zh-CN`，**绝不按请求字符串拼路径**（`?lang=../../package` 退化成中文）；`LOCALES_ROUTE = '/api/session.locales'` 过 `requestGate`（回环 Host + 同源 Origin，跨站 403），下发 `{status, lang, fallback, messages, available}`。客户端启动时 `void loadLocale()` 按 `navigator.language` 拉一次、`Object.assign(L, messages)` 就地合并（`L.xxx` 几百处直读，换引用等于重写），失败静默沿用内置中文兜底表。`scripts/check-locales.mjs` 校验 JSON 合法 / 值是字符串 / 键是源语言子集 / 占位符一致。 |
+
+合计 **394 条**。
 
 ### 审计验收脚本（未随仓库分发）
 

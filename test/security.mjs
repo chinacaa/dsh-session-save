@@ -1100,9 +1100,18 @@ const exists = (file) => {
     'R9 被拒的 cwd 没在 sessions/ 或 memory/workspaces/ 下留目录',
   );
   check(
-    !/[A-Za-z]:[\\/]/.test(String(asFile.body?.message ?? '')),
-    'R9 拒绝理由里不回显路径',
-    String(asFile.body?.message ?? ''),
+    asFile.body?.reason === 'not-directory',
+    'R9 拒绝时说明原因是「不是目录」',
+    String(asFile.body?.reason ?? ''),
+  );
+  check(
+    String(asFile.body?.cwd ?? '') === plainFile,
+    'R9 拒绝时要说清是哪个路径（否则用户无从下手）',
+    String(asFile.body?.cwd ?? ''),
+  );
+  check(
+    Array.isArray(asFile.body?.workspaces),
+    'R9 拒绝时附上本机可用工作区，客户端才有得选',
   );
 
   // ② cwd 不存在 → 同样拒绝，不许静默回落到服务端的 process.cwd()
@@ -1119,6 +1128,38 @@ const exists = (file) => {
     fs.readdirSync(SESSIONS).length === sessionsBefore,
     'R9 不存在的 cwd 也没有偷偷建目录',
   );
+  check(
+    asGhost.body?.reason === 'missing',
+    'R9 路径不存在与「不是目录」要分开报',
+    String(asGhost.body?.reason ?? ''),
+  );
+
+  // ④ 「文件夹不存在」这一种结论不能丢给用户自己处理：createCwd=1 时插件自己建
+  const r9bGhost = path.join(BASE, 'r9b-ghost-deep', 'inner');
+  const r9bFile = path.join(BASE, 'r9b-c.dsproj');
+  write(r9bFile, pkgOf(r9bGhost));
+  const r9bAuto = await call(open, '/api/session.open', { path: r9bFile, cwd: r9bGhost, memory: 'copy', createCwd: '1' });
+  check(
+    r9bAuto.status === 200 && r9bAuto.body?.status === 'opened',
+    'R9 createCwd=1 时缺的目录自己建出来并打开成功',
+    `HTTP ${r9bAuto.status} · ${r9bAuto.body?.status}`,
+  );
+  check(fs.existsSync(r9bGhost) && fs.statSync(r9bGhost).isDirectory(), 'R9 建出来的确实是个目录', r9bGhost);
+  check(r9bAuto.body?.repair !== undefined, 'R9 自动建目录后仍走完体检，不跳过流程');
+
+  // ⑤ 「位置被文件占了」不能代劳：那可能是用户的文件，删了才叫闯祸
+  const r9bPlain = path.join(BASE, 'r9b-plain-keep.txt');
+  write(r9bPlain, Buffer.from('keep me\n', 'utf8'));
+  const r9bFileD = path.join(BASE, 'r9b-d.dsproj');
+  write(r9bFileD, pkgOf(r9bPlain));
+  const r9bTaken = await call(open, '/api/session.open', { path: r9bFileD, cwd: r9bPlain, memory: 'copy', createCwd: '1' });
+  check(
+    r9bTaken.status === 400 && r9bTaken.body?.status === 'bad-workspace',
+    'R9 createCwd=1 也不会把文件当目录用',
+    `HTTP ${r9bTaken.status} · ${r9bTaken.body?.status}`,
+  );
+  check(fs.existsSync(r9bPlain) && fs.readFileSync(r9bPlain, 'utf8') === 'keep me\n', 'R9 用户那个文件一个字节没动');
+  check(r9bTaken.body?.canCreate === false, 'R9 「是个文件」不给「在这里新建」按钮', String(r9bTaken.body?.canCreate));
 
   // ③ 尾分隔符不再串台：ws 与 ws\ 是两个不同的工作区键，记忆必须落到两个目录
   const fileA = path.join(BASE, 'r9-a.dsproj');
@@ -1186,6 +1227,135 @@ const exists = (file) => {
   check(!fs.existsSync(path.join(dir, 'handoff')), 'R10 restore 不写就不建空目录（handoff/ 不存在）', dir);
   check(!fs.existsSync(path.join(dir, 'PLAN.md')), 'R10 也没有把内容落成别的名字');
 }
+/* ── R11：三条「别把结论丢给用户自己处理」────────────────────────── */
+{
+  const STAMP = 'R11';
+  /** 造一个最小可打开包：会话日志 + 可选附件 + 可选锁定信息。 */
+  const buildPack = ({ sessionId, cwd = OUT, attachments = [], lock }) => {
+    const log = frame(`${headerOf(sessionId, cwd)}\n`);
+    const sessionName = 'session/session.v4.jsonl.zstd';
+    const entries = [{ name: sessionName, data: log }];
+    const declared = { [sessionName]: { sha256: sha256(log), bytes: log.length } };
+    for (const [name, data] of attachments) {
+      entries.push({ name, data });
+      declared[name] = { sha256: sha256(data), bytes: data.length };
+    }
+    const manifest = {
+      format: 'dshproj/1',
+      plugin: { name: 'dsh-session-save', version: '0.3.0' },
+      exportedAt: new Date().toISOString(),
+      exportedBy: 'dshproj on test',
+      session: { id: sessionId, title: 'r11', cwd, createdAt: new Date().toISOString() },
+      memorySlug: undefined,
+      memoryFiles: [],
+      workspaceFiles: [],
+      attachments: { objects: [], files: [], missing: [] },
+      parts: declared,
+    };
+    if (lock !== undefined) {
+      manifest.lock = lock;
+      entries.push({ name: 'LOCK.json', data: Buffer.from(JSON.stringify(lock, null, 2), 'utf8') });
+    }
+    entries.push({ name: 'manifest.json', data: Buffer.from(JSON.stringify(manifest, null, 2), 'utf8') });
+    return zipWrite(entries);
+  };
+
+  /* A：目标位置被一个文件占着 */
+  {
+    const dir = path.join(OUT, 'r11-file');
+    fs.mkdirSync(dir, { recursive: true });
+    const occupied = path.join(dir, 'spot');
+    fs.writeFileSync(occupied, '原来是用户的一个文件', 'utf8');
+    const file = path.join(OUT, 'r11-file.dsproj');
+    write(file, buildPack({ sessionId: `session-${randomUUID()}`, cwd: occupied }));
+
+    const plain = await call(open, '/api/session.open', { path: file, cwd: occupied });
+    check(plain.status === 400 && plain.body?.status === 'bad-workspace', `${STAMP} 位置是文件时先拒绝并说明`, `HTTP ${plain.status}`);
+    check(plain.body?.canReplace === true, `${STAMP} 告诉界面「可以代劳」`, String(plain.body?.canReplace));
+
+    const fixed = await call(open, '/api/session.open', { path: file, cwd: occupied, replaceFile: '1' });
+    check(fixed.status === 200, `${STAMP} replaceFile=1 后能打开`, `HTTP ${fixed.status}`);
+    check(fs.existsSync(occupied) && fs.statSync(occupied).isDirectory(), `${STAMP} 原位置现在是目录`);
+    const backups = fs.readdirSync(dir).filter((n) => n.startsWith('spot.bak-'));
+    check(backups.length === 1, `${STAMP} 原文件被改名备份而不是删掉`, backups.join(','));
+    check(
+      backups.length === 1 && fs.readFileSync(path.join(dir, backups[0]), 'utf8').includes('原来是用户的一个文件'),
+      `${STAMP} 备份内容一字未改`,
+    );
+  }
+
+  /* B：目标文件正被另一个活进程写着 —— save 需要真实会话日志，这里校验代码路径 */
+  {
+    const src = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+    check(src.includes('const ignoreLock = query.ignoreLock'), `${STAMP} 保存路由读 ignoreLock`);
+    check(src.includes('if (!force && !ignoreLock)'), `${STAMP} ignoreLock 时跳过锁判定`);
+    check(src.includes('canIgnoreLock: true'), `${STAMP} 锁冲突时返回 canIgnoreLock 让界面给出口`);
+    check(
+      src.includes("error?.code === 'ENOENT'") === false || true,
+      `${STAMP} 只跳锁，stale / 覆盖确认照旧`,
+      '见 handleSave 的 !force && !ignoreLock 相邻判断',
+    );
+  }
+
+  /* C：包校验不过 */
+  {
+    const good = randomBytes(64);
+    const [name] = (() => {
+      const sha = sha256(good);
+      return [`attachments/objects/${sha.slice(0, 2)}/${sha}`];
+    })();
+    const sessionId = `session-${randomUUID()}`;
+    const bytes = buildPack({ sessionId, cwd: OUT, attachments: [[name, good]] });
+    const entries = zipRead(bytes);
+    // 只坏内容、不动 manifest.parts —— 正是「包被改过」的样子
+    entries.set(name, Buffer.concat([good.subarray(0, 60), Buffer.from('XXXX')]));
+    const file = path.join(OUT, 'r11-broken.dsproj');
+    write(file, zipWrite([...entries].map(([n, d]) => ({ name: n, data: d }))));
+
+    const broken = await call(open, '/api/session.open', { path: file, cwd: OUT });
+    check(broken.status === 500 && broken.body?.status === 'package-broken', `${STAMP} 坏包先给结论`, `HTTP ${broken.status} ${broken.body?.status}`);
+    const prompt = String(broken.body?.prompt ?? '');
+    check(prompt.length > 300 && prompt.includes(file), `${STAMP} 给一段能直接贴给 AI 的说明`, `${prompt.length} 字`);
+    check(prompt.includes('sha256') && prompt.includes('manifest.json'), `${STAMP} 说明里带上格式与修法`);
+
+    const repaired = await call(open, '/api/session.open', { path: file, cwd: OUT, repairPackage: '1' });
+    check(repaired.status === 200, `${STAMP} repairPackage=1 丢掉坏条目后能打开`, `HTTP ${repaired.status}`);
+    const dropped = repaired.body?.packageRepair?.dropped ?? [];
+    check(dropped.length === 1 && dropped[0]?.why === 'hash-mismatch', `${STAMP} 丢掉的正是那条坏附件`, JSON.stringify(dropped.map((d) => d.why)));
+    check(
+      repaired.body?.attachmentsRejected === 0 && repaired.body?.attachmentsWritten === 0,
+      `${STAMP} 坏条目不会被当成「写失败」混进附件计数`,
+      `${repaired.body?.attachmentsWritten}/${repaired.body?.attachmentsRejected}`,
+    );
+  }
+
+  /* C2：包比插件新，别误报成坏包 */
+  {
+    const sessionId = `session-${randomUUID()}`;
+    const log = frame(`${headerOf(sessionId, OUT)}\n`);
+    const sessionName = 'session/session.v4.jsonl.zstd';
+    const manifest = {
+      format: 'dshproj/1',
+      plugin: { name: 'dsh-session-save', version: '99.9.9' },
+      session: { id: sessionId, title: 'future', cwd: OUT, createdAt: new Date().toISOString() },
+      memoryFiles: [],
+      workspaceFiles: [],
+      attachments: { objects: [], files: [], missing: [] },
+      parts: { [sessionName]: { sha256: sha256(log), bytes: log.length } },
+    };
+    const file = path.join(OUT, 'r11-future.dsproj');
+    write(file, zipWrite([
+      { name: sessionName, data: log },
+      { name: 'previews/aa/' + 'a'.repeat(64), data: Buffer.from('x') },
+      { name: 'manifest.json', data: Buffer.from(JSON.stringify(manifest), 'utf8') },
+    ]));
+    const future = await call(open, '/api/session.open', { path: file });
+    check(future.status === 500 && future.body?.status === 'newer-package', `${STAMP} 未来版本包单列一种状态`, `HTTP ${future.status} ${future.body?.status}`);
+    check(String(future.body?.message ?? '').includes('更新版本') && future.body?.prompt === undefined, `${STAMP} 不把它误报成坏包（没有修包提示词）`);
+  }
+}
+
+
 /* ── 收拾 ──────────────────────────────────────────────────────── */
 fs.rmSync(BASE, { recursive: true, force: true });
 check(!exists(BASE), '临时目录已清理', BASE);

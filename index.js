@@ -27,6 +27,7 @@ export const ROUTE = '/api/session.save';
 export const OPEN_ROUTE = '/api/session.open';
 export const AUTOSAVE_ROUTE = '/api/session.autosave';
 export const WORKSPACES_ROUTE = '/api/session.workspaces';
+export const LOCALES_ROUTE = '/api/session.locales';
 
 const FORMAT = 'dshproj/1';
 /**
@@ -1352,19 +1353,36 @@ function rewriteHeader(buf, patch) {
 }
 
 /** The cwd a package should land in: the recorded one if it exists here, else this host's cwd. */
+// 「路径不存在」这一种，插件可以自己解决：用户点了「在这里新建」就建出来，
+// 不必让他去资源管理器里逐级创建。但只认绝对路径、且不碰盘符根/根目录——
+// 那两种是「路径本身写错了」，不是「文件夹还没建」，硬建只会造出一堆垃圾目录。
+function canAutoCreateCwd(target) {
+  if (typeof target !== 'string' || target === '') return false;
+  if (path.isAbsolute(target) !== true) return false;
+  if (path.dirname(target) === target) return false;
+  return true;
+}
+
 function landingCwd(preferred) {
   if (typeof preferred === 'string' && preferred !== '') {
     // 必须是**目录**：existsSync 对普通文件也返回 true，放过去会在 sessions/ 下
     // 建出以文件路径为键的目录（实测 sessions/--C-...-a-plain-file.txt--/）。
     // 用 statSync 而不是 lstatSync——工作区可能是 junction，lstat 会让它们全部失效。
+    let stat;
     try {
-      if (fs.statSync(preferred).isDirectory()) return preferred;
+      stat = fs.statSync(preferred);
     } catch {
-      /* 落到下面抛错 */
+      stat = undefined;
     }
+    if (stat !== undefined && stat.isDirectory() === true) return preferred;
     // 明确给了但不合格时**不回落** process.cwd()：那样落点与用户以为的完全无关，
     // 而且一个字都不提示。这里抛，由 importPackage 转成 bad-workspace。
-    throw new Error('工作区不可用');
+    // 抛出的错带上「哪个路径」和「什么毛病」，不然调用方只能回一句「不可用」，
+    // 用户既不知道是哪个路径，也不知道是该建目录还是该改配置。
+    const error = new Error('工作区不可用');
+    error.cwd = preferred;
+    error.reason = stat === undefined ? 'missing' : 'not-directory';
+    throw error;
   }
   return process.cwd();
 }
@@ -1452,40 +1470,108 @@ function unknownEntryMessage(entryName, manifest) {
  * 另外夹带一条没声明的 `memory/workspaces/<slug>/MEMORY.md` —— 那是每轮注入上下文的
  * 项目长期笔记，写进去等于 prompt injection。所以内容条目必须「全都被声明过」。
  */
-function verifyPackage(entries, manifest) {
-  for (const name of entries.keys()) {
+function verifyPackage(entries, manifest, options = {}) {
+  // 宽松模式只在用户明确点了「尝试修复后打开」时启用：校验不过的条目**从包里摘掉**，
+  // 能救多少救多少，然后把丢掉的清单交给调用方写进返回体。
+  // 默认（严格）行为一个字节都不改——校验放宽了就等于包校验形同虚设。
+  const lenient = options.lenient === true;
+  const dropped = [];
+  const drop = (name, why) => {
+    if (entries.delete(name) === true) dropped.push({ name, why });
+  };
+  for (const name of [...entries.keys()]) {
     if (!ENTRY_ALLOW.some((pattern) => pattern.test(name))) {
-      throw new Error(unknownEntryMessage(name, manifest));
+      if (lenient !== true) throw new Error(unknownEntryMessage(name, manifest));
+      drop(name, 'unexpected-entry');
     }
   }
   const parts = manifest?.parts;
   if (parts === undefined || parts === null || typeof parts !== 'object') {
     // 老包/第三方包可能没有 parts：会话条目照旧放行（不然旧包全打不开），
     // 但记忆条目无法验证来源，一律拒绝。
-    for (const name of entries.keys()) {
-      if (name.startsWith('memory/workspaces/')) {
-        throw new Error(`包内记忆条目缺少 manifest.parts，拒绝打开：${name}`);
-      }
+    for (const name of [...entries.keys()]) {
+      if (!name.startsWith('memory/workspaces/')) continue;
+      if (lenient !== true) throw new Error(`包内记忆条目缺少 manifest.parts，拒绝打开：${name}`);
+      drop(name, 'undeclared');
     }
-    return;
+    return lenient === true ? { dropped } : undefined;
   }
   for (const [name, meta] of Object.entries(parts)) {
     const data = entries.get(name);
     if (data === undefined) continue; // 旧包可能没带全，缺的条目按「没有」处理
-    if (typeof meta?.sha256 === 'string' && cryptoHash(data) !== meta.sha256) {
-      throw new Error(`包内条目校验失败（内容被改动过）：${name}`);
+    let why;
+    if (typeof meta?.sha256 === 'string' && cryptoHash(data) !== meta.sha256) why = 'hash-mismatch';
+    else if (Number.isFinite(meta?.bytes) && data.length !== meta.bytes) why = 'size-mismatch';
+    if (why === undefined) continue;
+    if (lenient !== true) {
+      throw new Error(
+        why === 'hash-mismatch'
+          ? `包内条目校验失败（内容被改动过）：${name}`
+          : `包内条目体积不符：${name}`,
+      );
     }
-    if (Number.isFinite(meta?.bytes) && data.length !== meta.bytes) {
-      throw new Error(`包内条目体积不符：${name}`);
-    }
+    drop(name, why);
   }
   // 内容条目必须在 parts 里声明过，否则等于绕过了上面的完整性校验
-  for (const name of entries.keys()) {
+  for (const name of [...entries.keys()]) {
     if (!CONTENT_ENTRY.test(name)) continue;
-    if (!Object.prototype.hasOwnProperty.call(parts, name)) {
-      throw new Error(`包内条目未在 manifest.parts 中声明，拒绝打开：${name}`);
-    }
+    if (Object.prototype.hasOwnProperty.call(parts, name)) continue;
+    if (lenient !== true) throw new Error(`包内条目未在 manifest.parts 中声明，拒绝打开：${name}`);
+    drop(name, 'undeclared');
   }
+  return lenient === true ? { dropped } : undefined;
+}
+
+/**
+ * 包彻底打不开时给用户的一段话：他可以直接整段贴给任意 AI，连同路径一起让 AI 修。
+ * 只描述格式与定位方法，不假设对方装了本插件——所以把条目结构写全。
+ */
+function packageBrokenReport(sourcePath, error, names) {
+  let size = 0;
+  try {
+    size = fs.statSync(sourcePath).size;
+  } catch {
+    size = 0;
+  }
+  const shown = names.slice(0, 60);
+  const lines = [
+    '我手上有一个 DSH 会话工程包（.dsproj）打不开，请你帮我修。',
+    '',
+    `包路径：${sourcePath}`,
+    `包体积：${size} 字节`,
+    `打开它的插件：dsh-session-save ${PLUGIN_VERSION}`,
+    `报错原文：${String(error?.message ?? error)}`,
+    '',
+    `包内条目（共 ${names.length} 个，下面列出前 ${shown.length} 个）：`,
+    ...shown.map((name) => `  - ${name}`),
+  ];
+  if (names.length > shown.length) lines.push(`  …另有 ${names.length - shown.length} 个未列出`);
+  lines.push(
+    '',
+    '这个包的本质是一个 zip，条目名与约定如下：',
+    '  manifest.json —— 顶层；format 为 dshproj/1；parts 记录每个内容条目的 sha256 与 bytes；lock 记录写出方',
+    '  session/<name>.jsonl 或 session/<name>.jsonl.zstd —— 会话日志，内容是 JSON Lines，zstd 变体是多帧拼接',
+    '  memory/workspaces/<slug>/<相对路径> —— 该会话所在工作区的记忆文件',
+    '  attachments/objects/<sha前2位>/<sha256> 与 attachments/files/<sha前2位>/<sha256> —— 附件对象，文件名就是内容的 sha256',
+    '',
+    '请按这个顺序做，不要跳步：',
+    '  1. 解压到临时目录，对每个内容条目重算 sha256 与字节数，和 manifest.parts 逐条比对，列出对不上的；',
+    '  2. 如果只是 manifest.parts 记错了（重算值稳定、条目本身能正常解压），就按实际值修正 manifest.json；',
+    '  3. 如果某条目字节确实坏了：附件、记忆条目可以删掉它并从 parts 同步删除；session/ 条目不能删——真坏了请先告诉我坏在哪几个字节，别猜；',
+    '  4. 重新打包成 zip，manifest.json 放在根目录，条目名与上面约定一致，压缩方式不限；',
+    '  5. 告诉我修好的文件路径、改了哪几条、还有哪些没能救回来。',
+    '',
+    '硬约束：不要改 session 日志的字节，不要重命名附件对象（名字就是内容哈希，改了就永久对不上），不要往包里加新条目。',
+  );
+  return {
+    status: 'package-broken',
+    // message 就是校验器的原话：用户先看懂「哪儿不合规」，再看下面的修包说明。
+    message: String(error?.message ?? error),
+    error: String(error?.message ?? error),
+    sourcePath,
+    entries: names.slice(0, 200),
+    prompt: lines.join('\n'),
+  };
 }
 
 /**
@@ -1494,7 +1580,7 @@ function verifyPackage(entries, manifest) {
  * @param options - { cwd?, memory?, onConflict? }
  */
 function importPackage(sourcePath, options = {}) {
-  const entries = zipRead(fs.readFileSync(sourcePath));
+  let entries = zipRead(fs.readFileSync(sourcePath));
   const manifestEntry = entries.get('manifest.json');
   let manifest;
   if (manifestEntry !== undefined) {
@@ -1504,7 +1590,60 @@ function importPackage(sourcePath, options = {}) {
       manifest = undefined;
     }
   }
-  verifyPackage(entries, manifest);
+  let packageRepair;
+  try {
+    verifyPackage(entries, manifest);
+  } catch (verifyError) {
+    const reasonText = String(verifyError?.message ?? '');
+    // 「包比插件新」不是包坏了——修包流程会建议用户删条目，那是错的提示。
+    if (reasonText.includes('更新版本')) {
+      return { status: 'newer-package', message: reasonText, sourcePath };
+    }
+    if (options.repairPackage !== true) {
+      return packageBrokenReport(sourcePath, verifyError, [...entries.keys()]);
+    }
+    // 宽松重试：重新解一遍，别拿严格模式可能动过的 Map。
+    entries = zipRead(fs.readFileSync(sourcePath));
+    const lenientManifest = entries.get('manifest.json');
+    let retryManifest = manifest;
+    if (lenientManifest !== undefined) {
+      try {
+        retryManifest = JSON.parse(lenientManifest.toString('utf8'));
+      } catch {
+        retryManifest = manifest;
+      }
+    }
+    let lenientResult;
+    try {
+      lenientResult = verifyPackage(entries, retryManifest, { lenient: true });
+    } catch (fatal) {
+      // 宽松模式仍拒绝 = 连会话日志本身都没法信任，这时不能硬塞进 sessions/。
+      return packageBrokenReport(sourcePath, fatal, [...entries.keys()]);
+    }
+    const stillHasSession = [...entries.keys()].some((name) => name.startsWith('session/'));
+    if (stillHasSession !== true) {
+      return packageBrokenReport(sourcePath, verifyError, [...entries.keys()]);
+    }
+    const dropped = lenientResult?.dropped ?? [];
+    packageRepair = {
+      dropped,
+      reason: String(verifyError?.message ?? verifyError),
+    };
+    // 条目被摘掉后 parts / attachments 声明也要跟着收窄，否则后面按声明取条目会撞空。
+    if (manifest !== undefined && typeof manifest === 'object' && Array.isArray(dropped) === true) {
+      const gone = new Set(dropped.map((item) => item.name));
+      if (manifest.attachments !== undefined && manifest.attachments !== null && typeof manifest.attachments === 'object') {
+        for (const key of ['objects', 'files']) {
+          const list = manifest.attachments[key];
+          if (Array.isArray(list) !== true) continue;
+          manifest.attachments[key] = list.filter((item) => {
+            const sha = typeof item?.sha256 === 'string' ? item.sha256 : '';
+            return gone.has(`attachments/${key}/${sha.slice(0, 2)}/${sha}`) !== true;
+          });
+        }
+      }
+    }
+  }
   const sessionName = [...entries.keys()].find((name) => /^session\/.+\.jsonl(\.zstd)?$/.test(name));
   if (sessionName === undefined) throw new Error('包里没有会话日志（session/…）');
   const buf = entries.get(sessionName);
@@ -1568,17 +1707,85 @@ function importPackage(sourcePath, options = {}) {
   let cwd;
   try {
     cwd = landingCwd(explicitCwd ?? manifest?.session?.cwd ?? original.cwd);
-  } catch {
-    // 这条路走的是**正常返回体**，apply 的 catch 不会替我们过滤绝对路径，所以
-    // message 里一律不写路径（连 preferred 都不带）。
-    return {
-      status: 'bad-workspace',
-      sessionId: original.id,
-      title: readTitle(buf),
-      originalCwd: original.cwd,
-      sourcePath,
-      message: '这个位置不是一个可用的目录',
-    };
+  } catch (error) {
+    // 这条路走的是**正常返回体**，apply 的 catch 不会替我们过滤绝对路径。
+    // 这里回显的是用户自己在包里的工作区路径（不是服务端目录），必须给：
+    // 只说「不是可用的目录」的话，用户既不知道是哪个路径，也不知道下一步该做什么。
+    // 同时带上本机可用工作区列表，客户端直接复用「打开到哪个工作区」那个弹窗，
+    // 选一个就能继续——否则这个状态就是死路。
+    // 用户点了界面上的「在这里新建」：插件自己把目录建出来再继续，不指望用户
+    // 去理解什么叫「工作区路径」。只处理「不存在」这一种；「是个文件」不能代劳，
+    // 那是用户的文件，删了才叫闯祸。
+    let failure = error;
+    let createError;
+    const canCreate = options.createCwd === true
+      && failure?.reason === 'missing'
+      && canAutoCreateCwd(failure?.cwd) === true;
+    // 「位置被一个文件占着」也能代劳，但删用户文件是闯祸，所以只改名不删：
+    // 备份成 <原名>.bak-<时间>，用户随时能改回来。必须由界面按钮显式传 replaceFile。
+    let replacedFile;
+    const canReplace = options.replaceFile === true
+      && failure?.reason === 'not-directory'
+      && canAutoCreateCwd(failure?.cwd) === true;
+    if (canReplace === true) {
+      try {
+        const backup = `${failure.cwd}.bak-${Date.now()}`;
+        fs.renameSync(failure.cwd, backup);
+        fs.mkdirSync(failure.cwd);
+        cwd = landingCwd(failure.cwd);
+        replacedFile = backup;
+        failure = undefined;
+      } catch (failed) {
+        createError = failed;
+        // 改名成功了但建目录失败：把文件改回去，别留一个「文件没了、目录也没建」的中间态。
+        try {
+          if (replacedFile !== undefined && fs.existsSync(replacedFile) === true && fs.existsSync(failure.cwd) !== true) {
+            fs.renameSync(replacedFile, failure.cwd);
+            replacedFile = undefined;
+          }
+        } catch {
+          // 改不回去也不能吞掉原始错误，下面返回体里会带上 createError 原文
+        }
+      }
+    }
+    if (canCreate === true) {
+      try {
+        fs.mkdirSync(failure.cwd, { recursive: true });
+        // 建完照样要再过一遍 landingCwd：mkdir 可能只建出了上半截，或路径上
+        // 还躺着一个同名文件。别因为「我试过了」就放行。
+        cwd = landingCwd(failure.cwd);
+        failure = undefined;
+      } catch (failed) {
+        createError = failed;
+      }
+    }
+    if (failure !== undefined) {
+      const badCwd = typeof failure?.cwd === 'string' ? failure.cwd : '';
+      const missing = failure?.reason === 'missing';
+      const failedText = createError === undefined ? '' : String(createError?.message ?? '');
+      return {
+        status: 'bad-workspace',
+        sessionId: original.id,
+        title: readTitle(buf),
+        originalCwd: original.cwd,
+        cwd: badCwd,
+        reason: missing === true ? 'missing' : 'not-directory',
+        // 界面据此决定要不要给「在这里新建」按钮：缺目录、且还没建失败过才给。
+        canCreate: missing === true && failedText === '',
+        canReplace: missing !== true && failedText === '' && canAutoCreateCwd(badCwd) === true,
+        replacedFile,
+        createError: failedText === '' ? undefined : failedText,
+        workspaces: readWorkspaces(),
+        sourcePath,
+        message: missing === true
+          ? (failedText === ''
+            ? `这个包原来在 ${badCwd} 打开，本机上这个文件夹不存在。`
+            : `新建 ${badCwd} 失败：${failedText}。请换一个位置。`)
+          : (failedText === ''
+            ? `这个包原来在 ${badCwd} 打开，但本机这个位置是一个文件，不是文件夹。`
+            : `把 ${badCwd} 改名备份后新建文件夹失败：${failedText}。请换一个位置。`),
+      };
+    }
   }
 
   let id = original.id;
@@ -1615,6 +1822,7 @@ function importPackage(sourcePath, options = {}) {
         attachmentsSkipped: attachRestore.skipped,
         attachmentsRejected: attachRestore.rejected,
         repair: repairReport,
+        packageRepair,
         sourcePath,
         packageLock,
       };
@@ -1677,6 +1885,7 @@ function importPackage(sourcePath, options = {}) {
         attachmentsSkipped: attachRestore.skipped,
         attachmentsRejected: attachRestore.rejected,
         repair: repairReport,
+        packageRepair,
         sourcePath,
         packageLock,
       };
@@ -1932,6 +2141,7 @@ function importPackage(sourcePath, options = {}) {
     attachmentsRejected: attached.rejected,
     // 打开前的体检结论：改了什么、还剩什么。changed=false 说明这个包本身是干净的。
     repair: repaired.report,
+    packageRepair,
     memoryConflicts,
     // 「本机没有、这次没写」的那批。界面据此提醒「有东西没写」，和 memoryConflicts 分开用。
     memoryCreated,
@@ -2224,6 +2434,9 @@ async function handleSave(request) {
   const roots = saveRootsOf(state);
   const forceAsk = query.ask === '1' || query.mode === 'dialog';
   const force = query.force === '1' || query.force === 'true';
+  // ignoreLock 只跳过「别的窗口正在写」这一条，stale / confirm-overwrite / not-dsproj
+  // 三条照旧——那些防的是内容丢失，不是并发。
+  const ignoreLock = query.ignoreLock === '1' || query.ignoreLock === 'true';
   // 记住的文件不见了之后，用户明确点了「就在这里重新建一份」才允许落盘。
   const recreate = query.recreate === '1' || query.recreate === 'true';
   const includeMemory = query.memory === '1' || query.memory === 'true';
@@ -2242,7 +2455,7 @@ async function handleSave(request) {
     // 想存到新地方只有一条路：走原生另存为窗口，由用户自己点。
     if (!isInsideAny(abs, roots)) {
       return jsonResponse(
-        { status: 'need-path', suggested: suggested(), message: '只能存到用过的目录，或通过另存为窗口挑位置' },
+        { status: 'need-path', suggested: suggested(), message: '仅可保存到已使用的目录，或通过另存为窗口指定位置' },
         400,
       );
     }
@@ -2286,7 +2499,7 @@ async function handleSave(request) {
         name: path.basename(target),
         dir: path.dirname(target),
         suggested: suggested(),
-        message: '上次保存的那个文件已经不在了（被删除、移走，或所在磁盘没挂上）。',
+        message: '上次保存的文件不存在（已被删除、移动，或所在磁盘未挂载）。',
       },
       409,
     );
@@ -2294,10 +2507,22 @@ async function handleSave(request) {
 
   // 锁先判：文件里带着别人正在写的锁时，比「要不要覆盖」更该先说。
   const existingLock = fs.existsSync(target) ? lockOfFile(target) : undefined;
-  if (!force) {
-    const blocked = lockBlocks(existingLock);
+  if (!force && !ignoreLock) {
+    let blocked = lockBlocks(existingLock);
     if (blocked !== undefined) {
-      return jsonResponse({ status: 'locked', path: target, lock: existingLock, message: blocked }, 409);
+      // 另一个进程正在写同一个文件，通常几十到几百毫秒就结束了。先替用户等一等，
+      // 别一上来就甩一句「被占用」让人自己再点一次——他根本不知道「占用」是什么。
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        const retryLock = fs.existsSync(target) ? lockOfFile(target) : undefined;
+        blocked = lockBlocks(retryLock);
+        if (blocked === undefined) break;
+      }
+    }
+    if (blocked !== undefined) {
+      // 用户可以选择「仍然保存」：带 ignoreLock=1 再请求一次，跳过锁判定。
+      // 只跳锁，不跳 stale / confirm-overwrite / not-dsproj——那几条防的是丢数据。
+      return jsonResponse({ status: 'locked', canIgnoreLock: true, path: target, lock: existingLock, message: `${blocked}；等它存完之后再点一次，或把那个窗口关掉。` }, 409);
     }
   }
 
@@ -2309,14 +2534,14 @@ async function handleSave(request) {
         {
           status: 'confirm-overwrite',
           path: path.basename(target),
-          message: '这个位置已经有一个文件，覆盖会丢掉它',
+          message: '该位置已存在文件，覆盖将丢失其内容',
         },
         409,
       );
     }
     if (!isDsprojFile(target)) {
       return jsonResponse(
-        { status: 'not-dsproj', path: path.basename(target), message: '那个文件不是 .dsproj 工程包，拒绝覆盖' },
+        { status: 'not-dsproj', path: path.basename(target), message: '目标文件不是 .dsproj 工程包，无法覆盖' },
         409,
       );
     }
@@ -2331,7 +2556,7 @@ async function handleSave(request) {
           path: target,
           stale,
           cloud: cloudMarkOf(target),
-          message: '这个文件的内容已经不是我上次写的那份了（可能来自另一台机器或同步盘）。',
+          message: '磁盘内容与本机上次写入的版本不一致（可能来自另一台机器或同步盘）。',
         },
         409,
       );
@@ -2362,7 +2587,7 @@ async function handleSave(request) {
           name: path.basename(target),
           dir: path.dirname(target),
           suggested: suggested(),
-          message: '保存位置所在的文件夹不在了（磁盘没挂上或被删）。',
+          message: '保存位置所在的目录不存在（磁盘未挂载或已被删除）。',
         },
         409,
       );
@@ -2391,6 +2616,76 @@ async function handleSave(request) {
     cloud: cloudMarkOf(target),
     session: { id: header?.id ?? sessionId, cwd: header?.cwd, createdAt: header?.createdAt },
   });
+}
+
+/** 内置语言包目录：`locales/<tag>.json`，一个文件一种语言，谁都能加一份提 PR。 */
+const LOCALES_URL = new URL('./locales/', import.meta.url);
+const FALLBACK_LOCALE = 'zh-CN';
+
+/** 列出现有的语言标签（文件名去 `.json`），排序后返回。 */
+function listLocaleTags() {
+  try {
+    return fs
+      .readdirSync(LOCALES_URL)
+      .filter((name) => name.endsWith('.json'))
+      .map((name) => name.slice(0, -5))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/** 读一份语言包；读不到或形状不对就返回 undefined（由调用方决定怎么报）。 */
+function readLocaleMessages(tag) {
+  try {
+    const raw = fs.readFileSync(new URL(`./locales/${tag}.json`, import.meta.url), 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed !== null && typeof parsed === 'object' && Array.isArray(parsed) === false) return parsed;
+  } catch {
+    // 缺文件、坏 JSON、无权限都走同一条路：当成「没有这个语言包」。
+  }
+  return undefined;
+}
+
+/**
+ * 把浏览器给的标签收拢到磁盘上真实存在的语言包：先精确匹配（`en-US`），
+ * 再退到主语言（`en` → 第一条以 `en-` 开头的），最后回中文。
+ * 只从目录清单里挑，绝不按请求里的字符串现拼路径——那等于让 URL 决定读哪个文件。
+ */
+function resolveLocaleTag(requested) {
+  const tags = listLocaleTags();
+  const wanted = String(requested ?? '').trim().replace(/_/g, '-');
+  if (wanted !== '' && tags.includes(wanted)) return wanted;
+  const primary = wanted.split('-')[0].toLowerCase();
+  if (primary !== '') {
+    const hit = tags.find((tag) => {
+      const lower = tag.toLowerCase();
+      return lower === primary || lower.startsWith(`${primary}-`);
+    });
+    if (hit !== undefined) return hit;
+  }
+  return tags.includes(FALLBACK_LOCALE) ? FALLBACK_LOCALE : (tags[0] ?? FALLBACK_LOCALE);
+}
+
+/**
+ * 语言包下发。客户端拿不到时会用内置中文兜底，所以这条路由失败不影响插件可用，
+ * 只是退化成「只有中文」。
+ */
+function handleLocales(request) {
+  const gate = requestGate(request);
+  if (gate !== undefined) return jsonResponse({ status: 'error', message: gate }, 403);
+  const url = new URL(request.url);
+  const available = listLocaleTags();
+  const tag = resolveLocaleTag(url.searchParams.get('lang'));
+  const messages = readLocaleMessages(tag);
+  if (messages === undefined) {
+    return jsonResponse(
+      { status: 'error', message: '语言包读取失败', lang: tag, fallback: FALLBACK_LOCALE, messages: {}, available },
+      500,
+    );
+  }
+  // 不回显目录路径：客户端只需要标签和内容。
+  return jsonResponse({ status: 'ok', lang: tag, fallback: FALLBACK_LOCALE, messages, available });
 }
 
 /** 侧栏「打开」按钮需要的工作区列表。 */
@@ -2439,10 +2734,19 @@ async function handleOpen(request) {
     // 就会悄悄变成「能写新文件」的通道。
     const memoryMode =
       query.memory === 'restore' ? 'restore' : query.memory === 'new' ? 'new' : 'copy';
-    const result = importPackage(source, { cwd, onConflict, memory: memoryMode });
+    // createCwd=1 只在用户点了「在这里新建」时传：缺目录时插件自己建，
+    // 不给这个位就等于「别替我动文件系统」。
+    const createCwd = query.createCwd === '1' || query.createCwd === 'true';
+    // replaceFile=1：目标位置被一个文件占着时，把它改名备份再建目录（不删）。
+    // repairPackage=1：包校验不过时先摘掉坏条目再试一次，而不是直接判死。
+    const replaceFile = query.replaceFile === '1' || query.replaceFile === 'true';
+    const repairPackage = query.repairPackage === '1' || query.repairPackage === 'true';
+    const result = importPackage(source, { cwd, onConflict, memory: memoryMode, createCwd, replaceFile, repairPackage });
     if (result.status === 'need-workspace') return jsonResponse(result);
     // 落点不合格：明确拒绝，不落到 process.cwd()。400 而不是 500——包没坏，是位置不对。
     if (result.status === 'bad-workspace') return jsonResponse(result, 400);
+    // 包校验没过 / 包比插件新：都不是 200。沿用原来的 500，客户端按 status 字段决定弹哪个窗。
+    if (result.status === 'package-broken' || result.status === 'newer-package') return jsonResponse(result, 500);
     if (result.conflict === true) return jsonResponse({ status: 'conflict', ...result }, 409);
     // 打开时就把该文件此刻的内容指纹记下来；顺带把「别处正在写 / 在同步盘里」这两件
     // 需要用户知道的事随结果带回去，界面上提示一句，但都不阻止打开。
@@ -2520,7 +2824,20 @@ export function apply(ctx) {
       }
     },
   });
+
   connection.fetch.register({
+    path: LOCALES_ROUTE,
+    methods: ['GET', 'POST'],
+    requestBody: 'buffered',
+    fetch: async (request) => {
+      try {
+        return handleLocales(request);
+      } catch (error) {
+        ctx.logger?.warn?.('[dsh-session-save] locales route failed', error);
+        return jsonResponse({ status: 'error', message: '内部错误，详见日志' }, 500);
+      }
+    },
+  });  connection.fetch.register({
     path: AUTOSAVE_ROUTE,
     methods: ['GET', 'POST'],
     requestBody: 'buffered',

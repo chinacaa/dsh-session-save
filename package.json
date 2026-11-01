@@ -14,6 +14,8 @@
     "client.js",
     "cordis.patch.yml",
     "dialog/",
+    "locales/",
+    "scripts/check-locales.mjs",
     "screenshots.json",
     "assets/icon-180.png",
     "assets/screenshot-icons.png",
@@ -43,7 +45,7 @@
     "url": "https://github.com/chinacaa/dsh-session-save/issues"
   },
   "engines": {
-    "dsh": ">=0.2.1-rc.1"
+    "dsh": ">=0.2.1-rc.1 <0.3.0-0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"

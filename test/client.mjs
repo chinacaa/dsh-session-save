@@ -99,10 +99,12 @@ const LOCALE = process.env.DSH_TEST_LOCALE || 'zh-CN';
 setLocale(LOCALE);
 const IS_EN = /^en\b/i.test(LOCALE);
 
-/* 按当前 locale 取期望文案——别写死某一种语言，否则 CI（英文 runner）与本地会互相打架。 */
-const T = IS_EN
-  ? { saveAs: 'Save As', openButton: 'Open session' }
-  : { saveAs: '另存为', openButton: '打开会话' };
+/* 组件渲染用的是内置中文兜底表：语言包是启动后异步拉的，测试里不发请求。
+   所以期望值取 zh-CN.json，另加一条断言证明 en-US.json 真的翻过这句——
+   不然「英文 runner 跑中文断言」会误判成缺陷。 */
+const ZH_PACK = JSON.parse(readFileSync(new URL('../locales/zh-CN.json', import.meta.url), 'utf8'));
+const EN_PACK = JSON.parse(readFileSync(new URL('../locales/en-US.json', import.meta.url), 'utf8'));
+const T = { saveAs: ZH_PACK.saveAs, openButton: ZH_PACK.openButton };
 
 new Function('window', source)(globalThis.window);
 
@@ -218,7 +220,8 @@ assert.equal(saveAsElement.props.sessionId, 'session-test', '另存为按钮拿�
 const saveAsButtons = collectButtons(saveAsElement.type(saveAsElement.props));
 assert.equal(saveAsButtons.length, 1, '另存为渲染出一个按钮');
 const saveAsButton = saveAsButtons[0];
-assert.equal(saveAsButton.props['aria-label'], T.saveAs, `另存为按钮的 aria-label（locale=${LOCALE}）`);
+assert.equal(saveAsButton.props['aria-label'], T.saveAs, `另存为按钮的 aria-label 取自语言表（locale=${LOCALE}，首屏用内置中文兜底）`);
+assert.notEqual(EN_PACK.saveAs, ZH_PACK.saveAs, 'en-US.json 里这句要真的翻译过，不能照抄中文');
 
 // 图标必须是新的（不是软盘）
 const renderNode = (node) =>
@@ -248,6 +251,17 @@ console.log('✅ 另存为是独立图标按钮，点击带 ask=1 强制弹对�
 
 /* ── R5：记忆落盘结果必须被前端消费（中英两份文案都在） ── */
 
+/* 界面文案已外置到 `locales/*.json`（谁都能加一份提 PR），client.js 只留中文兜底。
+   所以「中英各一份」这件事从「源码里数两遍」改成「两份语言包都齐全」。 */
+const localePack = (tag) => JSON.parse(readFileSync(new URL(`../locales/${tag}.json`, import.meta.url), 'utf8'));
+const zhPack = localePack('zh-CN');
+const enPack = localePack('en-US');
+function assertBilingual(key) {
+  assert.ok(key in zhPack, `locales/zh-CN.json 缺 ${key}`);
+  assert.ok(key in enPack, `locales/en-US.json 缺 ${key}`);
+  assert.ok(source.includes(`${key}:`), `client.js 的中文兜底表缺 ${key}`);
+}
+
 const clientSource = readFileSync(file, 'utf8');
 for (const key of [
   'memoryCopiesHint',
@@ -262,8 +276,7 @@ for (const key of [
   'memoryMergeConfirm',
   'memoryOpenDir',
 ]) {
-  const hits = source.split(`${key}:`).length - 1;
-  assert.equal(hits, 2, `${key} 必须中英各一份，实际 ${hits} 处`);
+  assertBilingual(key);
 }
 // R6 把判断抽成了 mode 变量，语义不变：restore 与 copy 走不同文案
 assert.ok(
@@ -287,8 +300,7 @@ for (const key of [
   'memoryCreatedHint',
   'memoryNewHint',
 ]) {
-  const hits = source.split(`${key}:`).length - 1;
-  assert.equal(hits, 2, `${key} 必须中英各一份，实际 ${hits} 处`);
+  assertBilingual(key);
 }
 assert.ok(source.includes('memoryPlanned'), '合并弹窗必须读 memoryPlanned 才能分两段列清单');
 assert.ok(source.includes("memory: 'new'"), '「合并并新建」必须把 memory=new 传给打开路由');
@@ -308,8 +320,7 @@ for (const key of [
   'missingTargetSaveAs',
   'missingAutoOff',
 ]) {
-  const hits = source.split(`${key}:`).length - 1;
-  assert.equal(hits, 2, `${key} 必须中英各一份，实际 ${hits} 处`);
+  assertBilingual(key);
 }
 assert.ok(source.includes('MissingModal'), '要有专门的「文件不在了」弹窗组件');
 assert.ok(
@@ -329,8 +340,7 @@ console.log('✅ 目标文件不在了会停下来问：missing-target 弹窗三
 /* ── R8. 打开前体检：改了什么要让用户看见 ── */
 
 for (const key of ['repairHint', 'repairMissing', 'repairPatched', 'repairLines', 'repairFrames']) {
-  const hits = source.split(`${key}:`).length - 1;
-  assert.equal(hits, 2, `${key} 要中英各一份，实际 ${hits}`);
+  assertBilingual(key);
 }
 assert.ok(source.includes('payload.repair'), '打开结果里的 repair 报告必须被读取');
 assert.ok(source.includes('repair.changed === true'), '只有真的改过才提示，不能每次都报一遍');
@@ -343,8 +353,7 @@ console.log('✅ 打开前体检有交代：改了哪几类（缺字节/缺尺�
 /* ── R9. 附件被配额拦下时必须说出来 ── */
 
 for (const key of ['attachRejected']) {
-  const hits = source.split(`${key}:`).length - 1;
-  assert.equal(hits, 2, `${key} 要中英各一份，实际 ${hits}`);
+  assertBilingual(key);
 }
 assert.ok(source.includes('payload.attachmentsRejected'), '打开结果里的 attachmentsRejected 必须被读取');
 assert.ok(
@@ -355,12 +364,19 @@ console.log('✅ 附件被配额拦下时说明了「几个、为什么」，中
 
 /* ── R10. cwd 不合格要报「换个位置」；合并弹窗要摊出记忆落点 ── */
 
-for (const key of ['badWorkspace', 'memoryMergeTarget']) {
-  const hits = source.split(`${key}:`).length - 1;
-  assert.equal(hits, 2, `${key} 要中英各一份，实际 ${hits}`);
+for (const key of ['memoryMergeTarget', 'wsBadTitle', 'wsBadMissing', 'wsBadNotDir', 'wsBadCreate', 'wsBadCreateFailed']) {
+  assertBilingual(key);
 }
 assert.ok(source.includes("payload.status === 'bad-workspace'"), 'bad-workspace 状态必须被接住');
-assert.ok(source.includes('L.badWorkspace'), '服务端没给 message 时也要有兜底文案');
+assert.ok(source.includes('L.wsBadTitle'), 'bad-workspace 弹窗要有自己的标题，不能复用 need-workspace');
+assert.ok(source.includes("createCwd: '1'"), '「在这里新建」按钮要带上建目录的显式开关');
+assert.ok(source.includes('payload?.canCreate === true'), '服务端说不该建（位置被文件占了 / 建失败过）时不显示按钮');
+assert.ok(/onCreate:\s*\(dir\)\s*=>/.test(source), '新建按钮要把原路径交给后端，而不是让用户重选');
+assert.ok(
+  /status === 'bad-workspace'\)\s*\{[\s\S]{0,400}setWorkspace\(payload\)/.test(source),
+  'bad-workspace 要复用工作区弹窗给出路，不能只弹一行错误',
+);
+assert.ok(source.includes('payload?.reason === \'missing\''), '两种不可用原因要分开说');
 assert.ok(
   source.includes('payload?.memoryDir'),
   '合并弹窗要读 memoryDir —— need-workspace 返回体里没有它，必须容忍 undefined',
@@ -370,3 +386,15 @@ assert.ok(
   '弹窗要把「落点不是你当前打开的工作区」说清楚，否则用户以为写进眼前这个项目',
 );
 console.log('✅ cwd 不合格时说「换个位置」；合并弹窗摊出记忆落点并说明它不是当前工作区，中英文案齐全');
+for (const key of ['wsReplaceFile', 'wsReplaceHint', 'lockedTitle', 'lockedHint', 'lockedForce', 'brokenTitle', 'brokenHint', 'brokenCopy', 'brokenCopied', 'brokenRepair', 'brokenCount', 'brokenNoPrompt']) {
+  assertBilingual(key);
+}
+assert.ok(source.includes('LockedModal'), '锁冲突要有自己的弹窗，不能只弹 toast');
+assert.ok(source.includes('BrokenModal'), '坏包要摊出可复制的说明，不能只说「打开失败」');
+assert.ok(source.includes("repairPackage: '1'"), '坏包弹窗要能给「丢掉坏条目再试一次」的开关');
+assert.ok(source.includes("ignoreLock: '1'"), '锁弹窗的「仍然保存」要带 ignoreLock');
+assert.ok(source.includes('payload.canIgnoreLock === true'), '只有服务端给了出口才显示「仍然保存」');
+assert.ok(source.includes('payload?.prompt'), '坏包说明要读服务端给的 prompt');
+assert.ok(source.includes("replaceFile: '1'"), '位置被文件占着时，「改名备份」要带 replaceFile');
+assert.ok(source.includes('payload?.canReplace === true'), '只有服务端说能代劳才显示那个按钮');
+console.log('✅ 三条出口都接到界面：位置被占可改名备份、锁冲突可仍然保存、坏包可复制说明找 AI 修，中英文案齐全');

@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="license"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/chinacaa/dsh-session-save" alt="license"></a>
   <a href="https://www.npmjs.com/package/dsh-session-save"><img src="https://img.shields.io/npm/v/dsh-session-save?color=cb3837" alt="npm version"></a>
   <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fchinacaa%2Fdsh-session-save%2Fmain%2Fpackage.json&query=%24.engines.dsh&label=dsh&color=4c6ef5" alt="requires dsh">
   <img src="https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux%20%C2%B7%20Web-555" alt="platform">
@@ -20,11 +20,11 @@
 
 <p align="center">
   <sub>listed on</sub><br>
-  <a href="https://dsh-plugin.org/plugins/chinacaa/dsh-session-save"><img src="https://img.shields.io/badge/dsh--plugin.org-%E2%9C%93-4c6ef5" alt="dsh-plugin.org"></a>
-  <a href="https://dshfind.com/plugins/chinacaa/dsh-session-save"><img src="https://img.shields.io/badge/dshfind.com-%E2%9C%93-2ea44f" alt="dshfind"></a>
-  <a href="https://deepseek1024.com/plugins/chinacaa/dsh-session-save"><img src="https://img.shields.io/badge/deepseek1024-%E2%9C%93-8b5cf6" alt="deepseek1024"></a>
-  <a href="https://dsh.market/"><img src="https://img.shields.io/badge/dsh.market-%E2%9C%93-f59e0b" alt="dsh.market"></a>
-  <a href="https://awesome-dsh-plugin.com/p/chinacaa/dsh-session-save/"><img src="https://img.shields.io/badge/awesome--dsh--plugin-%E2%9C%93-0969da" alt="awesome-dsh-plugin"></a>
+  <a href="https://dsh-plugin.org/plugins/chinacaa/dsh-session-save"><img src="https://dsh-plugin.org/badges/listed.svg" alt="Listed on dsh-plugin.org" height="20"></a>
+  <a href="https://dshfind.com/plugins/chinacaa/dsh-session-save"><img src="https://dshfind.com/api/badge/chinacaa/dsh-session-save?lang=zh" alt="dshfind" height="20"></a>
+  <a href="https://deepseek1024.com/plugins/chinacaa/dsh-session-save"><img src="https://img.shields.io/badge/deepseek1024-listed-8b5cf6" alt="deepseek1024"></a>
+  <a href="https://dsh.market/"><img src="https://img.shields.io/badge/dsh.market-listed-f59e0b" alt="dsh.market"></a>
+  <a href="https://awesome-dsh-plugin.com/p/chinacaa/dsh-session-save/"><img src="https://awesome-dsh-plugin.com/badge.svg" alt="Awesome DSH Plugin"></a>
 </p>
 
 <p align="center">English · <a href="README.md">中文</a></p>
@@ -33,7 +33,7 @@
 
 ---
 
-## Why
+## Core features and use cases
 
 DSH keeps every conversation under `~/.dsh/sessions/` as an append-only zstd frame log. That is reliable, but it has three costs:
 
@@ -42,8 +42,6 @@ DSH keeps every conversation under `~/.dsh/sessions/` as an append-only zstd fra
 - **Two machines taking turns is a coin flip.** Syncing `~/.dsh` directly makes indexes, state and logs fight each other.
 
 `dsh-session-save` collapses all of that into one file: **one session = one `.dsproj`**, named after the session title, containing the full history plus the memory of the workspace it belongs to. Sending it to a colleague, dropping it in a synced folder, committing it into a project — all just "one file".
-
-## What it does
 
 Four icons appear in the conversation header:
 
@@ -58,7 +56,161 @@ The blank-session hero row also gets an "Open" pill, so you can open a project b
 
 ![Header icons](assets/screenshot-icons.png)
 
-## Install
+## Quick start
+
+1. Hit 💾 mid-conversation (or hit 🔄 for autosave — it saves once first).
+2. Confirm the name — the default is "session title + creation time", e.g. `save-session-as-project-20261025-1043.dsproj`.
+3. Every later 💾 overwrites that file; 📄✏️ makes a copy under a new name.
+
+On the other machine: click 📁, pick the file, the session appears and the UI switches to it.
+
+## File naming and save protection
+
+```
+<session title>-<YYYYMMDD-HHmm>.dsproj
+```
+
+- The title is the newest `session/title` event (whatever DSH called it).
+- The timestamp is the session's **creation** time, not the save time — saving the same session twice always yields the same name.
+- `\ / : * ? " < > |` and control characters become spaces, runs collapse, 60 characters max.
+- A session without a title falls back to `20261025-1043-session-7f3a2c91.dsproj` (time + first 8 id characters).
+- The directory is the last used one, Desktop on the first run.
+- **Overwriting never renames**: the full path is remembered, so a later retitle does not spawn a new file.
+
+### Existence protection on save
+
+The target of a save is *the file at that path*, not *the path*. So every write checks first that the file is still there:
+
+- **Manual save** finds it gone (deleted, moved, or the drive / network folder is not mounted) → a panel shows the original path and offers **create it here** / **save somewhere else** / **cancel**. Nothing is written by default — no same-named empty shell left behind.
+- **Autosave** finds it gone → **turns itself off** and tells you why (with the path); that round writes nothing.
+- The whole **folder** missing (an unmounted network drive, say) behaves the same: "target folder does not exist" instead of quietly `mkdir -p`-ing the directory and the file back into existence.
+
+## Open and import flow
+
+```mermaid
+flowchart TD
+  A[read .dsproj] --> B{does this session id exist locally}
+  B -- no --> C[ask: which workspace]
+  C --> D[import, rewrite header.cwd to the local path]
+  B -- yes · same createdAt · same cwd --> E[just switch to it, no copy no write]
+  B -- yes · same createdAt · other cwd --> F[land a second copy under a new id]
+  B -- yes · different createdAt --> G[conflict panel: pick one of four]
+  D --> H[open the session]
+  E --> H
+  F --> H
+  G --> H
+```
+
+- **Ids must be unique per `DSH_HOME`**, so landing the same session in a different workspace issues a new id instead of duplicating it.
+- **A workspace path that does not work is fixed in place first.** That path comes from the package itself and is often stale after a machine move. Three cases, none of which require you to touch a file manager: ① the folder is gone → the panel offers **create it here and continue**, and it is only created once you click; ② a regular **file** sits at that name → it offers **rename that file and make the folder**, and the file is renamed to `<name>.bak-<timestamp>` and kept (not one byte deleted); ③ neither applies (relative path, drive root, no permission) → the workspace panel opens so you can pick an existing workspace or "Choose another folder…". Called straight from the API with no UI confirmation, nothing is created, renamed or written.
+- When a session does land in a different workspace, only frame 0 (the header) is rewritten; frames 1..n are copied byte for byte.
+- **Memory files are compared by sha256**: identical ones are skipped, different ones are written as `xxx.from-dsproj-<date>` copies in the default mode — nothing local is overwritten unless you explicitly choose Merge memory.
+- A successful open remembers that `.dsproj` as the session's save target.
+
+The conflict panel shows both sides (title, creation time, size, workspace / exporting machine) with four choices: **cancel**, **save as a copy**, **overwrite local** (after a `.bak-<timestamp>`), **use local**.
+
+## Multi-machine sync and concurrency protection
+
+Three layers of protection:
+
+**1. A lock inside the file.** Every package carries `LOCK.json` (`host`, `pid`, `at`, `writes`), mirrored into `manifest.json` and summarised in `SUMMARY.md`.
+
+**2. A sidecar lock on disk.** `${file}.lock` is claimed with an exclusive `wx` create; a live pid on this host blocks, a foreign `at` within 15 minutes blocks, otherwise the write proceeds. A block waits briefly and checks again — the other write has usually finished by then — and only returns `409 locked` (naming the holder) if the file is still held. The dialog adds a **Save anyway** button: the lock only says *someone may be writing*, and whether to overwrite is your call.
+
+**3. A content fingerprint (CAS).** Each write records the file's sha256. Before the next write it is recomputed; if it differs, the file changed elsewhere:
+
+- manual save → `409 stale` and a panel offering **overwrite on disk** / **save as a new file** / **cancel**;
+- autosave → **turns itself off** for that session and writes nothing.
+
+Writes are **atomic** (tmp file + rename) so a sync client never picks up half a package. Paths inside OneDrive / Dropbox / Google Drive / iCloud / Nutstore / Box / Syncthing / Seafile / Baidu Netdisk trigger a warning that two machines with autosave on will overwrite each other — a warning, not a block.
+
+> **In short**: if two machines really take turns on one file, keep **autosave on one of them only**; the other machine will be stopped by the content check.
+
+## Package format and offline tools
+
+A `dshproj/1` ZIP, byte-compatible with the `dshproj` CLI (same package format; the CLI itself lives elsewhere):
+
+```
+manifest.json                      metadata + per-entry sha256 + lock mirror
+LOCK.json                          who wrote it, when, how many writes
+session/session.v4.jsonl.zstd       the raw session log (zstd frames untouched)
+memory/workspaces/<slug>/**         that workspace's project memory
+attachments/objects/<2>/<sha256>    images the session references (stored by content hash)
+attachments/files/<2>/<sha256>      other files it references (same scheme)
+SUMMARY.md                          human-readable digest
+```
+
+Offline, without DSH:
+
+```bash
+dshproj verify   session.dsproj                     # frame structure + entry hashes
+dshproj info     session.dsproj                     # title, frame count, memory files
+dshproj import   session.dsproj --cwd D:\elsewhere  # import under a new id
+```
+
+### Image and attachment packaging
+
+The session log only carries `sha256:` references; the bytes live in a separate object store under `~/.dsh/attachments/v1`. Let the two drift and you get the "attachment missing" error — and retrying does not heal it, because the reference is a fixed hash and the retry asks for the same hash again. So packaging now walks the references the session actually makes and stores those objects under `attachments/`, re-hashing each one on the way in and dropping anything that does not match.
+
+Opening applies the same rule in reverse: an object that already exists is skipped (content addressing is idempotent, so two packages carrying the same image cannot fight); an entry whose shard does not match its hash prefix, or whose content does not hash to its name, is refused. Objects this machine never had are listed in `manifest.attachments.missing` and repeated in `SUMMARY.md`, so the recipient knows up front that this package is missing a few images instead of discovering it in a wall of errors.
+
+Code files are not included — a `.dsproj` holds the conversation, its memory and its attachments. Use `dshproj export --files` to carry the workspace too.
+
+## Security and data health check
+
+Opening someone else's `.dsproj` is accepting a compressed archive from a stranger, so the plugin treats every package as potentially hostile:
+
+- **Entry-name traversal**: every path segment is validated; `../../x`, `..\..\x`, drive letters and UNC prefixes are rejected at read time, and each memory write target is re-joined and re-checked to stay inside the memory root.
+- **Landing filenames**: the session filename declared in `manifest.json` must match `session[.tag].jsonl[.zstd]`, only its basename is used, the target must stay under `~/.dsh/sessions`, and an existing file is never overwritten.
+- **Zip bombs**: 64 MB per entry, 512 MB per package, 200× compression ratio (not applied below 4 MB), with the central-directory lengths checked before inflating. **A session log is a concatenation of zstd frames, so each frame is capped at 64 MB after inflation and the whole log at 512 MB** — the zip limits only count what the deflate layer yields, and a second compression layer inside a frame slips past them (a 29 KB package inflated to 900 MB in testing).
+- **Write targets**: saving is limited to the last used directory, the directory of an already-remembered file, or a location picked in the native dialog. Anything else — or overwriting a file this plugin did not produce — asks first.
+- **Route gate**: all four `/api` routes require a loopback host (`127.0.0.1` / `localhost` / `::1`), a same-origin `Origin`, and a non-`cross-site` request; `sessionId` is shape-checked; failures never echo an absolute path.
+- **Package integrity**: every `manifest.parts` entry is verified by sha256 and byte count, and mismatches refuse the import. Conversely, **every content entry (`session/`, `memory/workspaces/`, `attachments/`) must be declared in `manifest.parts`** — undeclared entries are refused, so a package cannot declare only its session and smuggle a `MEMORY.md` into your project notes.
+
+### Pre-open health check and automatic repair
+
+A package may come from another machine, and files may have been deleted along the way. So before an import is written to disk, the session gets scanned once and whatever can be fixed is fixed:
+
+- **Image bytes not on this machine** → that spot becomes a readable line of text (`[image lost: page-2.png]`). Keeping a dangling reference only gets you a wall of `Attachment object is missing.` that retrying never repairs.
+- **Image present but missing width/height/bytes** → filled in from the image header (PNG / GIF / WebP / JPEG).
+- **A log line that will not parse** → that line is dropped; the rest of the events in the same record stay.
+- **A frame that will not decompress** → its bytes are kept as-is with a note. Nothing of yours is thrown away.
+
+Afterwards the UI lists what changed (how many images were missing, how many sizes were filled, how many lines were dropped). Only frames that actually changed are recompressed; untouched frames stay byte-identical — a repaired package is the same session, not a regenerated one. To inspect without changing anything, call `repairSession(buf, { keepMissing: true })`.
+
+### A broken package gets rescued first, and a repair brief if that fails
+
+A `.dsproj` arrives from someone else and can lose a layer in transit, in a sync folder, or to a hand edit. The old behaviour rejected the whole package on the first mismatch, and all you got was "package check failed" — no idea what broke, no way to fix it.
+
+Two steps now:
+
+1. **Try the lenient pass first** (the "drop broken entries and open" button, `?repairPackage=1` on the API). Instead of rejecting everything, the verifier drops just the entries that fail — hash mismatch, size mismatch, undeclared in `manifest.parts`, name outside the allowlist — imports the rest, and reports exactly which entries were dropped and why. As long as `session/` survives, the conversation survives; a lost image or memory file only costs that one file.
+2. **If even that fails, hand over a brief** (`package-broken`). A read-only text box shows a paragraph you can copy as-is: where the package is, its size, the plugin version, the verifier's exact error, the first 60 entries, the package format contract, and the five-step fix (recompute sha256 → repair `manifest.parts` → delete the bad entries → repack → list what changed). Paste it into any AI and it can do the repair — you never have to read a zip structure yourself.
+
+Two limits: if `session/` is the broken entry, there is nothing left to rescue and you get the brief instead of an import; and "this package came from a newer version" is a different case (next section), never treated as corruption.
+
+### Version awareness and upgrade notice
+
+When a package carries entries this version does not recognise, the answer used to be a bare "unknown entry, refusing to open". That sends you the wrong way: you assume the file is damaged, go dig out a backup, save it again — when the real cause is just an old plugin.
+
+Packages now record the plugin version that wrote them (`manifest.plugin`), and opening compares the two first:
+
+- **Package newer than your plugin** → say so plainly: which version wrote it, which version you have, upgrade before opening — and make it clear the package itself is fine.
+- **Same version, unfamiliar entry** → still refused as an unknown entry. That is usually a package assembled by some other tool, not a version problem, so "you are old" would be a lie.
+- **Old package with no version field** → inferred from the entry prefix (`attachments/` only exists from 0.3.0), so you still get "upgrade" instead of "broken".
+
+Paths on your machine never appear in that message.
+
+### Memory protection: off by default; copies by default, merge overwrites
+
+- **Memory is not packaged by default.** `~/.dsh/memory` holds your project notes, logs and whiteboard; not a byte of it goes into the package unless you hold <kbd>Alt</kbd> while clicking save/save-as, or pass `?memory=1`.
+- **Opening a package that carries memory writes it as `xxx.from-dsproj-<date>` copies by default** — DSH will not read them as memory. After opening, the UI reports how many files landed as copies and how many clash with local names, with a panel offering **Merge memory** and **Open memory folder**.
+- **Merge memory (`?memory=restore`) only overwrites files that already exist locally with different content**, backing each one up as `xxx.bak-<timestamp>` first. Files this machine does not have are **not written at all** — they are only listed in the dialog's "will be created" section.
+- **To spread memory onto a fresh machine**, tick **Merge and create** in the same dialog (`?memory=new`); only then may original names be written.
+- **A landing directory matches only by segment-wise equality.** The memory folder is derived from the workspace path (`projectKey`) and looked up through two exact candidates — **no case / dash / trailing-separator normalisation**. `...\ws` and `...\ws\` are two different workspaces; they used to collapse into one, and `restore` could overwrite somebody else's `MEMORY.md` through that crack. The merge dialog now prints the `memoryDir` it is about to use and says the landing spot comes from the package's cwd, not from the workspace you have open.
+- **Why so strict**: the `sha256` values in `parts` are **computed by the packager**. A poisoned `MEMORY.md` can be registered there with a matching hash and pass every check above — self-consistency is not trust. So "will DSH read this as memory" is broken only by renaming the landing file. Poisoning can therefore land in exactly two places: a file you already had (with a visible backup), or a new file you explicitly approved with Merge and create.
+
+## Install and cross-platform support
 
 ```bash
 # from npm
@@ -84,157 +236,6 @@ New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\profiles\web\node_modul
 Do not just add an `- id/name` row to the profile's `cordis.patch.yml` — that file only overrides existing ids; new plugins need `dsh.bundle.patch` plus `dsh.profile.bundles`.
 
 </details>
-
-## Three steps
-
-1. Hit 💾 mid-conversation (or hit 🔄 for autosave — it saves once first).
-2. Confirm the name — the default is "session title + creation time", e.g. `save-session-as-project-20261025-1043.dsproj`.
-3. Every later 💾 overwrites that file; 📄✏️ makes a copy under a new name.
-
-On the other machine: click 📁, pick the file, the session appears and the UI switches to it.
-
-### It asks before writing into an empty spot
-
-The target of a save is *the file at that path*, not *the path*. So every write checks first that the file is still there:
-
-- **Manual save** finds it gone (deleted, moved, or the drive / network folder is not mounted) → a panel shows the original path and offers **create it here** / **save somewhere else** / **cancel**. Nothing is written by default — no same-named empty shell left behind.
-- **Autosave** finds it gone → **turns itself off** and tells you why (with the path); that round writes nothing.
-- The whole **folder** missing (an unmounted network drive, say) behaves the same: "target folder does not exist" instead of quietly `mkdir -p`-ing the directory and the file back into existence.
-
-### It will not force a bad landing spot
-
-Opening has to land the session on the workspace path recorded in the package. When that spot is not a folder (a file with the same name is sitting there) or does not exist at all, the old behaviour had two bad outcomes: it created a directory under `sessions/` keyed by a file path, or it quietly fell back to the server's current directory — you thought it opened in your workspace, and it did not.
-
-Now it stops and says "that location is not a usable folder", and creates no directory at all. To land somewhere else, pick a workspace in the picker.
-
-The same rule applies to memory: **memory folders are matched by exact path only**, no "close enough" fuzzy match. So `D:\ws` and `D:\ws\` are two different workspaces with two separate memory folders — an extra folder is better than a guess about which one you meant.
-
-### It checks the session before opening it
-
-A package may come from another machine, and files may have been deleted along the way. So before an import is written to disk, the session gets scanned once and whatever can be fixed is fixed:
-
-- **Image bytes not on this machine** → that spot becomes a readable line of text (`[image lost: page-2.png]`). Keeping a dangling reference only gets you a wall of `Attachment object is missing.` that retrying never repairs.
-- **Image present but missing width/height/bytes** → filled in from the image header (PNG / GIF / WebP / JPEG).
-- **A log line that will not parse** → that line is dropped; the rest of the events in the same record stay.
-- **A frame that will not decompress** → its bytes are kept as-is with a note. Nothing of yours is thrown away.
-
-Afterwards the UI lists what changed (how many images were missing, how many sizes were filled, how many lines were dropped). Only frames that actually changed are recompressed; untouched frames stay byte-identical — a repaired package is the same session, not a regenerated one. To inspect without changing anything, call `repairSession(buf, { keepMissing: true })`.
-
-### "This package is newer than your plugin", not "the package is broken"
-
-When a package carries entries this version does not recognise, the answer used to be a bare "unknown entry, refusing to open". That sends you the wrong way: you assume the file is damaged, go dig out a backup, save it again — when the real cause is just an old plugin.
-
-Packages now record the plugin version that wrote them (`manifest.plugin`), and opening compares the two first:
-
-- **Package newer than your plugin** → say so plainly: which version wrote it, which version you have, upgrade before opening — and make it clear the package itself is fine.
-- **Same version, unfamiliar entry** → still refused as an unknown entry. That is usually a package assembled by some other tool, not a version problem, so "you are old" would be a lie.
-- **Old package with no version field** → inferred from the entry prefix (`attachments/` only exists from 0.3.0), so you still get "upgrade" instead of "broken".
-
-Paths on your machine never appear in that message.
-
-## How files are named
-
-```
-<session title>-<YYYYMMDD-HHmm>.dsproj
-```
-
-- The title is the newest `session/title` event (whatever DSH called it).
-- The timestamp is the session's **creation** time, not the save time — saving the same session twice always yields the same name.
-- `\ / : * ? " < > |` and control characters become spaces, runs collapse, 60 characters max.
-- A session without a title falls back to `20261025-1043-session-7f3a2c91.dsproj` (time + first 8 id characters).
-- The directory is the last used one, Desktop on the first run.
-- **Overwriting never renames**: the full path is remembered, so a later retitle does not spawn a new file.
-
-## What happens on open
-
-```mermaid
-flowchart TD
-  A[read .dsproj] --> B{does this session id exist locally}
-  B -- no --> C[ask: which workspace]
-  C --> D[import, rewrite header.cwd to the local path]
-  B -- yes · same createdAt · same cwd --> E[just switch to it, no copy no write]
-  B -- yes · same createdAt · other cwd --> F[land a second copy under a new id]
-  B -- yes · different createdAt --> G[conflict panel: pick one of four]
-  D --> H[open the session]
-  E --> H
-  F --> H
-  G --> H
-```
-
-- **Ids must be unique per `DSH_HOME`**, so landing the same session in a different workspace issues a new id instead of duplicating it.
-- **A workspace path that is not a folder** (gone, or a file sits at that name) is **no longer papered over**: the open returns `400 bad-workspace` and the UI shows "That location is not a usable folder". No directory is created, no byte is written. It used to fall back to the host's current directory silently — the session landed in an unrelated workspace and the memory written afterwards landed there too; when the path was actually a regular file, `existsSync` said yes and `sessions/` grew a directory named after that file. Moving a session elsewhere is still possible, but you pick the target with "Choose another folder…".
-- When a session does land in a different workspace, only frame 0 (the header) is rewritten; frames 1..n are copied byte for byte.
-- **Memory files are compared by sha256**: identical ones are skipped, different ones are written as `xxx.from-dsproj-<date>` copies in the default mode — nothing local is overwritten unless you explicitly choose Merge memory.
-- A successful open remembers that `.dsproj` as the session's save target.
-
-The conflict panel shows both sides (title, creation time, size, workspace / exporting machine) with four choices: **cancel**, **save as a copy**, **overwrite local** (after a `.bak-<timestamp>`), **use local**.
-
-## Two machines, synced folders, autosave
-
-Three layers of protection:
-
-**1. A lock inside the file.** Every package carries `LOCK.json` (`host`, `pid`, `at`, `writes`), mirrored into `manifest.json` and summarised in `SUMMARY.md`.
-
-**2. A sidecar lock on disk.** `${file}.lock` is claimed with an exclusive `wx` create; a live pid on this host blocks, a foreign `at` within 15 minutes blocks, otherwise the write proceeds. A block returns `409 locked` naming the holder.
-
-**3. A content fingerprint (CAS).** Each write records the file's sha256. Before the next write it is recomputed; if it differs, the file changed elsewhere:
-
-- manual save → `409 stale` and a panel offering **overwrite on disk** / **save as a new file** / **cancel**;
-- autosave → **turns itself off** for that session and writes nothing.
-
-Writes are **atomic** (tmp file + rename) so a sync client never picks up half a package. Paths inside OneDrive / Dropbox / Google Drive / iCloud / Nutstore / Box / Syncthing / Seafile / Baidu Netdisk trigger a warning that two machines with autosave on will overwrite each other — a warning, not a block.
-
-> **In short**: if two machines really take turns on one file, keep **autosave on one of them only**; the other machine will be stopped by the content check.
-
-## Security
-
-Opening someone else's `.dsproj` is accepting a compressed archive from a stranger, so the plugin treats every package as potentially hostile:
-
-- **Entry-name traversal**: every path segment is validated; `../../x`, `..\..\x`, drive letters and UNC prefixes are rejected at read time, and each memory write target is re-joined and re-checked to stay inside the memory root.
-- **Landing filenames**: the session filename declared in `manifest.json` must match `session[.tag].jsonl[.zstd]`, only its basename is used, the target must stay under `~/.dsh/sessions`, and an existing file is never overwritten.
-- **Zip bombs**: 64 MB per entry, 512 MB per package, 200× compression ratio (not applied below 4 MB), with the central-directory lengths checked before inflating. **A session log is a concatenation of zstd frames, so each frame is capped at 64 MB after inflation and the whole log at 512 MB** — the zip limits only count what the deflate layer yields, and a second compression layer inside a frame slips past them (a 29 KB package inflated to 900 MB in testing).
-- **Write targets**: saving is limited to the last used directory, the directory of an already-remembered file, or a location picked in the native dialog. Anything else — or overwriting a file this plugin did not produce — asks first.
-- **Route gate**: all four `/api` routes require a loopback host (`127.0.0.1` / `localhost` / `::1`), a same-origin `Origin`, and a non-`cross-site` request; `sessionId` is shape-checked; failures never echo an absolute path.
-- **Package integrity**: every `manifest.parts` entry is verified by sha256 and byte count, and mismatches refuse the import. Conversely, **every content entry (`session/`, `memory/workspaces/`, `attachments/`) must be declared in `manifest.parts`** — undeclared entries are refused, so a package cannot declare only its session and smuggle a `MEMORY.md` into your project notes.
-
-### Memory: off by default; copies by default, merge overwrites
-
-- **Memory is not packaged by default.** `~/.dsh/memory` holds your project notes, logs and whiteboard; not a byte of it goes into the package unless you hold <kbd>Alt</kbd> while clicking save/save-as, or pass `?memory=1`.
-- **Opening a package that carries memory writes it as `xxx.from-dsproj-<date>` copies by default** — DSH will not read them as memory. After opening, the UI reports how many files landed as copies and how many clash with local names, with a panel offering **Merge memory** and **Open memory folder**.
-- **Merge memory (`?memory=restore`) only overwrites files that already exist locally with different content**, backing each one up as `xxx.bak-<timestamp>` first. Files this machine does not have are **not written at all** — they are only listed in the dialog's "will be created" section.
-- **To spread memory onto a fresh machine**, tick **Merge and create** in the same dialog (`?memory=new`); only then may original names be written.
-- **A landing directory matches only by segment-wise equality.** The memory folder is derived from the workspace path (`projectKey`) and looked up through two exact candidates — **no case / dash / trailing-separator normalisation**. `...\ws` and `...\ws\` are two different workspaces; they used to collapse into one, and `restore` could overwrite somebody else's `MEMORY.md` through that crack. The merge dialog now prints the `memoryDir` it is about to use and says the landing spot comes from the package's cwd, not from the workspace you have open.
-- **Why so strict**: the `sha256` values in `parts` are **computed by the packager**. A poisoned `MEMORY.md` can be registered there with a matching hash and pass every check above — self-consistency is not trust. So "will DSH read this as memory" is broken only by renaming the landing file. Poisoning can therefore land in exactly two places: a file you already had (with a visible backup), or a new file you explicitly approved with Merge and create.
-
-## Inside a `.dsproj`
-
-A `dshproj/1` ZIP, byte-compatible with the `dshproj` CLI (same package format; the CLI itself lives elsewhere):
-
-```
-manifest.json                      metadata + per-entry sha256 + lock mirror
-LOCK.json                          who wrote it, when, how many writes
-session/session.v4.jsonl.zstd       the raw session log (zstd frames untouched)
-memory/workspaces/<slug>/**         that workspace's project memory
-attachments/objects/<2>/<sha256>    images the session references (stored by content hash)
-attachments/files/<2>/<sha256>      other files it references (same scheme)
-SUMMARY.md                          human-readable digest
-```
-
-Offline, without DSH:
-
-```bash
-dshproj verify   session.dsproj                     # frame structure + entry hashes
-dshproj info     session.dsproj                     # title, frame count, memory files
-dshproj import   session.dsproj --cwd D:\elsewhere  # import under a new id
-```
-
-### Images travel with the package
-
-The session log only carries `sha256:` references; the bytes live in a separate object store under `~/.dsh/attachments/v1`. Let the two drift and you get the "attachment missing" error — and retrying does not heal it, because the reference is a fixed hash and the retry asks for the same hash again. So packaging now walks the references the session actually makes and stores those objects under `attachments/`, re-hashing each one on the way in and dropping anything that does not match.
-
-Opening applies the same rule in reverse: an object that already exists is skipped (content addressing is idempotent, so two packages carrying the same image cannot fight); an entry whose shard does not match its hash prefix, or whose content does not hash to its name, is refused. Objects this machine never had are listed in `manifest.attachments.missing` and repeated in `SUMMARY.md`, so the recipient knows up front that this package is missing a few images instead of discovering it in a wall of errors.
-
-Code files are not included — a `.dsproj` holds the conversation, its memory and its attachments. Use `dshproj export --files` to carry the workspace too.
 
 ## FAQ
 
@@ -278,6 +279,26 @@ Publish to npm (with provenance) → pull that exact tarball back from the regis
 
 Re-running the same tag is safe: if the version is already on npm the publish is skipped, an existing Release is left alone, and the attachment is overwritten. So an earlier run that failed to attach the tarball is fixed by simply re-running.
 
+## Interface language
+
+UI text does not live in the code; it lives in `locales/`:
+
+```
+locales/
+├── zh-CN.json   source language, 114 keys — add new strings here
+└── en-US.json
+```
+
+At startup the plugin serves the packs from `/api/session.locales`; the client picks one by `navigator.language` and falls back to Chinese. `client.js` still carries a Chinese table as the first-paint fallback — the pack is fetched asynchronously, and waiting for it would mean a blank window.
+
+To add a language: copy `zh-CN.json` to `xx-XX.json`, translate the values, then run
+
+```bash
+node scripts/check-locales.mjs
+```
+
+It reports missing keys and placeholder mismatches. Placeholders (`{n}`, `{path}`, `{name}`) must be kept verbatim — translating them away renders `undefined`. See `locales/README.md` for the details.
+
 ## Development
 
 Zero runtime dependencies, plain ESM, `node:` builtins only; the client half only needs `react`.
@@ -300,6 +321,49 @@ All eleven suites run against their own temporary `DSH_HOME` (a fixture director
 Three exceptions: `test/client.mjs` is a pure in-memory wiring test with no fixture directory and no disk IO, and `test/pathkey.mjs` only calls two pure functions, so it writes nothing either. In `test/dialog.mjs` the selector checks, the AppleScript / zenity argument assembly and the script BOM checks are pure static verification and run anywhere, while only the few assertions that launch the real `powershell.exe` to verify CJK encoding are skipped off Windows (they print `⏭  跳过` — a skip is not a pass). The other eight are cross-platform.
 
 Read [`AGENTS.md`](AGENTS.md) before touching code — the hard rules, the four host routes, the `importPackage` branch order and testing recipes all live there. [`CLAUDE.md`](CLAUDE.md) is the short entry point and [`docs/TEST-MATRIX.md`](docs/TEST-MATRIX.md) maps every feature to the test that covers it.
+
+## Contributing
+
+### Reporting a bug you can fix
+
+Include these five things, otherwise we mostly go back and forth:
+
+1. Plugin version and DSH version (`node -p "require('dsh-session-save/package.json').version"`);
+2. Platform (Windows / macOS / Linux), and whether the native Save As window appears — that decides whether it goes through the native dialog or the in-page path field;
+3. Steps to reproduce, starting from which button you clicked;
+4. The exact error text: the message on screen, or the `[dsh-session-save]` line in the console. Paste it, do not paraphrase;
+5. If a package will not open: does the same `.dsproj` fail on another machine, or under another drive letter.
+
+### Sending a PR
+
+```bash
+git clone https://github.com/chinacaa/dsh-session-save
+cd dsh-session-save
+node test/pathkey.mjs          # make sure the baseline is green; all twelve suites are listed in AGENTS.md
+```
+
+- **Zero runtime dependencies is a hard rule**: do not add anything to `dependencies`, and the client may only `require('react')`.
+- Behaviour changed → add a line to `[Unreleased]` in `CHANGELOG.md`; an assertion or a feature point changed → update `docs/TEST-MATRIX.md` too.
+- Copy changed → update the Chinese README, the English README, and `locales/*.json` together; `node scripts/check-locales.mjs` catches the misses.
+- Write commit messages in Chinese, one sentence about what changed; one PR, one thing.
+- Before pushing, run `node --check index.js client.js` and all twelve test suites. A red PR is not reviewed.
+
+### Adding a language
+
+Every string lives in `locales/`; adding `<language-tag>.json` is enough, no code changes:
+
+1. Copy `locales/zh-CN.json` to `locales/ja-JP.json` (use a BCP 47 tag; for Chinese prefer a region such as `zh-TW`);
+2. Translate entry by entry, **keep placeholders `{n}` and `{path}` intact**, add no extra key and drop none;
+3. Run `node scripts/check-locales.mjs` — it reports which entries are missing and which placeholders do not match;
+4. Open the PR. Partial translations are fine; missing entries fall back to Chinese.
+
+Details in [`locales/README.md`](locales/README.md).
+
+### What not to send
+
+- No CLA to sign, and no need to open an issue first.
+- Do not touch `version` in `package.json`: releases are cut by pushing a tag.
+- No "convert to TypeScript", "add a build step", or "use some UI library" PRs. Zero dependencies and no build step are deliberate: the plugin is composed at DSH startup, so installing and restarting is all a user does.
 
 ## Known limits
 

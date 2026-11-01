@@ -21,7 +21,7 @@
 
 另有 `package.json` → `exports`：DSH 的 client-modules 要求声明了 `dsh.client` 的包**必须导出 `./client`**，否则启动即抛 `declares dsh.client but exports no "./client" bundle`（`dsh-client-modules/lib/index.js:738`）。本仓库导出 `"./client": "./client.js"`。
 
-`engines.dsh` = `>=0.2.1-rc.1`；`peerDependencies["@deepseek-ai/cordis"]` = `^4.0.1`。**`engines.dsh` 是真拦截**：`dsh-app-boot` 用 `semver.satisfies(runtime, range, { includePrerelease: true })` 判定（`lib/index.js:276-284`），预发布版参与比较；一旦写了 `engines.dsh`，`peerDependencies` 里的 `@deepseek-ai/dsh*` **完全不参与判定**（`unmetRequirements` 只走一条分支），它只给 npm 看。版本判定细节与「别按版本分流」的理由见 `AGENTS.md` 的「版本与发行」节。
+`engines.dsh` = `>=0.2.1-rc.1 <0.3.0-0`；`peerDependencies["@deepseek-ai/cordis"]` = `^4.0.1`。**`engines.dsh` 是真拦截**：`dsh-app-boot` 用 `semver.satisfies(runtime, range, { includePrerelease: true })` 判定（`lib/index.js:276-284`），预发布版参与比较；一旦写了 `engines.dsh`，`peerDependencies` 里的 `@deepseek-ai/dsh*` **完全不参与判定**（`unmetRequirements` 只走一条分支），它只给 npm 看。版本判定细节与「别按版本分流」的理由见 `AGENTS.md` 的「版本与发行」节。
 
 ---
 
@@ -299,7 +299,7 @@ fetch(`${ROUTE}?${search.toString()}`, { method: 'GET', headers: { accept: 'appl
 3. **插槽还在不在**：`cordis_inspect_query` → `client/Slots.listSubTree` 传 `conversation.session.header.utilities`，看 5 个 occupant 是否全 `active`。
 4. **事件名没变**：`cordis_inspect_query` → `host/Event.listEvents` 传 `session/event`，确认签名仍是 `(session, event)`；再确认 `event.type` 仍可能是 `step/end` / `turn/end`。
 5. **会话文件还能读**：`node test/smoke.mjs`（打包 + 回读）与 `node test/open.mjs`（40 条，导入与冲突）。十一套测试全部通过 `test/fixture.mjs` 自建临时 `DSH_HOME`，不读真实 `~/.dsh`。
-6. **跑满回归**：`for f in pathkey client dialog smoke open conflict security attach repair open-repair version; do node test/$f.mjs || exit 1; done`，应共 **361** 条 ✅（详见 `docs/TEST-MATRIX.md`）。其中 `pathkey.mjs` 是 rc.4 适配时新增的目录名派生回归。
+6. **跑满回归**：`for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales; do node test/$f.mjs || exit 1; done`，应共 **394** 条 ✅（详见 `docs/TEST-MATRIX.md`）。其中 `pathkey.mjs` 是 rc.4 适配时新增的目录名派生回归。
 7. **客户端能调 Host 吗**：`node test/client.mjs` 里已断言 `inject` 含 `remote` 与 `remote.session`、且源码不含 `uiWorkspace.openPath`。「打开记忆目录」失效是**静默**的（按钮点了没反应、不报错），只能靠这条断言兜住。
 
 ---
@@ -350,7 +350,7 @@ node test/pathkey.mjs    # 目录名派生没漂
 node test/client.mjs     # 插槽 / inject / 前端接线没断
 ```
 
-其余五套（`dialog` `smoke` `open` `conflict` `security`）覆盖的是插件自己的落盘与安全逻辑，与 DSH 版本弱相关，但**改动后必须全跑**（合计 283 条）；`attach` / `repair` / `open-repair` 三套覆盖附件打包回填与打开前体检（26 条）。以上 283 + 45（`pathkey` 35 + `client` 10）+ 26 = 354 条，再加 `version` 7 条 = 全部 361 条。
+其余五套（`dialog` `smoke` `open` `conflict` `security`）覆盖的是插件自己的落盘与安全逻辑，与 DSH 版本弱相关，但**改动后必须全跑**（合计 286 条）；`attach` / `repair` / `open-repair` 三套覆盖附件打包回填与打开前体检（26 条）。以上 308 + 46（`pathkey` 35 + `client` 11）+ 26 = 380 条，再加 `version` 7 条与 `locales` 5 条 = 全部 394 条。`locales` 覆盖语言包形状、客户端兜底、路由回落与跨站拦截。
 
 ### 6.2 rc.2 → rc.4（npm `latest` 与当前运行版之间的对照）
 
@@ -367,7 +367,7 @@ npm 上 `@deepseek-ai/dsh` 的 `dist-tags`：`latest = 0.2.1-rc.2`（`alpha = 0.
 
 **唯一真实的版本断崖在 0.2.0 系**：`@deepseek-ai/dsh-client-ui-conversation@0.2.0-rc.1` 里 `conversation.hero.options` 计数为 **0**（不存在），`conversation.session.header.utilities` 为 2；从 `0.2.1-rc.1` 起 hero 变成 2。也就是说 **hero 座位是 0.2.1 才有的**。
 
-但这条断崖不需要兼容代码：`ctx.slots.inject(key, cb)` 的契约是「声明已存在则同步执行回调，否则等下一次声明时才执行」——slot 不存在时插件那个 hero 按钮**静默不出现，不抛错**（见 §2.2）。而 `engines.dsh = ">=0.2.1-rc.1"` 已经把 0.2.0 系挡在门外（判定用 `semver.satisfies(..., { includePrerelease: true })`，见 `dsh-app-boot/lib/index.js:276-283`：`>=0.2.1-rc.1` 会 BLOCK `0.2.1-alpha.5` 及更早、放行 `rc.1`/`rc.2`/`rc.3`/`rc.4`/`0.2.2-alpha.*`/`0.3.x`）。
+但这条断崖不需要兼容代码：`ctx.slots.inject(key, cb)` 的契约是「声明已存在则同步执行回调，否则等下一次声明时才执行」——slot 不存在时插件那个 hero 按钮**静默不出现，不抛错**（见 §2.2）。而 `engines.dsh = ">=0.2.1-rc.1 <0.3.0-0"` 已经把 0.2.0 系挡在门外、把 0.3.0 及之后也挡在门外（判定用 `semver.satisfies(..., { includePrerelease: true })`，见 `dsh-app-boot/lib/index.js:276-283`）。三档写法的逐版本判定表在 §7.5。
 
 ### 6.3 为什么没有「旧版兼容 patch」
 
@@ -379,3 +379,115 @@ npm 上 `@deepseek-ai/dsh` 的 `dist-tags`：`latest = 0.2.1-rc.2`（`alpha = 0.
 所以 patch 层无法「按版本号分流」。真要给某个旧版留后门，只有两条路：主干暴露一个 `config` 开关、由 patch 覆盖 `config` 打开（客户端 `apply(ctx, config)` 确实收 config，`dsh-cordis-client-runner/lib/client.js:627`）；或用 `disabled: !!js ...` 按**某个服务在不在**做能力探测。
 
 当前**没有任何需要这样做的项**：rc.2 ↔ rc.4 零接口差异，0.2.0 系已被 `engines.dsh` 挡住，且 hero 座位缺失本来就是优雅降级。所以 `cordis.patch.yml` 保持只有那一条 `insert`。
+
+## 7. `engines.dsh` 的接口倒推依据
+
+§6 记的是「两个版本之间差了什么」；这一节记的是**下限本身从哪来**。
+
+`AGENTS.md`「版本与发行」定的规矩：范围只能从接口倒推，不许跟着最新版走；改范围前必须在**每一个**边界版本上跑完十二套。这张表就是「倒推」的账：插件用到哪条接口、哪条最早可用、哪几条还没验过。
+
+### 7.1 插件依赖的宿主接口清单
+
+| # | 接口 | 用在本仓库哪一行 | 缺了会怎样 | 首次可用版本 |
+| --- | --- | --- | --- | --- |
+| 1 | 插槽 `conversation.session.header.utilities` | `client.js:14` | 标题栏四个按钮全不出现 | `UNKNOWN`（同包 0.2.0-rc.1 存在但未逐字核对该座位） |
+| 2 | 插槽 `conversation.hero.options` | `client.js:15` | 空会话页少一个「打开」胶囊，其余不受影响 | **0.2.1-rc.1**（实测，见 7.2） |
+| 3 | `ctx.slots` 注册 API（`ctx.slots.register` 形状） | `client.js` 的 `apply` | 插件整块不挂载 | `UNKNOWN` |
+| 4 | `ctx.get('connection')` + `connection.fetch.register` | `index.js:2784`、`2799`、`2812`、`2828`、`2840` | 四条路由全 404 | `UNKNOWN` |
+| 5 | 路由依赖的 `connection` 形状（`methods` / `requestBody` / `path`） | 同上五处 | 路由注册被拒或请求体读不到 | `UNKNOWN` |
+| 6 | `ctx.effect` | `index.js:2855-2856` | 自动保存整条链路不工作 | `UNKNOWN` |
+| 7 | `ctx.on('session/event', handler)` | `index.js:2858` | 自动保存收不到 `step/end`，永不触发 | `UNKNOWN` |
+| 8 | 客户端 `window.__ModuleLoader__.load({ id, factory })` | `client.js:8` | 客户端半边整个不加载 | `UNKNOWN` |
+| 9 | `session.openWorkspacePath({ path, action })`（Session Remote） | `client.js:1156` | 「在文件管理器里显示」静默失效，其余正常 | `UNKNOWN` |
+| 10 | `sessions.refresh()` | `client.js` 的打开流程 | 打开后会话列表不更新（导入本身成功） | `UNKNOWN` |
+| 11 | 会话日志 `/` 文件名形状 `session.v4.jsonl.zstd` | `index.js:463-466` | 打包扫不到会话文件 | `UNKNOWN` |
+| 12 | 附件对象库 `$DSH_HOME/attachments/v1/{objects,files}/<前两位>/<sha256>` | `index.js:480` | 附件既带不走也回填不了 | **≤0.2.0-rc.1**（实测，见 7.2） |
+| 13 | `engines.dsh` 自身的判定实现（`semver.satisfies` + `includePrerelease`） | `docs` 本文 §1 | 范围写了不生效 | `UNKNOWN`（判定逻辑在 `dsh-app-boot/lib/index.js:276-283`，未回溯到首次版本） |
+
+**下限 = 上表里最晚的那个「首次可用版本」。** 现在只有第 2 行有实测值，其余标 `UNKNOWN`——`UNKNOWN` 不等于「更早」，只是还没验。
+
+### 7.2 已经实测的两个点
+
+拿 npm 上的历史版本直接解包 grep，不看文档、不看 changelog：
+
+| 目标 | 包 | 0.2.0-rc.1 | 0.2.1-rc.1 |
+| --- | --- | --- | --- |
+| `conversation.hero.options` | `@deepseek-ai/dsh-client-ui-conversation` | 命中 **0** 次 | 命中 **4** 次 |
+| `attachments/v1/objects` | `@deepseek-ai/dsh-attachment-local` | 命中 **2** 次 | 命中 **2** 次 |
+
+两条结论：
+
+- **第 2 行是真门槛**：`0.2.0-rc.1` 的 `dsh-client-ui-conversation` 包里连这个字符串都不存在，不是「座位在但渲染为空」。所以 `>=0.2.1-rc.1` 的下限有硬依据。
+- **第 12 行不是门槛**：附件对象库路径在 `0.2.0-rc.1` 就已经是现在这个形状，插件附带的那套附件打包/回填不会把下限推高。
+
+### 7.3 怎么把剩下的 `UNKNOWN` 补上
+
+对每个要验的版本、每个要验的包，跑同一条流程（`npm pack` 会把整包 tarball 落到当前目录，直接流式 grep，不解包到磁盘）：
+
+```bash
+cd /tmp && rm -rf probe && mkdir probe && cd probe
+V=0.2.1-rc.1
+for p in dsh-client-ui-conversation dsh-attachment-local dsh-session-persistence-jsonl; do
+  npm pack "@deepseek-ai/$p@$V" --registry=https://registry.npmjs.org
+done
+for t in *.tgz; do
+  echo "-- $t"
+  tar -xzOf "$t" | grep -c 'conversation\.hero\.options'
+done
+```
+
+三个坑：
+
+1. **`npm pack` 返回码不代表成败**。包能下、tarball 能落盘，但带 `EBADENGINE` 之类警告时退出码非 0，`&&` 链会误判成「包不存在」。判据只看 `ls -l *.tgz` 有没有那个版本的文件。
+2. **字符串在哪个包要先在本地装上找一遍**，别猜：
+   ```bash
+   cd ~/.dsh/profiles/web/node_modules 2>/dev/null || cd "$DSH_HOME/../dependencies/dsh/node_modules"
+   grep -rl 'conversation.hero.options' ./@deepseek-ai | cut -d/ -f2 | sort -u
+   ```
+3. **命中数 0 要区分「字符串没有」和「包没有」**：包不存在时 `npm pack` 不产文件，先确认 tarball 在，再判 0。
+
+补完一行就把 7.1 的 `UNKNOWN` 换成年份版本号，并在 7.2 加一行证据。**没跑过的不许填版本号**——填了就等于给自己发了一张「这个版本能用」的空头承诺，而 `engines.dsh` 是真拦截。
+
+### 7.4 现状
+
+- `package.json` 的 `engines.dsh` 当前是 `>=0.2.1-rc.1 <0.3.0-0`：下限的硬依据是第 2 行，上限的依据是 semver 语义（见 7.5）。
+- 第 3–11 行、13 行尚未逐版回溯。它们**不影响现有下限的正确性方向**（下限由最晚者决定，未验项只会让下限可能偏低），但**影响上限的声明**：`>=` 开口成立的前提是「下限之后每个已发布版本都实测过」，这条现在也没做到（0.2.1-rc.2 / rc.4 / rc.5 / 0.2.2-alpha.2 未跑）。
+- 因此当前写法应当读作「**已知在 0.2.1-rc.1 上可用**」，不是「0.2.1-rc.1 之后全都验证过」。要把它变成后者，按 `AGENTS.md`「改范围的前置条件」逐版本跑十二套，把结果记进 §6。
+
+### 7.5 上限写成什么样才对
+
+`0.x` 阶段 MINOR 可带破坏性改动，所以范围必须闭合在当前 MINOR 上。但上限的具体写法有两个坑，都用 `semver.satisfies(v, range, { includePrerelease: true })` 实测过：
+
+| 版本 | `>=0.2.1-rc.1` | `>=0.2.1-rc.1 <0.3.0` | `>=0.2.1-rc.1 <0.3.0-0` |
+| --- | --- | --- | --- |
+| `0.2.0-rc.2` | BLOCK | BLOCK | BLOCK |
+| `0.2.1-alpha.5` | BLOCK | BLOCK | BLOCK |
+| `0.2.1-rc.1` | ALLOW | ALLOW | ALLOW |
+| `0.2.1-rc.3` | ALLOW | ALLOW | ALLOW |
+| `0.2.1-rc.5` | ALLOW | ALLOW | ALLOW |
+| `0.2.2-alpha.2` | ALLOW | ALLOW | ALLOW |
+| `0.2.2` | ALLOW | ALLOW | ALLOW |
+| `0.3.0-alpha.1` | ALLOW | **ALLOW** | BLOCK |
+| `0.3.0-rc.1` | ALLOW | **ALLOW** | BLOCK |
+| `0.3.0` | ALLOW | BLOCK | BLOCK |
+| `0.4.0` | ALLOW | BLOCK | BLOCK |
+
+两条结论：
+
+1. **不写上界等于没有上界**：`>=0.2.1-rc.1` 放行到 `0.4.0` 甚至更远，dsh 哪天在 MINOR 里改了插槽契约，插件会被装进一个它没见过的宿主里。
+2. **上界不能写成 `<0.3.0`**：semver 里预发布版小于对应正式版，`0.3.0-alpha.1 < 0.3.0` 成立；而宿主判定带 `includePrerelease: true`，于是 0.3.0 的 alpha / rc / 正式版全被放进来。要真正封死下一个 MINOR，上界写成 `<0.3.0-0`（`-0` 是该版本号下最小的预发布标识）。
+
+复现：
+
+```bash
+cd "$DSH_HOME/../dependencies/dsh"   # 或任意装过 semver 的地方
+node -e "
+const s=require('semver'); const opt={includePrerelease:true};
+for (const r of ['>=0.2.1-rc.1','>=0.2.1-rc.1 <0.3.0','>=0.2.1-rc.1 <0.3.0-0']) {
+  console.log('--- '+r);
+  for (const v of ['0.2.0-rc.2','0.2.1-alpha.5','0.2.1-rc.1','0.2.1-rc.3','0.2.1-rc.5','0.2.2-alpha.2','0.2.2','0.3.0-alpha.1','0.3.0-rc.1','0.3.0','0.4.0'])
+    console.log('  '+v.padEnd(14)+' '+(s.satisfies(v,r,opt)?'ALLOW':'BLOCK'));
+}"
+```
+
+范围写成 `<0.3.0-0` 之后，dsh 发 0.3.0 时插件会被 `engines.dsh` 挡住——**这是设计意图，不是故障**。要放开，先按 `AGENTS.md`「改范围的前置条件」在新版上跑完十二套，再把上界挪到 `<0.4.0-0` 并把结果记进 §6。

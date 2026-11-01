@@ -7,9 +7,9 @@
 一个 DSH（DeepSeek Harness）插件：把当前会话另存为单个 `.dsproj` 工程文件，也能反过来从 `.dsproj` 打开会话并切过去。产物与 `dshproj` 命令行工具双向兼容（同一套 `dshproj/1` 包格式）。
 
 - 语言/运行时：纯 ESM（`"type": "module"`），零运行时依赖，只用 `node:` 内置模块；客户端只 `require('react')`。
-- 宿主：DSH `>=0.2.1-rc.1`（`engines.dsh`），Cordis `^4.0.1`（peer）。
+- 宿主：DSH `>=0.2.1-rc.1 <0.3.0-0`（`engines.dsh`），Cordis `^4.0.1`（peer）。
 - 平台：Windows 优先（原生对话框走 `powershell.exe` + WinForms）；macOS 走 `osascript` 的 Finder 面板；Linux/BSD 探 zenity / kdialog / qarma / matedialog。三者都没有时退回网页里的路径输入框。平台相关代码全部隔离在 `dialog/` 下（`index.mjs` 选实现、`shared.mjs` 共用工具、`windows.mjs` / `macos.mjs` / `linux.mjs` 各平台实现），`index.js` 只 import `dialog/index.mjs`，不认识具体实现。
-- 规模：`index.js` ≈2550 行、`client.js` ≈2150 行、十一套测试共 361 条 ✅（`smoke.mjs` 另有 12 处 throw 检查，只打一行汇总）。逐条覆盖见 `docs/TEST-MATRIX.md`。
+- 规模：`index.js` ≈2870 行、`client.js` ≈2450 行、十二套测试共 394 条 ✅（`smoke.mjs` 另有 12 处 throw 检查，只打一行汇总）。逐条覆盖见 `docs/TEST-MATRIX.md`。
 
 ## 红线（改之前先看，违反会静默坏掉）
 
@@ -42,8 +42,9 @@ marketplace/        上架条目（提 PR 到 awesome-dsh-plugin 用）
 scripts/bump.mjs    改版本（package.json + CHANGELOG）
 scripts/release-notes.mjs 从 CHANGELOG 摘某版本正文当 Release 说明
 scripts/set-repo.mjs 把 OWNER 占位换成真实 GitHub 名字
-test/fixture.mjs    临时 DSH_HOME 夹具（十一套测试共用）
-test/*.mjs          十一套自检（见「测试」）
+test/fixture.mjs    临时 DSH_HOME 夹具（十二套测试共用）
+test/*.mjs          十二套自检（见「测试」）
+locales/*.json      界面语言包（zh-CN 为源语言，114 键；新文案先加这里）
 docs/TEST-MATRIX.md 功能面 → 测试覆盖矩阵（56 条 F 编号）
 docs/DSH-API-SURFACE.md 用到的 DSH 接口清单（升级 DSH 时逐条核对）
 assets/             截图与方形图标（市场用）
@@ -158,7 +159,19 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
 
 - 版本真源是 `package.json` 的 `version`；`0.x` 阶段 MINOR 可带破坏性改动，`PATCH` 只修 bug；四条路由出入参 + 五个插槽座位 + 状态文件字段形状冻结时才升 `1.0.0`。
 - 不随包版本走的三个东西：`dshproj/1`（`FORMAT`）、`dshproj-lock/1`（`LOCK_FORMAT`）、宿主兼容范围（`engines.dsh` 与 peer cordis）。
-- `engines.dsh` 是**真拦截**，不是给人看的：`dsh-app-boot` 用 `semver.satisfies(runtime, range, { includePrerelease: true })` 判定（`lib/index.js:276-283`），预发布版**参与**比较。所以 `>=0.2.1-rc.1` 会挡住 `0.2.1-alpha.5` 及更早，放行 `rc.1`/`rc.2`/`rc.3`/`rc.4`/`0.2.2-alpha.*`。一旦写了 `engines.dsh`，`peerDependencies` 里的 `@deepseek-ai/dsh*` 就**完全不参与判定**（`unmetRequirements` 只走一条分支）。
+- `engines.dsh` 是**真拦截**，不是给人看的：`dsh-app-boot` 用 `semver.satisfies(runtime, range, { includePrerelease: true })` 判定（`lib/index.js:276-283`），预发布版**参与**比较。所以 `>=0.2.1-rc.1 <0.3.0-0` 会挡住 `0.2.1-alpha.5` 及更早，放行 `rc.1`…`rc.5`、`0.2.2-alpha.*`、`0.2.2`，挡住 `0.3.0-0` 及之后。**上限必须写 `<0.3.0-0`，不能写 `<0.3.0`**：`includePrerelease: true` 下 `0.3.0-alpha.1 < 0.3.0`，写 `<0.3.0` 会把 0.3.0 的预发布全放进来，等于没上限。一旦写了 `engines.dsh`，`peerDependencies` 里的 `@deepseek-ai/dsh*` 就**完全不参与判定**（`unmetRequirements` 只走一条分支）。
+- **`engines.dsh` 的范围只能从接口倒推，不许跟着「最新版」走**。三件事分开：
+
+  **下限怎么定**：逐条列出插件真正用到的宿主接口（四个插槽座位名、`ctx.on('session/event')`、`ctx.get('connection')`、`ctx.effect`、四条 `/api/session.*` 路由依赖的 `connection` 形状、会话文件格式版本、附件对象库路径），对每个接口找到它**第一次存在**的 dsh 版本，取其中最晚的那个当下限。对照表在 `docs/DSH-API-SURFACE.md` §7；查不到的接口必须标 `UNKNOWN`，不许估一个看起来合理的版本号填上。
+
+  **改范围的前置条件**：在新范围声称支持的**每一个边界版本**上跑完十二套（`for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales; do node test/$f.mjs; done` 加 `DSH_TEST_LOCALE=en-US node test/client.mjs`），把「哪个版本、跑了什么、结果如何」写进 `docs/DSH-API-SURFACE.md` §6。**没跑过的版本不许进范围**，包括「应该没问题」的版本。
+
+  **上限怎么处理**：`>=x` 这种开口写法，只在「下限之后每一个已发布的版本都实测过」时才成立。dsh 发新版后，新版**不在范围内是正常的**；把范围改到新版是那次实测的结论，不是发版当天的默认动作。新版改了你用的接口，正确做法是改代码适配，然后在新旧两版上都跑一遍，而不是把旧版从范围里删掉。
+
+  **上限卡在 MINOR 边界**：`0.x` 阶段 MINOR 可带破坏性改动（本节第一条），所以范围必须闭合到当前 MINOR —— `<0.3.0-0`。写成 `<0.3.0` 挡不住 `0.3.0-alpha.1` 与 `0.3.0-rc.1`，等于没有上限；三档写法的实测判定表在 `docs/DSH-API-SURFACE.md` §7.5。
+
+  当前 `engines.dsh = ">=0.2.1-rc.1 <0.3.0-0"`：**下限**的唯一硬依据是 hero 座位（`0.2.1-rc.1` 才有，`0.2.0-rc.1` 里 `conversation.hero.options` 计数为 0），其余接口的首次可用版本尚未逐条回溯，`§7` 里标 `UNKNOWN` 的就是还没回溯的项；**上限**的依据是 semver 语义（`0.x` 的 MINOR 可能破坏），不是「0.3.0 已知会破坏」。
+
 - **别在主干里写按 DSH 版本分流的分支，也别指望 patch 层能按版本分流**。patch（`cordis.patch.yml`）只能 `insert` 或按 `id` 覆盖字段；`!!js` 表达式的作用域是 `with (ctx)`，只拿得到 Cordis 服务，拿不到版本号，DSH 也不提供版本服务（`ProfileContext` 无 `version`）。真要给旧版留后门只有两条路：主干暴露 `config` 开关由 patch 覆盖，或用 `disabled: !!js ...` 做**能力探测**（某服务在不在）。当前**没有任何需要这么做的项**——理由与逐包对照见 `docs/DSH-API-SURFACE.md` §6.2/§6.3。
 - 发版三步，**推 tag 就够了**：
   1. `node scripts/bump.mjs minor`（写 `package.json` + 把 `CHANGELOG.md` 的 `[Unreleased]` 顶成 `## [x.y.z]`）
@@ -188,15 +201,80 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
 三条硬规矩：
 
 1. **别在文档里复述代码**。默认文件名规则的真源是 `index.js` 的 `suggestPath()`、上限常量在 `index.js` 顶部；文档只说结论和例子，不抄正则、不抄常量值。抄了就会在下次改代码时变成谎言。
-2. **数字必须当场能验**。文档里出现"11 条红线""361 条 ✅""F1–F56""≈2550 行"这类计数时，要能用一条命令复现（见「改完之后」）。改完顺手核一遍，别让读者去发现数字过期。
+2. **数字必须当场能验**。文档里出现"11 条红线""394 条 ✅""F1–F58""≈2870 行"这类计数时，要能用一条命令复现（见「改完之后」）。改完顺手核一遍，别让读者去发现数字过期。
 3. **中英必须同一次改完**。`README.md` 与 `README.en.md` 是同一份文档的两种语言：小标题顺序、表格列、示例文件名一一对应。只改一份等于给另一半读者发过期信息。
 
 还有两条不写在文档里的东西：进度和计划（放 issue / PR / 提交信息，不写进 README 的"路线图"）、本机路径与个人环境（`C:\Users\...`、profile 名、私有 registry）——后者写进文档等于把私有环境当契约。
 
+## 文字风格准则（README、CHANGELOG、界面字面量、报错）
+
+这个仓库的文字有三拨读者：翻源码的人、只读 README 的人、被报错挡在界面上的人。**三处共用一套语体**——技术严肃，说清事实，不表演亲切。
+
+### 语体
+
+| 该这样 | 别这样 | 为什么 |
+| --- | --- | --- |
+| 这个位置不是可用的目录。请选择其他工作区，或先创建该目录。 | 哎呀这个位置打不开呢～ | 报错是给人解决问题的，不是安抚情绪 |
+| 磁盘上的内容已不是本机上次写入的版本。覆盖将丢失这些改动。 | 文件被改过啦，要不要覆盖？ | 说清后果，让人自己判断 |
+| 9 个附件因体积或数量超限未写入。 | 有些附件太大了没存上。 | 数字是事实，别省略 |
+
+三条禁令：
+
+1. **不用表演式口语。** 「省事。不折腾。」「点开就能继续。」这类三短句堆砌，读起来比机器味更假。
+2. **不在句尾加评价。** 「……才是关键」「……就对了」「说白了……」全部删掉，句子到事实为止。
+3. **不用「我们」。** 文档里没有作者，只有这个插件。
+
+### 标点
+
+- 破折号 `——` 只用在真正的插入语里，一段最多一处。拿它当「然后 / 所以 / 也就是」的连接符会立刻露出翻译腔：README 曾在 355 行里用了 22 处，读完像机翻；现在是 17 处、英文 41 处，超过中文 20 / 英文 45 就该回头查。
+- 不用连接词起句：「反过来说」「于是」「另外值得一提的是」全部删掉，直接写下一句。
+- 中文用全角标点；代码、路径、命令、报错原文一律半角、原样贴。
+- 加粗只给**操作名词**（`**保存**`、`**合并记忆**`），不给整句，也不拿来强调情绪。
+
+### 错误提示三要素
+
+任何面向用户的失败提示，必须同时给出三件事，缺一条就算没写完：
+
+1. **发生了什么** —— 具体到对象：哪个路径、哪个文件、哪个会话。
+2. **影响什么** —— 会不会丢数据、会不会留下半个文件、会不会白等。
+3. **下一步做什么** —— 能自动代劳的已经做完，剩给用户的动作要是一个具体按钮或一句命令。
+
+反面例子：`该位置不是可用的目录`（不说哪个路径、不给动作、界面只有一条 toast）。这句话真的在 0.3.0 里存在过，用户只能自己开资源管理器猜是哪一个目录。
+
+### 术语表
+
+| 概念 | 只用这个 | 不要写 |
+| --- | --- | --- |
+| 一条对话 | 会话 / session | 聊天、对话记录、context |
+| DSH 里的工作目录 | 工作区 / workspace | 项目、工程（单说「目录」时指文件系统里的目录） |
+| `.dsproj` 文件 | 工程包 / 包 | 存档、快照、备份文件 |
+| 打包带走的图片 | 附件 / attachment | 图片对象、资源 |
+| 覆盖当前文件 | 覆盖 | 替换、顶掉 |
+| 把包里的记忆并进本机 | 合并记忆 | 导入记忆、同步记忆 |
+
+### 中英必须同步
+
+`README.md` 与 `README.en.md`、`locales/zh-CN.json` 与 `locales/en-US.json`、四条路由的 `message`，都是同一句话的不同语言版本。**改一处就改全部**：只改中文等于给另一半读者发过期信息；只改语言包等于界面还显示旧话（客户端有一份中文兜底表，`client.js` 的 `ZH`）。
+
+### 界面字面量
+
+- 源语言在 `locales/zh-CN.json`，兜底表在 `client.js` 的 `ZH` —— 两处都要有，`test/locales.mjs` 会查。
+- 占位符 `{n}` / `{path}` 原样保留，不许改成 `%s`，也不许在代码里拼字符串绕过去。
+- 长度：按钮不超过 6 字，弹窗标题不超过 12 字，否则英文版会撑破布局。
+- 字面量里不写死路径、端口、账号。
+
+### 自查
+
+```bash
+node scripts/check-locales.mjs          # 键是不是源语言子集、占位符对不对得上
+grep -o '——' README.md | wc -l          # 中文破折号密度，超过 20 就该回头查
+grep -o '—' README.en.md | wc -l        # 英文 em dash，超过 45 同理
+```
+
 ## 改完之后
 
 1. `node --check index.js client.js`（改过 .ps1 再加语法检查）。
-2. 跑**全部十一套**测试，别只跑改到的那一个；改过客户端再补一轮 `DSH_TEST_LOCALE=en-US node test/client.mjs`。
+2. 跑**全部十二套**测试，别只跑改到的那一个；改过客户端再补一轮 `DSH_TEST_LOCALE=en-US node test/client.mjs`。
 3. 改过行为 → `CHANGELOG.md` 的 `[Unreleased]` 加一条。
 4. 改过任何一个断言或功能点 → 同步 `docs/TEST-MATRIX.md` 的覆盖表（它按 F 编号列，条数对不上就是漏改）。
 5. 改过文档 → 按「文档怎么改」那张表核对：中英两份是否同改、有没有把代码细节抄进文档、文中的计数是否仍成立：
@@ -205,7 +283,7 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
    wc -l index.js client.js                                  # 对应 AGENTS.md「规模」
    awk '/^## 红线/,/^## 目录/' AGENTS.md | grep -c '^[0-9]\+\. \*\*'   # 红线条数（必须限在红线节内：本文别处也有编号列表）
    grep -oE 'F[0-9]+' docs/TEST-MATRIX.md | sort -u | wc -l  # 功能面条数
-   for f in pathkey client dialog smoke open conflict security attach repair open-repair version; do node test/$f.mjs | grep -c '✅' ; done   # 十一行相加 = 361
+   for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales; do node test/$f.mjs | grep -c '✅' ; done   # 十二行相加 = 394
    ```
 
 6. 确认测试没有留下垃圾：跑完 `git status` 应为只有你改的源文件，`os.tmpdir()` 下不该残留 `dshss-fx-*` / `dshss-sec-*` 目录（`autoCleanup` 会删，残留说明收尾路径漏了信号处理）。

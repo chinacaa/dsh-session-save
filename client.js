@@ -39,185 +39,112 @@ window.__ModuleLoader__.load({
       openPath: '打开会话工程',
       openPathHint: '输入 .dsproj 的完整路径',
       openConfirm: '打开',
-      conflictTitle: '这个会话本机已经有了',
-      conflictHint: '文件里的会话与本机同 id 的那条不是同一段对话，选一个处理方式。',
+      conflictTitle: '该会话在本机已存在',
+      conflictHint: '包内会话与本机同 id 的会话不是同一段对话，请选择处理方式。',
       conflictLocal: '本机现有',
-      conflictIncoming: '文件里带来的',
+      conflictIncoming: '包内',
       conflictTitleField: '标题',
       conflictCreated: '创建时间',
       conflictSize: '体积',
       conflictCwd: '工作区',
       conflictFrom: '导出机器',
-      conflictId: '两边 id 相同，所以只能留一份同 id 的会话；「另存为副本」会给文件里那份换新 id。',
-      conflictReuse: '用本机的',
-      conflictOverwrite: '用文件覆盖本机',
+      conflictId: '两次保存的 id 相同，同一 id 仅保留一份会话；「另存为副本」会为包内会话分配新 id。',
+      conflictReuse: '保留本机',
+      conflictOverwrite: '用包内会话覆盖本机',
       conflictCopy: '另存为副本',
       autosave: '自动保存',
       autosaveOn: '自动保存已开启',
       autosaveOff: '自动保存已关闭',
       autosaveOnHint: '自动保存已开启（点击关闭）',
       autosaveOffHint: '自动保存已关闭（点击开启）',
-      autosaveAsk: '先选一个保存位置',
-      autosaveAskHint: '自动保存需要一个固定文件，之后每次覆盖它',
+      autosaveAsk: '请先指定保存位置',
+      autosaveAskHint: '自动保存需要一个固定文件，之后每次写入将覆盖该文件',
       locked: '文件被占用',
       saveAs: '另存为',
       saveAsHint: '另存为',
       saveAsSaved: '已另存为',
+      wsBadTitle: '原工作区不可用，换一个位置打开',
+      wsBadMissing: '包内记录的工作区路径在本机不存在：{path}',
+      wsBadNotDir: '包内记录的工作区路径在本机是文件而不是目录：{path}',
+      wsReplaceFile: '把那个文件改名备份，在原处建文件夹',
+      wsReplaceHint: '{path} 会改名成 {path}.bak-<时间戳>，不删除',
+      lockedTitle: '这个文件正被另一个窗口写入',
+      lockedHint: '现在保存可能覆盖它刚写的内容。确认那个窗口已经存完，再选「仍然保存」。',
+      lockedForce: '仍然保存',
+      brokenTitle: '这个包打不开',
+      brokenHint: '包内结构校验没过。可以把下面的说明整段复制给任意 AI，让它把包修好；或者丢掉校验不通过的条目直接打开——会话日志以外的内容可能少一部分。',
+      brokenCopy: '复制说明',
+      brokenCopied: '已复制到剪贴板',
+      brokenRepair: '丢掉坏条目后打开',
+      brokenCount: '已按校验结果丢掉 {n} 个条目',
+      brokenNoPrompt: '（这段说明没能生成，请把报错原文抄给 AI）',
+      wsBadCreate: '在这里新建文件夹并继续',
+      wsBadCreateHint: '会新建一个空文件夹 {path}，然后把会话放进去。',
+      wsBadCreateFailed: '新建文件夹失败：{reason}',
       wsTitle: '打开到哪个工作区',
-      wsHint: '本机没有这个会话，选一个工作区把对话放进去，然后就能接着聊。',
-      wsOriginal: '文件里的原工作区',
-      wsPick: '选其他目录…',
-      wsEmpty: '还没有工作区，直接选一个目录吧。',
-      wsMissing: '（本机没有这个目录）',
+      wsHint: '本机没有该会话，请指定一个工作区。',
+      wsOriginal: '包内原工作区',
+      wsPick: '选择其他目录…',
+      wsEmpty: '尚无工作区，请选择一个目录。',
+      wsMissing: '（本机没有该目录）',
       wsCancel: '取消',
-      staleTitle: '这个文件已被别处改过',
-      staleHint: '磁盘上的内容已经不是本机上次写的那份了（另一台机器、同步盘，或手动替换过）。直接覆盖会丢掉那边的内容。',
+      staleTitle: '目标文件已被外部修改',
+      staleHint: '磁盘上的内容已不是本机上次写入的版本（可能由另一台机器、同步盘或手动替换导致）。覆盖将丢失这些改动。',
       staleSince: '本机上次写入',
-      staleNow: '现在磁盘上',
-      staleOverwrite: '覆盖磁盘上的',
+      staleNow: '当前磁盘内容',
+      staleOverwrite: '覆盖磁盘文件',
       staleSaveAs: '另存为新文件',
-      cloudWarn: '这个目录在 {name} 里：两台机器同时开着自动保存会互相覆盖，建议只在一台机器上写。',
+      cloudWarn: '该目录位于 {name}：多台机器同时启用自动保存会互相覆盖，建议仅在一台机器上写入。',
       cloudTag: '同步盘',
-      confirmOverwrite: '这个位置已经有文件了',
-      confirmOverwriteHint: '它不是这个会话记住的那个工程文件。覆盖会让原来的内容消失。',
-      confirmOverwriteAlt: '换个位置另存为',
-      notDsproj: '那个文件不是 .dsproj 工程包，不能覆盖',
-      missingTarget: '上次保存的文件不在了',
-      missingTargetHint: '这个位置原本有一份工程包，现在读不到了（被删除、移走，或所在磁盘没挂上）。直接写下去会在这里新建一个同名文件，看起来像保存成功，其实原来那份已经没了。',
-      missingTargetRecreate: '就在这里新建',
-      missingTargetSaveAs: '另存到别处',
-      missingAutoOff: '自动保存已停用：目标文件不在了',
-      repairHint: '打开前体检：',
-      repairMissing: '{n} 张图的字节本机没有，已换成文字占位',
-      repairPatched: '{n} 张图缺尺寸，已按文件头补上',
-      repairLines: '{n} 行日志读不懂，已跳过',
-      repairFrames: '{n} 帧日志解不开，已原样保留',
+      confirmOverwrite: '该位置已存在文件',
+      confirmOverwriteHint: '该文件不是本会话记录的工程文件，覆盖将丢失其原有内容。',
+      confirmOverwriteAlt: '选择其他位置另存为',
+      notDsproj: '目标文件不是 .dsproj 工程包，无法覆盖',
+      missingTarget: '上次保存的文件不存在',
+      missingTargetHint: '该位置原有一份工程包，当前无法读取（已被删除、移动，或所在磁盘未挂载）。继续保存将在该位置新建同名文件，原文件内容将丢失。',
+      missingTargetRecreate: '在该位置新建',
+      missingTargetSaveAs: '另存到其他位置',
+      missingAutoOff: '自动保存已停用：目标文件不存在',
+      repairHint: '打开前检查：',
+      repairMissing: '{n} 张图片的原始数据不在本机，已替换为文字占位',
+      repairPatched: '{n} 张图片缺少尺寸信息，已按文件头补全',
+      repairLines: '{n} 行日志无法解析，已跳过',
+      repairFrames: '{n} 帧日志无法解码，已原样保留',
       attachRejected: '{n} 个附件因体积或数量超限未写入',
-      pathNotAllowed: '只能存到用过的目录，或者用另存为窗口挑位置',
+      pathNotAllowed: '仅可保存到已使用的目录，或通过另存为窗口指定位置',
       memoryHint: 'Alt 点击：连同工作区记忆一起打包',
       memoryTag: '含记忆',
-      memoryCopiesHint: ' 个记忆文件已作为副本落盘（未生效）',
-      memoryConflictsHint: ' 个与本地已有记忆重名',
+      memoryCopiesHint: ' 个记忆文件已作为副本写入（未生效）',
+      memoryConflictsHint: ' 个与本机已有记忆重名',
       memoryRestoredHint: ' 个记忆文件已写回原位',
-      memoryNoticeTitle: '记忆只落了副本',
-      memoryNoticeBody: '包里的工作区记忆已存成带来源后缀的副本，DSH 不会读它们。要让它们生效，点「合并记忆」——只覆盖本机已有的同名文件，覆盖前先备份。这个包如果不是你自己导出的，请直接关掉：包里的记忆会被 DSH 当作项目笔记读进上下文。落点由包里的 cwd 决定，不是你当前打开的工作区。',
+      memoryNoticeTitle: '记忆仅写入副本',
+      memoryNoticeBody: '包内工作区记忆已存为带来源后缀的副本，DSH 不会读取。如需生效，请使用「合并记忆」：仅覆盖本机已有的同名文件，覆盖前自动备份。若该包并非本人导出，请直接关闭：包内记忆会被 DSH 当作项目笔记读入上下文。写入位置由包内记录的 cwd 决定，与当前打开的工作区无关。',
       memoryOpenDir: '打开记忆目录',
       memoryDirLabel: '记忆目录',
-      badWorkspace: '这个位置不是一个可用的目录',
-      memoryMergeTarget: '这些记忆会落到上面这个记忆目录，不是你当前打开的工作区',
+      memoryMergeTarget: '记忆将写入上方显示的记忆目录，而非当前打开的工作区',
       memoryMerge: '合并记忆',
-      memoryMergeTitle: '把包里的记忆合并到本机',
-      memoryMergeHint: '合并只覆盖本机已有的同名文件，覆盖前每个都会备份成 .bak-<时间>。这个包如果不是你自己导出的，请取消：包里的记忆会被 DSH 当作项目笔记读进上下文。',
+      memoryMergeTitle: '将包内记忆合并到本机',
+      memoryMergeHint: '合并仅覆盖本机已有的同名文件，覆盖前每个文件将备份为 .bak-<时间>。若该包并非本人导出，请取消：包内记忆会被 DSH 当作项目笔记读入上下文。',
       memoryMergeMore: '还有 {n} 个',
       memoryMergeConfirm: '合并已有',
       memoryMergeOverwrite: '将覆盖',
       memoryMergeCreate: '将新建（本机没有）',
-      memoryMergeCreateHint: '这些文件本机没有。默认不写入——包里的记忆可能不是你自己的，新建等于让 DSH 直接读它。确认是你自己导出的包，再选「合并并新建」。',
+      memoryMergeCreateHint: '以下文件本机不存在，默认不写入：包内记忆可能并非本人所有，新建后 DSH 将直接读取。确认为本人导出的包后，再选择「合并并新建」。',
       memoryMergeWithNew: '合并并新建',
-      memoryMergeNoOverwrite: '没有要覆盖的文件',
+      memoryMergeNoOverwrite: '没有需要覆盖的文件',
       memoryCreatedHint: ' 个新文件未写入',
       memoryNewHint: ' 个已写回原位（含新建）',
     };
-    const EN = {
-      button: 'Save session',
-      buttonHint: 'Save this session to a .dsproj (Shift+click = Save As)',
-      saving: 'Saving…',
-      ask: 'Save as',
-      askHint: 'Where should this session go?',
-      confirm: 'Save',
-      cancel: 'Cancel',
-      saved: 'Saved',
-      savedMemory: 'memory files',
-      cancelled: 'Cancelled',
-      failed: 'Save failed',
-      openButton: 'Open session',
-      openButtonHint: 'Open a session from a .dsproj',
-      opening: 'Opening…',
-      opened: 'Opened',
-      openFailed: 'Open failed',
-      openPath: 'Open session project',
-      openPathHint: 'Full path of a .dsproj file',
-      openConfirm: 'Open',
-      conflictTitle: 'This session already exists here',
-      conflictHint: 'The file carries a different conversation under the same id. Pick how to resolve it.',
-      conflictLocal: 'On this machine',
-      conflictIncoming: 'From the file',
-      conflictTitleField: 'Title',
-      conflictCreated: 'Created',
-      conflictSize: 'Size',
-      conflictCwd: 'Workspace',
-      conflictFrom: 'Exported on',
-      conflictId: 'Both share one id, so only one session per id can stay; “Save as copy” gives the incoming one a new id.',
-      conflictReuse: 'Keep local',
-      conflictOverwrite: 'Overwrite with file',
-      conflictCopy: 'Save as copy',
-      autosave: 'Autosave',
-      autosaveOn: 'Autosave on',
-      autosaveOff: 'Autosave off',
-      autosaveOnHint: 'Writes the project file after every step (click to turn off)',
-      autosaveOffHint: 'Turn on to save after every step (pick a location first)',
-      autosaveAsk: 'Pick a file first',
-      autosaveAskHint: 'Autosave needs a fixed file to overwrite each time',
-      locked: 'File is in use',
-      saveAs: 'Save As',
-      saveAsHint: 'Save as a new .dsproj (new name or location; the original stays)',
-      saveAsSaved: 'Saved as',
-      wsTitle: 'Open into which workspace',
-      wsHint: 'This session is not on this machine yet. Pick a workspace to unpack it into, then keep chatting.',
-      wsOriginal: 'Original workspace in the file',
-      wsPick: 'Choose another folder…',
-      wsEmpty: 'No workspace yet — pick a folder instead.',
-      wsMissing: ' (missing on this machine)',
-      wsCancel: 'Cancel',
-      staleTitle: 'This file changed elsewhere',
-      staleHint: 'What is on disk is no longer what this machine wrote last (another machine, a synced folder, or a manual replace). Overwriting would discard that side.',
-      staleSince: 'Last written here',
-      staleNow: 'On disk now',
-      staleOverwrite: 'Overwrite on disk',
-      staleSaveAs: 'Save as a new file',
-      cloudWarn: 'This folder is inside {name}: autosave on two machines at once will overwrite each other. Keep writing on one machine.',
-      cloudTag: 'synced folder',
-      confirmOverwrite: 'A file already exists there',
-      confirmOverwriteHint: 'It is not the project file this session remembers. Overwriting drops what is in it.',
-      confirmOverwriteAlt: 'Save somewhere else',
-      notDsproj: 'That file is not a .dsproj project file — refusing to overwrite',
-      missingTarget: 'The file you saved last time is gone',
-      missingTargetHint: 'There used to be a project file here and it can no longer be read (deleted, moved, or its drive is not mounted). Writing anyway would create a new file with the same name — it would look like a successful save while the original is already gone.',
-      missingTargetRecreate: 'Create a new one here',
-      missingTargetSaveAs: 'Save somewhere else',
-      missingAutoOff: 'Autosave stopped: the target file is gone',
-      repairHint: 'Checked before opening: ',
-      repairMissing: '{n} image(s) had no bytes here — replaced with a text placeholder',
-      repairPatched: '{n} image(s) were missing size info — filled from the file header',
-      repairLines: '{n} unreadable log line(s) — skipped',
-      repairFrames: '{n} frame(s) would not decompress — kept as-is',
-      attachRejected: '{n} attachment(s) skipped — over the size or count limit',
-      pathNotAllowed: 'Only folders you have used before, or pick a spot in the Save As dialog',
-      memoryHint: 'Alt+click: bundle the workspace memory too',
-      memoryTag: 'with memory',
-      memoryCopiesHint: ' memory files landed as copies (not active)',
-      memoryConflictsHint: ' clash with local memory',
-      memoryRestoredHint: ' memory files written back in place',
-      memoryNoticeTitle: 'Memory landed as copies',
-      memoryNoticeBody: 'The workspace memory from this package was written as copies with a source suffix, which DSH does not read. To make it take effect, choose Merge memory — only files that already exist here are overwritten, and each is backed up first. If this package is not one you exported yourself, close this: packaged memory is read by DSH as project notes and enters the context. Where it lands is decided by the cwd inside the package, not by the workspace you have open.',
-      memoryOpenDir: 'Open memory folder',
-      memoryDirLabel: 'Memory folder',
-      badWorkspace: 'That location is not a usable folder',
-      memoryMergeTarget: 'These go into the memory folder above, not the workspace you have open',
-      memoryMerge: 'Merge memory',
-      memoryMergeTitle: 'Merge the packaged memory into this machine',
-      memoryMergeHint: 'Merging only overwrites files that already exist here, and backs each one up as .bak-<time> first. If this package is not one you exported yourself, cancel: packaged memory is read by DSH as project notes and enters the context.',
-      memoryMergeMore: 'and {n} more',
-      memoryMergeConfirm: 'Merge existing',
-      memoryMergeOverwrite: 'Will overwrite',
-      memoryMergeCreate: 'Will create (not on this machine)',
-      memoryMergeCreateHint: 'These files do not exist here. They are not written by default — packaged memory may not be yours, and creating them lets DSH read it directly. Only choose Merge and create when you exported this package yourself.',
-      memoryMergeWithNew: 'Merge and create',
-      memoryMergeNoOverwrite: 'Nothing to overwrite',
-      memoryCreatedHint: ' new files not written',
-      memoryNewHint: ' written back in place (incl. new)',
-    };
-    const L = (typeof navigator === 'object' && /^en\b/i.test(navigator.language || '')) ? EN : ZH;
+    /**
+     * 运行时文案表。内置中文兜底，启动后再从 `/api/session.locales` 拉浏览器语言
+     * 对应的 `locales/<tag>.json` 就地覆盖——缺的键自然还是中文，所以翻译可以分批发。
+     *
+     * 就地 `Object.assign` 而不是换引用：`L.xxx` 在几百处被直接读，换引用等于整体重写。
+     * 代价是首帧按中文渲染、拿到语言包后下一帧才变——一次同源请求，肉眼看不到。
+     */
+    const L = { ...ZH };
+    /** 当前生效的语言标签，仅用于调试与排错。 */
+    let localeTag = 'zh-CN';
 
     const COLORS = {
       label: 'var(--dsw-alias-label-primary, #16181d)',
@@ -497,6 +424,7 @@ window.__ModuleLoader__.load({
       const [stale, setStale] = useState(null); // { path, stale, cloud }
       const [refuse, setRefuse] = useState(null); // { status, path, message }
       const [missing, setMissing] = useState(null); // { path, name, dir }
+      const [lockedTo, setLockedTo] = useState(null); // 别的窗口正在写这个文件
       const [toast, setToast] = useState(null); // { tone, text }
       const [lastPath, setLastPath] = useState('');
       const mounted = useRef(true);
@@ -560,6 +488,13 @@ window.__ModuleLoader__.load({
             if (payload.status === 'stale') {
               setAsk(null);
               setStale(payload);
+              return;
+            }
+            // 文件正被另一个窗口写着：默认先等；等过还是占用就问用户要不要强行存。
+            // 强行存只跳过锁，stale 之类的数据保护一个都不少。
+            if (payload.status === 'locked' && payload.canIgnoreLock === true) {
+              setAsk(null);
+              setLockedTo(payload);
               return;
             }
             // 目标位置已有一个「不是本会话记住的那个」文件，或者它不是工程包：
@@ -696,6 +631,24 @@ window.__ModuleLoader__.load({
         );
       }
 
+      if (lockedTo !== null) {
+        children.push(
+          React.createElement(LockedModal, {
+            key: 'locked',
+            payload: lockedTo,
+            busy,
+            onForce: () => {
+              setLockedTo(null);
+              save({ ignoreLock: '1' }, true);
+            },
+            onCancel: () => {
+              setLockedTo(null);
+              setToast({ tone: 'info', text: L.cancelled });
+            },
+          }),
+        );
+      }
+
       if (missing !== null) {
         children.push(
           React.createElement(MissingModal, {
@@ -747,6 +700,31 @@ window.__ModuleLoader__.load({
       });
     }
 
+    const LOCALES_ROUTE = 'api/session.locales';
+
+    /**
+     * 拉一次语言包。浏览器语言先原样丢给 Host，由它决定最终落到哪个
+     * `locales/<tag>.json`（Host 只从目录清单里挑，不按字符串拼路径）。
+     * 失败就当没这回事：内置中文照常用，功能不受影响。
+     */
+    async function loadLocale() {
+      let wanted = '';
+      try {
+        if (typeof navigator === 'object' && typeof navigator.language === 'string') wanted = navigator.language;
+      } catch {
+        wanted = '';
+      }
+      try {
+        const data = await requestJson(LOCALES_ROUTE, { lang: wanted });
+        if (data !== null && typeof data === 'object' && data.status === 'ok' && data.messages !== null && typeof data.messages === 'object') {
+          Object.assign(L, data.messages);
+          if (typeof data.lang === 'string' && data.lang !== '') localeTag = data.lang;
+        }
+      } catch {
+        // 拿不到语言包不是错误：中文兜底已经在 L 里了。
+      }
+    }
+
     /* ── 请求层 ── */
     async function requestJson(route, params) {
       const search = new URLSearchParams(params);
@@ -770,6 +748,7 @@ window.__ModuleLoader__.load({
       const [ask, setAsk] = useState(null); // { suggested }
       const [conflict, setConflict] = useState(null); // 冲突详情
       const [workspace, setWorkspace] = useState(null); // 本机没有 → 问落点
+      const [broken, setBroken] = useState(null); // 包结构校验没过 → 给可复制的说明
       const [notice, setNotice] = useState(null); // 记忆只落了副本 → 留个面板让人去合并
       const [merge, setMerge] = useState(null); // 合并确认弹窗的载荷
       const [toast, setToast] = useState(null); // { tone, text }
@@ -872,16 +851,26 @@ window.__ModuleLoader__.load({
               return;
             }
             if (payload.status === 'bad-workspace') {
-              // 服务端不会再静默回落到自己的 cwd，所以这里必须说清楚「换个位置」，
-              // 否则用户看到的只是「打开失败」四个字。
+              // 原工作区在本机不可用（不存在，或是个文件）。只弹一行错误等于把路堵死：
+              // 用户既不知道是哪个路径，也没有任何下一步可点。这里复用「打开到哪个工作区」
+              // 那个弹窗，列出本机可用工作区，选一个就能继续，并先说明原路径为什么不能用。
+              setAsk(null);
+              setConflict(null);
+              setWorkspace(payload);
+              return;
+            }
+            if (payload.status === 'package-broken') {
+              // 包坏了不是「再试一次」能解决的：要么把说明交给 AI 修，要么按宽松模式
+              // 丢掉校验不过的条目先打开。两条路都得用户自己选，别替他决定丢数据。
               setAsk(null);
               setWorkspace(null);
-              setToast({ tone: 'error', text: payload.message || L.badWorkspace });
+              setBroken(payload);
               return;
             }
             if (payload.status === 'cancelled') {
               setAsk(null);
               setWorkspace(null);
+              setBroken(null);
               setToast({ tone: 'info', text: L.cancelled });
               return;
             }
@@ -901,7 +890,7 @@ window.__ModuleLoader__.load({
         [jump],
       );
 
-      return { busy, ask, conflict, workspace, notice, merge, toast, open, setAsk, setConflict, setWorkspace, setNotice, setMerge, setToast, mounted };
+      return { busy, ask, conflict, workspace, broken, notice, merge, toast, open, setAsk, setConflict, setWorkspace, setBroken, setNotice, setMerge, setToast, mounted };
     }
 
     /** AskPanel + 冲突弹窗 + toast，两个入口共用。 */
@@ -945,6 +934,10 @@ window.__ModuleLoader__.load({
             payload: flow.workspace,
             busy: flow.busy,
             onPick: (dir) => flow.open({ path: flow.workspace.sourcePath, cwd: dir }),
+            // createCwd=1 是「替我建目录」的显式开关，只有这个按钮按下去才带。
+            onCreate: (dir) => flow.open({ path: flow.workspace.sourcePath, cwd: dir, createCwd: '1' }),
+            // replaceFile=1：「那个位置是个文件」也能代劳——改名备份后建目录，不删用户文件。
+            onReplace: (dir) => flow.open({ path: flow.workspace.sourcePath, cwd: dir, replaceFile: '1' }),
             onBrowse: async () => {
               let dir = null;
               try {
@@ -958,6 +951,20 @@ window.__ModuleLoader__.load({
             },
             onCancel: () => {
               flow.setWorkspace(null);
+              flow.setToast({ tone: 'info', text: L.cancelled });
+            },
+          }),
+        );
+      }
+      if (flow.broken !== null) {
+        children.push(
+          React.createElement(BrokenModal, {
+            key: 'broken',
+            payload: flow.broken,
+            busy: flow.busy,
+            onRepair: () => flow.open({ path: flow.broken.sourcePath, repairPackage: '1' }),
+            onCancel: () => {
+              flow.setBroken(null);
               flow.setToast({ tone: 'info', text: L.cancelled });
             },
           }),
@@ -1566,6 +1573,206 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /**
+     * 「这个文件正被另一个窗口写入」：默认等过一轮才走到这里，所以这里只问一句
+     * 要不要强行存——文案要把后果说清（可能覆盖对方刚写的内容），不谈技术细节。
+     */
+    function LockedModal({ payload, busy, onForce, onCancel }) {
+      const button = (label, onClick, primary) =>
+        React.createElement(
+          'button',
+          {
+            type: 'button',
+            disabled: busy,
+            onClick,
+            style: {
+              padding: '6px 12px',
+              fontSize: 12.5,
+              fontFamily: 'inherit',
+              color: primary ? COLORS.accentLabel : COLORS.label,
+              background: primary ? COLORS.accent : 'transparent',
+              border: primary ? 'none' : `1px solid ${COLORS.border}`,
+              borderRadius: 6,
+              cursor: busy ? 'default' : 'pointer',
+            },
+          },
+          label,
+        );
+
+      return React.createElement(
+        'div',
+        {
+          style: {
+            position: 'fixed',
+            inset: 0,
+            zIndex: 9998,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'rgba(0,0,0,0.32)',
+          },
+        },
+        React.createElement(
+          'div',
+          {
+            style: {
+              width: 440,
+              maxWidth: '92vw',
+              padding: 18,
+              background: COLORS.elevated,
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: COLORS.radius,
+              boxShadow: '0 24px 60px rgba(0,0,0,0.24)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              color: COLORS.label,
+            },
+          },
+          React.createElement('div', { style: { fontSize: 13.5, fontWeight: 600 } }, L.lockedTitle),
+          React.createElement(
+            'div',
+            { style: { fontSize: 12, color: COLORS.secondary, lineHeight: 1.5 } },
+            L.lockedHint,
+          ),
+          React.createElement(
+            'div',
+            { style: { fontSize: 11.5, color: COLORS.secondary, wordBreak: 'break-all' } },
+            payload?.message ?? '',
+          ),
+          React.createElement(
+            'div',
+            { style: { display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 } },
+            button(L.cancel, onCancel, false),
+            button(L.lockedForce, onForce, true),
+          ),
+        ),
+      );
+    }
+
+    /**
+     * 包结构校验没过：这里不猜哪里坏了，只做两件事——
+     * 把服务端生成的「给 AI 的修包说明」原样交出去（可复制），或者按宽松模式
+     * 丢掉校验不过的条目先打开。两条路都得用户点，插件不替他决定丢数据。
+     */
+    function BrokenModal({ payload, busy, onRepair, onCancel }) {
+      const [copied, setCopied] = useState(false);
+      const prompt = typeof payload?.prompt === 'string' && payload.prompt !== '' ? payload.prompt : '';
+      const button = (label, onClick, primary) =>
+        React.createElement(
+          'button',
+          {
+            type: 'button',
+            disabled: busy,
+            onClick,
+            style: {
+              padding: '6px 12px',
+              fontSize: 12.5,
+              fontFamily: 'inherit',
+              color: primary ? COLORS.accentLabel : COLORS.label,
+              background: primary ? COLORS.accent : 'transparent',
+              border: primary ? 'none' : `1px solid ${COLORS.border}`,
+              borderRadius: 6,
+              cursor: busy ? 'default' : 'pointer',
+            },
+          },
+          label,
+        );
+
+      const copy = async () => {
+        if (prompt === '') return;
+        try {
+          await navigator.clipboard.writeText(prompt);
+          setCopied(true);
+        } catch {
+          // 浏览器不给剪贴板权限时别装作复制成功：提示用户自己全选复制。
+          setCopied(false);
+        }
+      };
+
+      return React.createElement(
+        'div',
+        {
+          style: {
+            position: 'fixed',
+            inset: 0,
+            zIndex: 9998,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'rgba(0,0,0,0.32)',
+          },
+        },
+        React.createElement(
+          'div',
+          {
+            style: {
+              width: 560,
+              maxWidth: '94vw',
+              maxHeight: '88vh',
+              overflow: 'auto',
+              padding: 18,
+              background: COLORS.elevated,
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: COLORS.radius,
+              boxShadow: '0 24px 60px rgba(0,0,0,0.24)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              color: COLORS.label,
+            },
+          },
+          React.createElement('div', { style: { fontSize: 13.5, fontWeight: 600 } }, L.brokenTitle),
+          React.createElement(
+            'div',
+            { style: { fontSize: 12, color: COLORS.secondary, lineHeight: 1.5 } },
+            prompt === '' ? L.brokenNoPrompt : L.brokenHint,
+          ),
+          React.createElement(
+            'div',
+            { style: { fontSize: 11.5, color: COLORS.danger, wordBreak: 'break-all' } },
+            payload?.error ?? '',
+          ),
+          prompt === ''
+            ? null
+            : React.createElement('textarea', {
+              readOnly: true,
+              value: prompt,
+              rows: 12,
+              onFocus: (event) => {
+                try {
+                  event.target.select();
+                } catch {
+                  // 选不中也无所谓，用户能手动拖
+                }
+              },
+              style: {
+                width: '100%',
+                fontFamily: 'ui-monospace, Consolas, monospace',
+                fontSize: 11.5,
+                lineHeight: 1.5,
+                color: COLORS.label,
+                background: COLORS.subtle ?? 'transparent',
+                border: `1px solid ${COLORS.border}`,
+                borderRadius: 6,
+                padding: 8,
+                resize: 'vertical',
+              },
+            }),
+          React.createElement(
+            'div',
+            { style: { display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' } },
+            copied === true
+              ? React.createElement('span', { style: { fontSize: 11.5, color: COLORS.secondary } }, L.brokenCopied)
+              : null,
+            button(L.brokenCopy, copy, false),
+            button(L.brokenRepair, onRepair, true),
+            button(L.cancel, onCancel, false),
+          ),
+        ),
+      );
+    }
+
     function StaleModal({ payload, busy, onOverwrite, onSaveAs, onCancel }) {
       const since = payload?.stale?.since;
       const when = typeof since === 'string' && since !== '' ? new Date(since).toLocaleString() : '未知';
@@ -1658,8 +1865,14 @@ window.__ModuleLoader__.load({
 
     /* ── 本机没有这个会话：问要打开到哪个工作区 ── */
 
-    function WorkspaceModal({ payload, busy, onPick, onBrowse, onCancel }) {
+    function WorkspaceModal({ payload, busy, onPick, onBrowse, onCreate, onReplace, onCancel }) {
       const list = Array.isArray(payload?.workspaces) ? payload.workspaces : [];
+      // 同一个弹窗服务两种情形：本机没有这个会话（need-workspace）、原工作区在本机
+      // 不可用（bad-workspace）。后者要先把「哪个路径、什么毛病」说清，再让用户挑。
+      const bad = payload?.status === 'bad-workspace';
+      const badText = bad === true
+        ? String(payload?.reason === 'missing' ? L.wsBadMissing : L.wsBadNotDir).replace('{path}', String(payload?.cwd ?? ''))
+        : '';
       const row = (item) =>
         React.createElement(
           'button',
@@ -1728,8 +1941,86 @@ window.__ModuleLoader__.load({
               color: COLORS.label,
             },
           },
-          React.createElement('div', { style: { fontSize: 13.5, fontWeight: 600 } }, L.wsTitle),
-          React.createElement('div', { style: { fontSize: 12, color: COLORS.secondary, lineHeight: 1.5 } }, L.wsHint),
+          React.createElement('div', { style: { fontSize: 13.5, fontWeight: 600 } }, bad === true ? L.wsBadTitle : L.wsTitle),
+          React.createElement(
+            'div',
+            { style: { fontSize: 12, color: COLORS.secondary, lineHeight: 1.5, wordBreak: 'break-all' } },
+            bad === true ? badText : L.wsHint,
+          // 「文件夹不存在」这一种插件自己能解决，就别把活派给用户：点一下就建出来。
+          // 建失败时把服务端回来的原因原样放上，不然只剩一个按不动的按钮。
+          bad === true && typeof payload?.createError === 'string' && payload.createError !== ''
+            ? React.createElement(
+              'div',
+              { style: { fontSize: 11.5, color: COLORS.danger, wordBreak: 'break-all' } },
+              String(L.wsBadCreateFailed).replace('{reason}', payload.createError),
+            )
+            : null,
+          bad === true && payload?.canCreate === true && typeof onCreate === 'function'
+            ? React.createElement(
+              'button',
+              {
+                type: 'button',
+                disabled: busy,
+                onClick: () => onCreate(String(payload.cwd ?? '')),
+                title: String(L.wsBadCreateHint).replace('{path}', String(payload?.cwd ?? '')),
+                style: {
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'flex-start',
+                  gap: 2,
+                  width: '100%',
+                  padding: '8px 10px',
+                  fontFamily: 'inherit',
+                  textAlign: 'left',
+                  color: COLORS.label,
+                  background: COLORS.subtle ?? 'transparent',
+                  border: `1px solid ${COLORS.accent ?? COLORS.border}`,
+                  borderRadius: 6,
+                  cursor: busy ? 'default' : 'pointer',
+                },
+              },
+              React.createElement('span', { style: { fontSize: 12.5, fontWeight: 600 } }, L.wsBadCreate),
+              React.createElement(
+                'span',
+                { style: { fontSize: 11, color: COLORS.secondary, wordBreak: 'break-all' } },
+                String(L.wsBadCreateHint).replace('{path}', String(payload?.cwd ?? '')),
+              ),
+            )
+            : null,
+          ),
+          // 「位置被一个文件占着」：改名备份再建目录。按钮上把备份名写出来，
+          // 让用户知道原文件还在，只是换了名字。
+          bad === true && payload?.canReplace === true && typeof onReplace === 'function'
+            ? React.createElement(
+              'button',
+              {
+                type: 'button',
+                disabled: busy,
+                onClick: () => onReplace(String(payload.cwd ?? '')),
+                style: {
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'flex-start',
+                  gap: 2,
+                  width: '100%',
+                  padding: '8px 10px',
+                  fontFamily: 'inherit',
+                  textAlign: 'left',
+                  color: COLORS.label,
+                  background: COLORS.subtle ?? 'transparent',
+                  border: `1px solid ${COLORS.accent ?? COLORS.border}`,
+                  borderRadius: 6,
+                  cursor: busy ? 'default' : 'pointer',
+                },
+              },
+              React.createElement('span', { style: { fontSize: 12.5, fontWeight: 600 } }, L.wsReplaceFile),
+              React.createElement(
+                'span',
+                { style: { fontSize: 11, color: COLORS.secondary, wordBreak: 'break-all' } },
+                String(L.wsReplaceHint).split('{path}').join(String(payload?.cwd ?? '')),
+              ),
+            )
+            : null,
           payload?.originalCwd
             ? React.createElement(
                 'div',
@@ -2094,6 +2385,8 @@ window.__ModuleLoader__.load({
     const inject = ['slots', 'sessions', 'uiWorkspace', 'remote', 'remote.session'];
 
     function apply(ctx) {
+      // 不 await：界面先用中文渲染，语言包到了下一帧自然替换，不挡首屏。
+      void loadLocale();
       host = ctx;
       ctx.slots.inject(SLOT, () =>
         ctx.slots.register(
