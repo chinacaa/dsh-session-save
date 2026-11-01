@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-01
+
 ### 新增
 
 - **界面文案搬出代码，别人可以 PR 别的语言。** 114 条文案从 `client.js` 挪进 `locales/zh-CN.json`（源语言）与 `locales/en-US.json`，启动时由 `/api/session.locales` 下发，前端按 `navigator.language` 挑一份、挑不到回中文；`client.js` 保留中文表做首屏兜底（语言包异步拉，等它回来就是白屏）。语言标签只从目录清单里挑，不按请求字符串拼路径——`?lang=../../package` 只会退化成中文。新加 `scripts/check-locales.mjs`（JSON 合法 / 值是字符串 / 键是源语言子集 / 占位符一致，少翻只提示不失败）与 `test/locales.mjs`（语言包形状、客户端不再留英文整表、路由回落与路径穿越、跨站 403，共 5 条）。
