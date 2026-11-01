@@ -101,6 +101,14 @@ The target of a save is *the file at that path*, not *the path*. So every write 
 - **Autosave** finds it gone → **turns itself off** and tells you why (with the path); that round writes nothing.
 - The whole **folder** missing (an unmounted network drive, say) behaves the same: "target folder does not exist" instead of quietly `mkdir -p`-ing the directory and the file back into existence.
 
+### It will not force a bad landing spot
+
+Opening has to land the session on the workspace path recorded in the package. When that spot is not a folder (a file with the same name is sitting there) or does not exist at all, the old behaviour had two bad outcomes: it created a directory under `sessions/` keyed by a file path, or it quietly fell back to the server's current directory — you thought it opened in your workspace, and it did not.
+
+Now it stops and says "that location is not a usable folder", and creates no directory at all. To land somewhere else, pick a workspace in the picker.
+
+The same rule applies to memory: **memory folders are matched by exact path only**, no "close enough" fuzzy match. So `D:\ws` and `D:\ws\` are two different workspaces with two separate memory folders — an extra folder is better than a guess about which one you meant.
+
 ### It checks the session before opening it
 
 A package may come from another machine, and files may have been deleted along the way. So before an import is written to disk, the session gets scanned once and whatever can be fixed is fixed:
@@ -154,8 +162,9 @@ flowchart TD
 ```
 
 - **Ids must be unique per `DSH_HOME`**, so landing the same session in a different workspace issues a new id instead of duplicating it.
-- **A missing workspace path** falls back to the host's current directory; only frame 0 (the header) is rewritten, frames 1..n are copied byte for byte.
-- **Memory files are compared by sha256**: identical ones are skipped, different ones are written as `xxx.from-dsproj-<date>` — local memory is never overwritten.
+- **A workspace path that is not a folder** (gone, or a file sits at that name) is **no longer papered over**: the open returns `400 bad-workspace` and the UI shows "That location is not a usable folder". No directory is created, no byte is written. It used to fall back to the host's current directory silently — the session landed in an unrelated workspace and the memory written afterwards landed there too; when the path was actually a regular file, `existsSync` said yes and `sessions/` grew a directory named after that file. Moving a session elsewhere is still possible, but you pick the target with "Choose another folder…".
+- When a session does land in a different workspace, only frame 0 (the header) is rewritten; frames 1..n are copied byte for byte.
+- **Memory files are compared by sha256**: identical ones are skipped, different ones are written as `xxx.from-dsproj-<date>` copies in the default mode — nothing local is overwritten unless you explicitly choose Merge memory.
 - A successful open remembers that `.dsproj` as the session's save target.
 
 The conflict panel shows both sides (title, creation time, size, workspace / exporting machine) with four choices: **cancel**, **save as a copy**, **overwrite local** (after a `.bak-<timestamp>`), **use local**.
@@ -183,17 +192,18 @@ Opening someone else's `.dsproj` is accepting a compressed archive from a strang
 
 - **Entry-name traversal**: every path segment is validated; `../../x`, `..\..\x`, drive letters and UNC prefixes are rejected at read time, and each memory write target is re-joined and re-checked to stay inside the memory root.
 - **Landing filenames**: the session filename declared in `manifest.json` must match `session[.tag].jsonl[.zstd]`, only its basename is used, the target must stay under `~/.dsh/sessions`, and an existing file is never overwritten.
-- **Zip bombs**: 64 MB per entry, 512 MB per package, 200× compression ratio (not applied below 4 MB), with the central-directory lengths checked before inflating.
+- **Zip bombs**: 64 MB per entry, 512 MB per package, 200× compression ratio (not applied below 4 MB), with the central-directory lengths checked before inflating. **A session log is a concatenation of zstd frames, so each frame is capped at 64 MB after inflation and the whole log at 512 MB** — the zip limits only count what the deflate layer yields, and a second compression layer inside a frame slips past them (a 29 KB package inflated to 900 MB in testing).
 - **Write targets**: saving is limited to the last used directory, the directory of an already-remembered file, or a location picked in the native dialog. Anything else — or overwriting a file this plugin did not produce — asks first.
 - **Route gate**: all four `/api` routes require a loopback host (`127.0.0.1` / `localhost` / `::1`), a same-origin `Origin`, and a non-`cross-site` request; `sessionId` is shape-checked; failures never echo an absolute path.
-- **Package integrity**: every `manifest.parts` entry is verified by sha256 and byte count, and mismatches refuse the import. Conversely, **every content entry (`session/`, `memory/workspaces/`) must be declared in `manifest.parts`** — undeclared entries are refused, so a package cannot declare only its session and smuggle a `MEMORY.md` into your project notes.
+- **Package integrity**: every `manifest.parts` entry is verified by sha256 and byte count, and mismatches refuse the import. Conversely, **every content entry (`session/`, `memory/workspaces/`, `attachments/`) must be declared in `manifest.parts`** — undeclared entries are refused, so a package cannot declare only its session and smuggle a `MEMORY.md` into your project notes.
 
-### Memory: off by default, and copies only
+### Memory: off by default; copies by default, merge overwrites
 
 - **Memory is not packaged by default.** `~/.dsh/memory` holds your project notes, logs and whiteboard; not a byte of it goes into the package unless you hold <kbd>Alt</kbd> while clicking save/save-as, or pass `?memory=1`.
-- **Opening a package that carries memory writes it as `xxx.from-dsproj-<date>` copies** — DSH will not read them as memory. After opening, the UI reports how many files landed as copies and how many clash with local names, with a panel offering **Merge memory** and **Open memory folder**.
-- **Merge memory (`?memory=restore`) only overwrites files that already exist locally with different content**, backing each one up as `xxx.bak-<timestamp>` first. Files this machine does not have are **not written at all** — they are only listed in the dialog's "will be created" section. One exception: `restore` lands a `xxx.from-dsproj-<date>` copy (never the original name) when a same-named memory *directory* exists but the file does not.
+- **Opening a package that carries memory writes it as `xxx.from-dsproj-<date>` copies by default** — DSH will not read them as memory. After opening, the UI reports how many files landed as copies and how many clash with local names, with a panel offering **Merge memory** and **Open memory folder**.
+- **Merge memory (`?memory=restore`) only overwrites files that already exist locally with different content**, backing each one up as `xxx.bak-<timestamp>` first. Files this machine does not have are **not written at all** — they are only listed in the dialog's "will be created" section.
 - **To spread memory onto a fresh machine**, tick **Merge and create** in the same dialog (`?memory=new`); only then may original names be written.
+- **A landing directory matches only by segment-wise equality.** The memory folder is derived from the workspace path (`projectKey`) and looked up through two exact candidates — **no case / dash / trailing-separator normalisation**. `...\ws` and `...\ws\` are two different workspaces; they used to collapse into one, and `restore` could overwrite somebody else's `MEMORY.md` through that crack. The merge dialog now prints the `memoryDir` it is about to use and says the landing spot comes from the package's cwd, not from the workspace you have open.
 - **Why so strict**: the `sha256` values in `parts` are **computed by the packager**. A poisoned `MEMORY.md` can be registered there with a matching hash and pass every check above — self-consistency is not trust. So "will DSH read this as memory" is broken only by renaming the landing file. Poisoning can therefore land in exactly two places: a file you already had (with a visible backup), or a new file you explicitly approved with Merge and create.
 
 ## Inside a `.dsproj`
@@ -285,9 +295,9 @@ node test/pathkey.mjs             # path keys: byte-for-byte check against DSH's
 
 To check the English word list after touching the client: `DSH_TEST_LOCALE=en-US node test/client.mjs`.
 
-All seven suites run against their own temporary `DSH_HOME` (a fixture directory under `os.tmpdir()` built by `test/fixture.mjs`) and delete it afterwards, so **your real `~/.dsh` is never touched** and no session has to "happen to exist".
+All eleven suites run against their own temporary `DSH_HOME` (a fixture directory under `os.tmpdir()` built by `test/fixture.mjs`) and delete it afterwards, so **your real `~/.dsh` is never touched** and no session has to "happen to exist".
 
-Two exceptions: `test/client.mjs` is a pure in-memory wiring test with no fixture directory and no disk IO, and `test/pathkey.mjs` only calls two pure functions, so it writes nothing either. In `test/dialog.mjs` the selector checks, the AppleScript / zenity argument assembly and the script BOM checks are pure static verification and run anywhere, while only the few assertions that launch the real `powershell.exe` to verify CJK encoding are skipped off Windows (they print `⏭  跳过` — a skip is not a pass). The other four are cross-platform.
+Three exceptions: `test/client.mjs` is a pure in-memory wiring test with no fixture directory and no disk IO, and `test/pathkey.mjs` only calls two pure functions, so it writes nothing either. In `test/dialog.mjs` the selector checks, the AppleScript / zenity argument assembly and the script BOM checks are pure static verification and run anywhere, while only the few assertions that launch the real `powershell.exe` to verify CJK encoding are skipped off Windows (they print `⏭  跳过` — a skip is not a pass). The other eight are cross-platform.
 
 Read [`AGENTS.md`](AGENTS.md) before touching code — the hard rules, the four host routes, the `importPackage` branch order and testing recipes all live there. [`CLAUDE.md`](CLAUDE.md) is the short entry point and [`docs/TEST-MATRIX.md`](docs/TEST-MATRIX.md) maps every feature to the test that covers it.
 

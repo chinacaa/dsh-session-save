@@ -8,8 +8,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { createHash, randomUUID } from 'node:crypto';
-import { apply, zipRead, zipWrite } from '../index.js';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { apply, repairSession, zipRead, zipWrite } from '../index.js';
 
 const sha256 = (data) => createHash('sha256').update(data).digest('hex');
 
@@ -816,6 +816,376 @@ const exists = (file) => {
   check(!exists(target), 'V12b 自动保存没有原地重建同名文件');
 }
 
+
+/* ── R7：附件回填的三道闸（压缩比 / 双配额 / 界面告知）───────────── */
+{
+  /** 附件的包内路径：内容哈希自带分片，sha 前两位必须与目录一致（restore 会核这一条）。 */
+  const attachEntry = (data, kind = 'objects') => {
+    const sha = sha256(data);
+    return [`attachments/${kind}/${sha.slice(0, 2)}/${sha}`, data];
+  };
+  const objectPath = (data) => path.join(DSH_HOME, 'attachments', 'v1', 'objects', sha256(data).slice(0, 2), sha256(data));
+
+  /**
+   * 造一个带附件条目的最小包。
+   *
+   * 每个附件都必须登记进 manifest.parts —— verifyPackage 会反查「内容条目是否声明过」，
+   * 漏一条就会先在 parts 那关被拒，测不到压缩比与配额本身。
+   */
+  const buildAttachPackage = ({ sessionId, cwd = 'C:\\demo', attachments }) => {
+    const log = frame(`${headerOf(sessionId, cwd)}\n`);
+    const sessionName = 'session/session.v4.jsonl.zstd';
+    const declared = { [sessionName]: { sha256: sha256(log), bytes: log.length } };
+    for (const [name, data] of attachments) declared[name] = { sha256: sha256(data), bytes: data.length };
+    const manifest = {
+      format: 'dshproj/1',
+      exportedAt: new Date().toISOString(),
+      exportedBy: 'dshproj on test',
+      session: {
+        id: sessionId,
+        version: 4,
+        cwd,
+        createdAt: 1792340086210,
+        fileName: 'session.v4.jsonl.zstd',
+        frames: 1,
+        lines: 1,
+        bytes: log.length,
+      },
+      memoryFiles: [],
+      attachments: { objects: attachments.length, files: 0, missing: [] },
+      parts: declared,
+    };
+    return zipWrite([
+      { name: 'manifest.json', data: Buffer.from(JSON.stringify(manifest, null, 2), 'utf8') },
+      { name: sessionName, data: log, store: true },
+      ...attachments.map(([name, data]) => ({ name, data })),
+    ]);
+  };
+
+  // ① 压缩比豁免取消：3 MiB 全零（deflate 后几 KB）以前落在 4 MB 豁免区里，现在必须被拦。
+  {
+    const zero = Buffer.alloc(3 * 1024 * 1024);
+    const bomb = buildAttachPackage({ sessionId: `session-${randomUUID()}`, cwd: OUT, attachments: [attachEntry(zero)] });
+    let ratioError = '';
+    try {
+      zipRead(bomb);
+    } catch (error) {
+      ratioError = String(error && error.message ? error.message : error);
+    }
+    check(ratioError.includes('压缩比异常'), 'R7 附件的 3 MiB 全零条目不再享受压缩比豁免', ratioError.slice(0, 48));
+
+    const bombFile = path.join(BASE, 'r7-ratio.dsproj');
+    write(bombFile, bomb);
+    const refused = await call(open, '/api/session.open', { path: bombFile, cwd: OUT });
+    check(refused.status === 500, 'R7 放大包在打开这一步被拒', `HTTP ${refused.status}`);
+    check(!exists(objectPath(zero)), 'R7 放大包一个对象都没写进对象库');
+  }
+
+  // ② 条数配额：2001 个合法小附件（每个 2 字节，内容互不相同以保证 sha 唯一）。
+  {
+    const many = [];
+    for (let i = 0; i < 2001; i += 1) many.push(attachEntry(Buffer.from([i & 0xff, (i >> 8) & 0xff])));
+    const file = path.join(BASE, 'r7-many.dsproj');
+    write(file, buildAttachPackage({ sessionId: `session-${randomUUID()}`, cwd: OUT, attachments: many }));
+    const opened = await call(open, '/api/session.open', { path: file, cwd: OUT });
+    check(opened.status === 200 && opened.body?.status === 'opened', 'R7 2001 条附件不报错，靠配额截断', `HTTP ${opened.status}`);
+    check(opened.body?.attachmentsWritten === 2000, 'R7 条数配额写到上限就停', String(opened.body?.attachmentsWritten));
+    check(opened.body?.attachmentsRejected === 1, 'R7 超出条数的那 1 个计入 rejected', String(opened.body?.attachmentsRejected));
+  }
+
+  // ③ 总字节配额：17 个 8 MiB 随机内容（压缩比接近 1:1，不会被压缩比检查误杀）。
+  {
+    const chunk = 8 * 1024 * 1024;
+    const big = [];
+    for (let i = 0; i < 17; i += 1) big.push(attachEntry(randomBytes(chunk)));
+    const file = path.join(BASE, 'r7-bytes.dsproj');
+    write(file, buildAttachPackage({ sessionId: `session-${randomUUID()}`, cwd: OUT, attachments: big }));
+    const opened = await call(open, '/api/session.open', { path: file, cwd: OUT });
+    check(opened.status === 200 && opened.body?.status === 'opened', 'R7 总字节超标也不报错，靠配额截断', `HTTP ${opened.status}`);
+    // 128 MiB 额度 / 每个 8 MiB = 16 个写满，第 17 个越界被拦。
+    check(opened.body?.attachmentsWritten === 16, 'R7 总字节配额写满 16 个就停', String(opened.body?.attachmentsWritten));
+    check(opened.body?.attachmentsRejected === 1, 'R7 超字节的那 1 个计入 rejected', String(opened.body?.attachmentsRejected));
+    const landed = big.reduce((sum, [name]) => {
+      const data = big.find(([n]) => n === name)[1];
+      return sum + (exists(objectPath(data)) ? data.length : 0);
+    }, 0);
+    check(landed <= 128 * 1024 * 1024, 'R7 磁盘上附件总量没有超过 128 MiB', String(landed));
+  }
+
+  // ④ 正常包不受影响：1 个 2 MiB 随机内容照旧回填。
+  {
+    const normal = randomBytes(2 * 1024 * 1024);
+    const entry = attachEntry(normal);
+    const file = path.join(BASE, 'r7-normal.dsproj');
+    write(file, buildAttachPackage({ sessionId: `session-${randomUUID()}`, cwd: OUT, attachments: [entry] }));
+    const opened = await call(open, '/api/session.open', { path: file, cwd: OUT });
+    check(opened.status === 200 && opened.body?.status === 'opened', 'R7 正常包照旧打开', `HTTP ${opened.status}`);
+    check(opened.body?.attachmentsWritten === 1, 'R7 正常附件照旧回填 1 个', String(opened.body?.attachmentsWritten));
+    check(opened.body?.attachmentsRejected === 0, 'R7 正常附件没有一条被拦', String(opened.body?.attachmentsRejected));
+    check(exists(objectPath(normal)) && fs.readFileSync(objectPath(normal)).equals(normal), 'R7 回填的字节与包内一致');
+  }
+
+  // ⑤ 已存在的不占配额：同一份包连开两次，第二次全走 skipped。
+  {
+    const small = randomBytes(4096);
+    const entry = attachEntry(small);
+    const sessionId = `session-${randomUUID()}`;
+    const file = path.join(BASE, 'r7-twice.dsproj');
+    write(file, buildAttachPackage({ sessionId, cwd: OUT, attachments: [entry] }));
+
+    const first = await call(open, '/api/session.open', { path: file, cwd: OUT });
+    check(first.body?.attachmentsWritten === 1, 'R7 第一次打开写入 1 个', String(first.body?.attachmentsWritten));
+
+    const second = await call(open, '/api/session.open', { path: file, cwd: OUT });
+    check(second.body?.status === 'opened', 'R7 第二次打开仍成功（走复用分支）', String(second.body?.status));
+    check(second.body?.attachmentsWritten === 0, 'R7 本机已有的对象不重复写', String(second.body?.attachmentsWritten));
+    check(second.body?.attachmentsSkipped === 1, 'R7 已有的对象记成 skipped', String(second.body?.attachmentsSkipped));
+    check(second.body?.attachmentsRejected === 0, 'R7 已有的对象不占配额、不算被拦', String(second.body?.attachmentsRejected));
+  }
+}
+
+/* ── R8：zstd 帧解压上限（zip 那层 64 MB 挡不住「帧里再套一层 zstd」）── */
+{
+  const MB = 1024 * 1024;
+
+  /**
+   * 造一条「第 0 帧解压后 size 字节」的会话日志。
+   *
+   * 为什么能绕过 zip 层那 64 MB：这些内容压缩率极高——100 MB 的空白 zstd 压完只有几十 KB，
+   * 于是 DEFLATE 那层看到的是「一个几十 KB 的条目」，`MAX_ENTRY_BYTES` 根本不触发；
+   * 真正爆内存的是接下来这层 zstd。炸弹必须放**第 0 帧**，放后面会被扫描阶段提前截断。
+   */
+  const bombLog = (sessionId, size) => {
+    const head = `${headerOf(sessionId, 'C:\\demo')}\n`;
+    return frame(head + ' '.repeat(Math.max(0, size - head.length)));
+  };
+
+  /** 只有一个 session 条目的最小包（附件、记忆都可以没有）。 */
+  const buildLogPackage = (sessionId, log) => {
+    const sessionName = 'session/session.v4.jsonl.zstd';
+    const manifest = {
+      format: 'dshproj/1',
+      exportedAt: new Date().toISOString(),
+      exportedBy: 'dshproj on test',
+      session: {
+        id: sessionId,
+        version: 4,
+        cwd: 'C:\\demo',
+        createdAt: 1792340086210,
+        fileName: 'session.v4.jsonl.zstd',
+        frames: 1,
+        lines: 1,
+        bytes: log.length,
+      },
+      memoryFiles: [],
+      attachments: { objects: 0, files: 0, missing: [] },
+      parts: { [sessionName]: { sha256: sha256(log), bytes: log.length } },
+    };
+    return zipWrite([
+      { name: 'manifest.json', data: Buffer.from(JSON.stringify(manifest, null, 2), 'utf8') },
+      { name: sessionName, data: log, store: true },
+    ]);
+  };
+
+  // ① 第 0 帧炸弹：包只有几十 KB，解出来 100 MB。
+  {
+    const sessionId = `session-${randomUUID()}`;
+    const pack = buildLogPackage(sessionId, bombLog(sessionId, 100 * MB));
+    const file = path.join(BASE, 'r8-frame-bomb.dsproj');
+    write(file, pack);
+    check(pack.length < MB, 'R8 炸弹包本身不到 1 MB', `${pack.length} B`);
+    const refused = await call(open, '/api/session.open', { path: file, cwd: OUT });
+    const message = String(refused.body?.message ?? '');
+    check(refused.status === 500, 'R8 第 0 帧炸弹被拒', `HTTP ${refused.status}`);
+    check(!message.includes('string longer than'), 'R8 先撞帧上限而不是字符串上限', message.slice(0, 64));
+    check(
+      message.includes('Buffer larger than') || message.includes('ERR_BUFFER_TOO_LARGE'),
+      'R8 报的是 ERR_BUFFER_TOO_LARGE',
+      message.slice(0, 64),
+    );
+    const landed = [];
+    const walk = (dir) => {
+      if (!fs.existsSync(dir)) return;
+      for (const name of fs.readdirSync(dir)) {
+        const full = path.join(dir, name);
+        if (fs.statSync(full).isDirectory()) walk(full);
+        else if (name.includes(sessionId.slice(8, 16))) landed.push(full);
+      }
+    };
+    walk(SESSIONS);
+    check(landed.length === 0, 'R8 炸弹包没有落出会话文件', landed.join(','));
+  }
+
+  /**
+   * 造一个解压后接近 bytes 的 zstd 帧：周期文本，且**不含换行**。
+   *
+   * 为什么不用 `' '.repeat(n)`：全同字节会被 zstd 编成 RLE 块（块头声明 type=1、不带
+   * payload），而 scanZstdFrames 只按 compressed/raw 块推进指针，遇到 RLE 会算错位置、
+   * 扫出 0 帧 —— 于是 repairSession 立刻早退，测试看似「没拦住」，其实是压根没解压。
+   * 这块正好是审计里「假阴性」的同一个坑，换个方向又踩了一次。
+   */
+  const bigFrame = (bytes) => {
+    const unit = Buffer.from('abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH', 'utf8');
+    const count = Math.ceil(bytes / unit.length);
+    const buf = Buffer.alloc(count * unit.length);
+    for (let i = 0; i < count; i += 1) unit.copy(buf, i * unit.length);
+    return frame(buf.toString('utf8'));
+  };
+
+  // ② 单帧上限：一帧 70 MB，直接撞 maxOutputLength。
+  {
+    let code = '';
+    let fallback = '';
+    try {
+      repairSession(bigFrame(70 * MB));
+    } catch (error) {
+      code = String(error?.code ?? '');
+      fallback = String(error?.message ?? error);
+    }
+    check(code === 'ERR_BUFFER_TOO_LARGE', 'R8 单帧 70 MB 被帧上限拦住', code || fallback.slice(0, 48));
+  }
+
+  // ③ 多帧总量：10 帧各 60 MB，合计 600 MB > MAX_TOTAL_BYTES（512 MB）。
+  //    每帧都在单帧上限内，只有累计预算能拦——这一条防的是「几百帧各几十 MB」。
+  {
+    const one = bigFrame(60 * MB);
+    let message = '';
+    try {
+      repairSession(Buffer.concat(new Array(10).fill(one)));
+    } catch (error) {
+      message = String(error?.message ?? error);
+    }
+    check(message.includes('会话日志解压后总量过大'), 'R8 多帧叠乘被总量预算拦住', message.slice(0, 48));
+  }
+
+  // ④ 正常日志一个字都不许变。
+  {
+    const normal = frame(`${headerOf(`session-${randomUUID()}`, 'C:\\demo')}\n`);
+    const result = repairSession(normal);
+    check(result.report.changed === false, 'R8 正常单帧日志不触发体检改写');
+    check(result.buffer.equals(normal), 'R8 正常日志逐字节原样返回');
+  }
+}
+/* ── R9：落点必须是真目录；记忆目录不许模糊匹配 ──────────────── */
+{
+  const R9 = path.join(BASE, 'r9-ws');
+  fs.mkdirSync(R9, { recursive: true });
+  const memo = Buffer.from('# 受害者原本的项目笔记\n', 'utf8');
+  const pkgOf = (cwd) =>
+    buildPackage({
+      sessionId: `session-${randomUUID()}`,
+      fileName: 'session.v4.jsonl.zstd',
+      cwd,
+      memory: [['memory/workspaces/--demo--/MEMORY.md', memo]],
+      parts: 'full',
+    });
+
+  // ① cwd 指一个普通文件 → 拒绝。existsSync 对文件也返回 true，放过去会在 sessions/
+  //    下建出以文件路径为键的目录（实测过），落点完全不是用户以为的那个。
+  const plainFile = path.join(BASE, 'r9-plain.txt');
+  fs.writeFileSync(plainFile, 'not a folder\n', 'utf8');
+  const pkgForFile = pkgOf(plainFile);
+  const fileForFile = path.join(BASE, 'r9-file-cwd.dsproj');
+  write(fileForFile, pkgForFile);
+  const sessionsBefore = fs.readdirSync(SESSIONS).length;
+  const memoryBefore = fs.readdirSync(MEMORY).length;
+  const asFile = await call(open, '/api/session.open', { path: fileForFile, cwd: plainFile });
+  check(
+    asFile.status === 400 && asFile.body?.status === 'bad-workspace',
+    'R9 cwd 是普通文件要拒绝',
+    `HTTP ${asFile.status} · ${asFile.body?.status}`,
+  );
+  check(
+    fs.readdirSync(SESSIONS).length === sessionsBefore && fs.readdirSync(MEMORY).length === memoryBefore,
+    'R9 被拒的 cwd 没在 sessions/ 或 memory/workspaces/ 下留目录',
+  );
+  check(
+    !/[A-Za-z]:[\\/]/.test(String(asFile.body?.message ?? '')),
+    'R9 拒绝理由里不回显路径',
+    String(asFile.body?.message ?? ''),
+  );
+
+  // ② cwd 不存在 → 同样拒绝，不许静默回落到服务端的 process.cwd()
+  const pkgForGhost = pkgOf(path.join(BASE, 'r9-ghost'));
+  const fileForGhost = path.join(BASE, 'r9-ghost-cwd.dsproj');
+  write(fileForGhost, pkgForGhost);
+  const asGhost = await call(open, '/api/session.open', { path: fileForGhost, cwd: path.join(BASE, 'r9-ghost') });
+  check(
+    asGhost.status === 400 && asGhost.body?.status === 'bad-workspace',
+    'R9 cwd 不存在也要拒绝（不回落 process.cwd）',
+    `HTTP ${asGhost.status} · ${asGhost.body?.status}`,
+  );
+  check(
+    fs.readdirSync(SESSIONS).length === sessionsBefore,
+    'R9 不存在的 cwd 也没有偷偷建目录',
+  );
+
+  // ③ 尾分隔符不再串台：ws 与 ws\ 是两个不同的工作区键，记忆必须落到两个目录
+  const fileA = path.join(BASE, 'r9-a.dsproj');
+  write(fileA, pkgOf(R9));
+  const firstA = await call(open, '/api/session.open', { path: fileA, cwd: R9, memory: 'copy' });
+  const dirA = String(firstA.body?.memoryDir ?? '');
+  check(firstA.status === 200 && dirA !== '', 'R9 正常 cwd 打开成功并返回记忆目录', `HTTP ${firstA.status}`);
+  write(path.join(dirA, 'MEMORY.md'), Buffer.from('# 受害者原本的项目笔记\n', 'utf8'));
+
+  const fileB = path.join(BASE, 'r9-b.dsproj');
+  write(fileB, pkgOf(R9 + path.sep));
+  const firstB = await call(open, '/api/session.open', { path: fileB, cwd: R9 + path.sep, memory: 'copy' });
+  const dirB = String(firstB.body?.memoryDir ?? '');
+  check(firstB.status === 200 && dirB !== '', 'R9 带尾分隔符的 cwd 打开成功', `HTTP ${firstB.status}`);
+  check(dirB !== dirA, 'R9 ws 与 ws\\ 不再落到同一个记忆目录', `${path.basename(dirA)} vs ${path.basename(dirB)}`);
+  check(
+    path.basename(dirB) === `${path.basename(dirA)}-`,
+    'R9 新目录就是尾分隔符该有的那个名字',
+    path.basename(dirB),
+  );
+  check(
+    fs.readFileSync(path.join(dirA, 'MEMORY.md'), 'utf8') === '# 受害者原本的项目笔记\n',
+    'R9 原来那个工作区的 MEMORY.md 一个字节没动',
+  );
+  const r9Copies = fs.existsSync(dirB) ? fs.readdirSync(dirB).filter((name) => name.startsWith('MEMORY.md.from-dsproj-')) : [];
+  check(r9Copies.length === 1, 'R9 包里的记忆落成带来源后缀的副本，落在新目录', r9Copies.join(', '));
+
+  // ④ 两级精确匹配照旧：同一个 cwd 再开一份，复用同一个记忆目录
+  const fileC = path.join(BASE, 'r9-c.dsproj');
+  write(fileC, pkgOf(R9));
+  const again = await call(open, '/api/session.open', { path: fileC, cwd: R9, memory: 'copy' });
+  check(
+    again.status === 200 && String(again.body?.memoryDir ?? '') === dirA,
+    'R9 同一个 cwd 仍然复用已有记忆目录',
+    `${path.basename(dirA)} vs ${path.basename(String(again.body?.memoryDir ?? ''))}`,
+  );
+}
+
+/* ── R10：restore「不写」的时候不许留空目录 ─────────────────────── */
+{
+  const cwd = path.join(BASE, 'r10-ws');
+  fs.mkdirSync(cwd, { recursive: true });
+  const pkg = buildPackage({
+    sessionId: `session-${randomUUID()}`,
+    fileName: 'session.v4.jsonl.zstd',
+    cwd,
+    // 必须是 Buffer：fixture 用 data.length 登记 parts，string 的 length 是字符数不是字节数，
+    // 中文内容会在 verifyPackage 被报「条目体积不符」。
+    memory: [['memory/workspaces/--demo--/handoff/PLAN.md', Buffer.from('# 包里带的白板' + String.fromCharCode(10), 'utf8')]],
+    parts: 'full',
+  });
+  const file = path.join(BASE, 'r10-restore.dsproj');
+  write(file, pkg);
+  const res = await call(open, '/api/session.open', { path: file, cwd, memory: 'restore' });
+  const dir = String(res.body?.memoryDir ?? '');
+  check(res.status === 200 && dir !== '', 'R10 restore 打开成功并返回记忆目录', `HTTP ${res.status}`);
+  check(
+    Array.isArray(res.body?.memoryCreated) && res.body.memoryCreated.some((rel) => String(rel).endsWith('handoff/PLAN.md')),
+    'R10 本机没有的记忆文件记进 memoryCreated 交给界面',
+    JSON.stringify(res.body?.memoryCreated),
+  );
+  // 关键断言：restore 决定「不写」之后，父目录 handoff/ 也不许存在。
+  // 过去 mkdirSync 在判定之前执行，于是留下一个空目录——用户看到手off/ 被建出来，
+  // 里面一个文件都没有，以为合并成功了。
+  check(!fs.existsSync(path.join(dir, 'handoff')), 'R10 restore 不写就不建空目录（handoff/ 不存在）', dir);
+  check(!fs.existsSync(path.join(dir, 'PLAN.md')), 'R10 也没有把内容落成别的名字');
+}
 /* ── 收拾 ──────────────────────────────────────────────────────── */
 fs.rmSync(BASE, { recursive: true, force: true });
 check(!exists(BASE), '临时目录已清理', BASE);

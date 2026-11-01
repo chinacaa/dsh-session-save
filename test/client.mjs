@@ -339,3 +339,34 @@ assert.ok(
   '体检结果要拼成一句话说出来，而不是只存着',
 );
 console.log('✅ 打开前体检有交代：改了哪几类（缺字节/缺尺寸/坏行/坏帧）逐条列出，中英文案齐全');
+
+/* ── R9. 附件被配额拦下时必须说出来 ── */
+
+for (const key of ['attachRejected']) {
+  const hits = source.split(`${key}:`).length - 1;
+  assert.equal(hits, 2, `${key} 要中英各一份，实际 ${hits}`);
+}
+assert.ok(source.includes('payload.attachmentsRejected'), '打开结果里的 attachmentsRejected 必须被读取');
+assert.ok(
+  source.includes("attachRejected > 0") && source.includes('L.attachRejected'),
+  '被拦下的附件要拼进提示文本，不能只做计数没人看',
+);
+console.log('✅ 附件被配额拦下时说明了「几个、为什么」，中英文案齐全，且不打扰正常回填');
+
+/* ── R10. cwd 不合格要报「换个位置」；合并弹窗要摊出记忆落点 ── */
+
+for (const key of ['badWorkspace', 'memoryMergeTarget']) {
+  const hits = source.split(`${key}:`).length - 1;
+  assert.equal(hits, 2, `${key} 要中英各一份，实际 ${hits}`);
+}
+assert.ok(source.includes("payload.status === 'bad-workspace'"), 'bad-workspace 状态必须被接住');
+assert.ok(source.includes('L.badWorkspace'), '服务端没给 message 时也要有兜底文案');
+assert.ok(
+  source.includes('payload?.memoryDir'),
+  '合并弹窗要读 memoryDir —— need-workspace 返回体里没有它，必须容忍 undefined',
+);
+assert.ok(
+  source.includes('L.memoryMergeTarget'),
+  '弹窗要把「落点不是你当前打开的工作区」说清楚，否则用户以为写进眼前这个项目',
+);
+console.log('✅ cwd 不合格时说「换个位置」；合并弹窗摊出记忆落点并说明它不是当前工作区，中英文案齐全');

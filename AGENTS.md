@@ -9,7 +9,7 @@
 - 语言/运行时：纯 ESM（`"type": "module"`），零运行时依赖，只用 `node:` 内置模块；客户端只 `require('react')`。
 - 宿主：DSH `>=0.2.1-rc.1`（`engines.dsh`），Cordis `^4.0.1`（peer）。
 - 平台：Windows 优先（原生对话框走 `powershell.exe` + WinForms）；macOS 走 `osascript` 的 Finder 面板；Linux/BSD 探 zenity / kdialog / qarma / matedialog。三者都没有时退回网页里的路径输入框。平台相关代码全部隔离在 `dialog/` 下（`index.mjs` 选实现、`shared.mjs` 共用工具、`windows.mjs` / `macos.mjs` / `linux.mjs` 各平台实现），`index.js` 只 import `dialog/index.mjs`，不认识具体实现。
-- 规模：`index.js` ≈2420 行、`client.js` ≈2120 行、十一套测试共 309 条 ✅（`smoke.mjs` 另有 12 处 throw 检查，只打一行汇总）。逐条覆盖见 `docs/TEST-MATRIX.md`。
+- 规模：`index.js` ≈2550 行、`client.js` ≈2150 行、十一套测试共 361 条 ✅（`smoke.mjs` 另有 12 处 throw 检查，只打一行汇总）。逐条覆盖见 `docs/TEST-MATRIX.md`。
 
 ## 红线（改之前先看，违反会静默坏掉）
 
@@ -22,7 +22,7 @@
 7. **测试不许读写真实的 `~/.dsh`**。一律 `makeFixture()` 建临时 `DSH_HOME`（`os.tmpdir()` 下），`autoCleanup(fx)` 兜住正常退出/异常/^C 三种收尾。早期那套「跑前跑后对比 `sessions/` 目录集合、改过 `storages/session-save.json` 手工删键」的做法已经废弃——它本身就是「换台机器必红」的根源。要断言状态文件，就断言夹具里那份。
 8. **不要 commit `*.dsproj`**（`.gitignore` 已挡）。测试产物一律写 `os.tmpdir()`。
 9. **不要主动 commit / push**，除非用户明说。
-10. **不要把安全校验删掉或放宽**。包是「可能来自敌人」：条目名必须过 `safeSegments`（`\` 也算分隔符）、落点必须过 `isInside`、`inflateRawSync` 必须带 `maxOutputLength`、四条 `/api` 路由必须过 `requestGate`（拿不到 `headers` 时默认拒绝，别为单测放开）、`manifest.parts` 必须复核。另外 **`manifest.parts` 必须覆盖所有内容条目**（`session/`、`memory/workspaces/`）：只复核「声明过的」等于给未声明条目开后门，可以夹带 `MEMORY.md` 投毒项目笔记；包里带记忆条目但整个 `parts` 缺失的同样拒绝。**还有一层：记忆条目落盘永远不用原名**，一律 `xxx.from-dsproj-<日期>`——`parts` 的 sha256 是打包方自算的，自洽的包照样能过前面所有检查，所以「会不会被 DSH 当记忆读」只能靠改名来断。`test/security.mjs` 会盯这些，改坏了立刻红。**`memory=restore`（界面上的「合并记忆」）只改落点，不放宽任何校验**：它照样过 `safeSegments` / `safeJoin` / `ENTRY_ALLOW` / `manifest.parts`，覆盖前先备份成 `xxx.bak-<时间>`；restore 只能由用户显式触发，**绝不许用包里的 `exportedBy`、hostname、`parts` 自洽之类字段判断「这个包可信」**——那些都是打包方自己写的。**`memory=restore` 只许覆盖本机已存在的文件，本机没有的一律不写**（计入 `memoryCreated`，不是 `memoryConflicts`）；用户显式选「合并并新建」才走 `memory=new`。理由：restore 若连新文件也建，一份投毒包在「本机没有该文件」时就能零确认地把 `MEMORY.md` 落到记忆目录，而 `MEMORY.md`、最近两天的日期日志、`handoff/*.md` 全在 DSH 的记忆读取面内——等于绕过 R4 的改名防护。**唯一例外**：本机已有同名记忆**目录**、但没有这个文件时，restore 落 `xxx.from-dsproj-<日期>` 副本（仍不用原名，与「永不落原名」一致）——改这条前先看 `test/security.mjs` 的 R6 用例，那里是判据。
+10. **不要把安全校验删掉或放宽**。包是「可能来自敌人」：条目名必须过 `safeSegments`（`\` 也算分隔符）、落点必须过 `isInside`、`inflateRawSync` 必须带 `maxOutputLength`、四条 `/api` 路由必须过 `requestGate`（拿不到 `headers` 时默认拒绝，别为单测放开）、`manifest.parts` 必须复核。另外 **`manifest.parts` 必须覆盖所有内容条目**（`session/`、`memory/workspaces/`）：只复核「声明过的」等于给未声明条目开后门，可以夹带 `MEMORY.md` 投毒项目笔记；包里带记忆条目但整个 `parts` 缺失的同样拒绝。**还有一层：默认的 copy 模式下落盘永不用原名**，一律 `xxx.from-dsproj-<日期>`——`parts` 的 sha256 是打包方自算的，自洽的包照样能过前面所有检查，所以「会不会被 DSH 当记忆读」只能靠改名来断（`restore` / `new` 是用户显式选的例外，见本行后半段）。`test/security.mjs` 会盯这些，改坏了立刻红。**`memory=restore`（界面上的「合并记忆」）只改落点，不放宽任何校验**：它照样过 `safeSegments` / `safeJoin` / `ENTRY_ALLOW` / `manifest.parts`，覆盖前先备份成 `xxx.bak-<时间>`；restore 只能由用户显式触发，**绝不许用包里的 `exportedBy`、hostname、`parts` 自洽之类字段判断「这个包可信」**——那些都是打包方自己写的。**`memory=restore` 只许覆盖本机已存在的文件，本机没有的一律不写**（计入 `memoryCreated`，不是 `memoryConflicts`）；用户显式选「合并并新建」才走 `memory=new`。理由：restore 若连新文件也建，一份投毒包在「本机没有该文件」时就能零确认地把 `MEMORY.md` 落到记忆目录，而 `MEMORY.md`、最近两天的日期日志、`handoff/*.md` 全在 DSH 的记忆读取面内——等于绕过 R4 的改名防护。本机没有的一律不写、也不建目录（计入 `memoryCreated` 交给界面）；`xxx.from-dsproj-<日期>` 副本只出现在 **copy 模式**（默认打开方式），restore 与 `new` 都不产生副本。**附件回填同理**：`attachments/` 条目不许享受 `RATIO_FLOOR_BYTES` 那档豁免（那档只给非附件用——附件是已压缩二进制，合法包接近 1:1，给了豁免等于让 3 MiB 全零缓冲把配额撑满，实测 935× 放大），且一次导入受 `MAX_ATTACH_FILES` / `MAX_ATTACH_TOTAL_BYTES` 双配额约束，超出的计入 `attachmentsRejected` **并且必须显示给用户**——DSH 的附件对象库没有 GC，写进去就永远躺着。**帧解压同理**：六处 zstd 解压必须走 `decompressFrame`（带 `maxOutputLength`），直接调 `zlib.zstdDecompressSync` 会绕过单帧上限——zip 那层只管「DEFLATE 解出多少」，帧里再套一层就能绕（实测 29 KB 的包解出 900 MB、RSS +937 MB）。超限的 `ERR_BUFFER_TOO_LARGE` **不许**被 `catch` 成「这帧坏了、跳过」，那等于让炸弹包被静默当成空会话打开；打包（`decodeLogText`）与体检（`repairSession`）这两条全解路径还要累计总量到 `MAX_TOTAL_BYTES`。
 11. **默认不打包 `~/.dsh/memory`**（里面有用户的项目笔记、日志和白板）。要带必须显式 `?memory=1`（界面上是 <kbd>Alt</kbd> 点击）。
 
 ## 目录
@@ -44,7 +44,7 @@ scripts/release-notes.mjs 从 CHANGELOG 摘某版本正文当 Release 说明
 scripts/set-repo.mjs 把 OWNER 占位换成真实 GitHub 名字
 test/fixture.mjs    临时 DSH_HOME 夹具（十一套测试共用）
 test/*.mjs          十一套自检（见「测试」）
-docs/TEST-MATRIX.md 功能面 → 测试覆盖矩阵（53 条 F 编号）
+docs/TEST-MATRIX.md 功能面 → 测试覆盖矩阵（56 条 F 编号）
 docs/DSH-API-SURFACE.md 用到的 DSH 接口清单（升级 DSH 时逐条核对）
 assets/             截图与方形图标（市场用）
 ```
@@ -95,7 +95,7 @@ New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\profiles\web\node_modul
 数据路径规则（**两套 slug，别混**）：
 
 - 会话：`$DSH_HOME/sessions/<projectKey(cwd)>/<encodeSegment(id)>/session.v4.jsonl.zstd`。
-- 记忆：`$DSH_HOME/memory/workspaces/--C--Users-aa-workspace--` 这种，**每个**分隔符各变一个 `-`。所以记忆目录要「先精确、再按去掉非字母数字后相等」两级模糊匹配，不能照会话那套算。
+- 记忆：`$DSH_HOME/memory/workspaces/--C--Users-aa-workspace--` 这种，**每个**分隔符各变一个 `-`。所以记忆目录**只做精确匹配**（`resolveMemoryDir` 依次试两级精确候选，找不到就返回 `undefined` 另建新目录）。**别加"归一化后相等"的模糊匹配**：它会抹平大小写、`-`、尾分隔符，`ws` 与 `ws\` 就命中同一个记忆目录，`memory=restore` 下去就是跨工作区覆盖 `MEMORY.md`（AUDIT-0.3.0 的 M3）；路径相等只认 `path.resolve` 后逐段比。
 
 `projectKey` / `encodeSegment` 是**照 DSH 官方实现逐字复刻**的（`dsh-session-persistence-jsonl/lib/index.js` 的 `projectKey` / `encodeSegment`，rc.4 在 855–905 行），不是自己设计的规则。三个「看起来像 bug、其实必须这样」的细节，**别顺手"优化"掉**：
 
@@ -188,7 +188,7 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
 三条硬规矩：
 
 1. **别在文档里复述代码**。默认文件名规则的真源是 `index.js` 的 `suggestPath()`、上限常量在 `index.js` 顶部；文档只说结论和例子，不抄正则、不抄常量值。抄了就会在下次改代码时变成谎言。
-2. **数字必须当场能验**。文档里出现"11 条红线""309 条 ✅""F1–F53""≈2420 行"这类计数时，要能用一条命令复现（见「改完之后」）。改完顺手核一遍，别让读者去发现数字过期。
+2. **数字必须当场能验**。文档里出现"11 条红线""361 条 ✅""F1–F56""≈2550 行"这类计数时，要能用一条命令复现（见「改完之后」）。改完顺手核一遍，别让读者去发现数字过期。
 3. **中英必须同一次改完**。`README.md` 与 `README.en.md` 是同一份文档的两种语言：小标题顺序、表格列、示例文件名一一对应。只改一份等于给另一半读者发过期信息。
 
 还有两条不写在文档里的东西：进度和计划（放 issue / PR / 提交信息，不写进 README 的"路线图"）、本机路径与个人环境（`C:\Users\...`、profile 名、私有 registry）——后者写进文档等于把私有环境当契约。
@@ -205,7 +205,7 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
    wc -l index.js client.js                                  # 对应 AGENTS.md「规模」
    awk '/^## 红线/,/^## 目录/' AGENTS.md | grep -c '^[0-9]\+\. \*\*'   # 红线条数（必须限在红线节内：本文别处也有编号列表）
    grep -oE 'F[0-9]+' docs/TEST-MATRIX.md | sort -u | wc -l  # 功能面条数
-   for f in pathkey client dialog smoke open conflict security attach repair open-repair version; do node test/$f.mjs | grep -c '✅' ; done   # 十一行相加 = 309
+   for f in pathkey client dialog smoke open conflict security attach repair open-repair version; do node test/$f.mjs | grep -c '✅' ; done   # 十一行相加 = 361
    ```
 
 6. 确认测试没有留下垃圾：跑完 `git status` 应为只有你改的源文件，`os.tmpdir()` 下不该残留 `dshss-fx-*` / `dshss-sec-*` 目录（`autoCleanup` 会删，残留说明收尾路径漏了信号处理）。

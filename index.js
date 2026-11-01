@@ -138,9 +138,14 @@ export function projectKey(cwd) {
   return `--${(readable.replace(/^-+/, '') || 'root').slice(0, 251)}--`;
 }
 
-const normSlug = (value) => String(value).toLowerCase().replace(/[^a-z0-9]/g, '');
-
-/** Memory directories use one dash per separator; try both, then fuzzy-match. */
+/**
+ * Memory directories use one dash per separator, so both spellings are tried exactly.
+ *
+ * 绝不做「归一化后相等」的模糊匹配（这里曾经有第三级 normSlug 比对）：把大小写、
+ * `-`、尾分隔符全抹平之后，`C:\x\ws` 与 `C:\x\ws\` 会命中同一个记忆目录 ——
+ * 打包方只要让 cwd 带个尾斜杠，记忆就会落进受害者另一个工作区的记忆目录，
+ * restore 模式下等于跨工作区覆盖项目笔记。路径相等只有一种判法：resolve 之后逐段比。
+ */
 function resolveMemoryDir(cwd) {
   if (!cwd) return undefined;
   let names;
@@ -158,14 +163,21 @@ function resolveMemoryDir(cwd) {
   for (const candidate of candidates) {
     if (names.includes(candidate)) return { slug: candidate, dir: path.join(memoryRoot(), candidate) };
   }
-  const wanted = normSlug(cwd);
-  for (const entry of names) {
-    if (normSlug(entry) === wanted) return { slug: entry, dir: path.join(memoryRoot(), entry) };
-  }
   return undefined;
 }
 
 /* ───────────────────────── 会话日志读取 ───────────────────────── */
+
+/**
+ * 解一帧。
+ *
+ * 所有 zstd 解压都必须走这里：直接调 zlib.zstdDecompressSync 会绕过帧上限。
+ * 超限时 Node 抛 `ERR_BUFFER_TOO_LARGE`，调用方**不许**把它当成「这帧坏了、跳过」——
+ * 那等于让炸弹包被静默当成空会话打开，比直接报错更糟。
+ */
+function decompressFrame(slice) {
+  return zlib.zstdDecompressSync(slice, { maxOutputLength: MAX_FRAME_BYTES });
+}
 
 /**
  * Split a concatenated zstd log into its frames.
@@ -210,7 +222,7 @@ export function scanZstdFrames(buf) {
 function readHeader(buf) {
   const frames = scanZstdFrames(buf);
   const slice = frames.length > 0 ? buf.subarray(frames[0].start, frames[0].end) : buf;
-  const text = zlib.zstdDecompressSync(slice).toString('utf8');
+  const text = decompressFrame(slice).toString('utf8');
   const nl = text.indexOf('\n');
   return JSON.parse(nl === -1 ? text : text.slice(0, nl));
 }
@@ -221,7 +233,7 @@ function readStats(buf) {
   let lines = 0;
   for (const frame of frames) {
     try {
-      const text = zlib.zstdDecompressSync(buf.subarray(frame.start, frame.end)).toString('utf8');
+      const text = decompressFrame(buf.subarray(frame.start, frame.end)).toString('utf8');
       for (const line of text.split('\n')) if (line.trim() !== '') lines += 1;
     } catch {
       /* 单帧解压失败不影响打包 */
@@ -350,9 +362,29 @@ export function zipWrite(entries) {
 /** 单条目解压上限 / 整包解压总量 / 压缩比上限：超限即判定为炸弹，拒绝打开。 */
 const MAX_ENTRY_BYTES = 64 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 512 * 1024 * 1024;
+/**
+ * 单帧解压上限。
+ *
+ * 为什么帧也要单独设一个：`MAX_ENTRY_BYTES` 只管 zip 那一层解出来的量，
+ * 而会话日志本身是「多个 zstd 帧拼接」，每个帧里还能再套一层压缩。
+ * 实测一个 29 KB 的包，第 0 帧写成 900 MB 全空格，DEFLATE 层解出来只有几十 KB
+ * （轻松过 64 MB 检查），接着 zstd 一展开就把 RSS 顶到 +937 MB；2000 MB 那版 +2 GB。
+ * 所以这一层额度必须单独设——删了它等于给「套两层」留着后门。
+ */
+const MAX_FRAME_BYTES = MAX_ENTRY_BYTES;
 const MAX_RATIO = 200;
 /** 压缩比只在条目够大时才看，免得把小文本的正常压缩误判成炸弹。 */
 const RATIO_FLOOR_BYTES = 4 * 1024 * 1024;
+
+/**
+ * 一次导入最多回填多少个附件对象 / 多少字节。
+ *
+ * 为什么另设这两个数而不是复用 MAX_TOTAL_BYTES：附件落点是 DSH 自己的对象库，
+ * 那边的 `attachments/v1` 没有任何 GC（只有写入点，没有 unlink/rm 调用），
+ * 写进去就永远躺着。包里的会话日志可以随时失效，附件不会——所以总额度要更紧。
+ */
+const MAX_ATTACH_FILES = 2000;
+const MAX_ATTACH_TOTAL_BYTES = 128 * 1024 * 1024;
 
 /**
  * Read a stored/deflated ZIP into a name → bytes map.
@@ -393,7 +425,11 @@ export function zipRead(buf) {
     if (dataStart + csize > buf.length) throw new Error(`条目数据越界：${name}`);
     if (usize > MAX_ENTRY_BYTES) throw new Error(`条目解压后过大（${usize} 字节），拒绝打开：${name}`);
     if (csize > MAX_ENTRY_BYTES) throw new Error(`条目压缩体积过大，拒绝打开：${name}`);
-    if (usize > RATIO_FLOOR_BYTES && csize > 0 && usize / csize > MAX_RATIO) {
+    // 附件是已压缩的二进制，合法包的压缩比接近 1:1，不存在「小条目需要放过」的理由。
+    // 给它们沿用 4 MB 的豁免，等于允许 3 MiB 的全零缓冲区把总配额撑满（实测 935× 放大）。
+    const isAttachment = name.startsWith('attachments/');
+    const ratioFloor = isAttachment ? 64 * 1024 : RATIO_FLOOR_BYTES;
+    if (usize > ratioFloor && csize > 0 && usize / csize > MAX_RATIO) {
       throw new Error(`条目压缩比异常（约 ${Math.round(usize / csize)}:1），拒绝打开：${name}`);
     }
     const raw = buf.subarray(dataStart, dataStart + csize);
@@ -446,12 +482,20 @@ function attachmentRootDir(kind) {
 /** 解出会话日志全文：逐帧解压再拼，坏帧跳过（半写帧不该让整包打不出来）。 */
 function decodeLogText(buf) {
   let text = '';
+  let frameTotal = 0;
   for (const frame of scanZstdFrames(buf)) {
+    let piece;
     try {
-      text += zlib.zstdDecompressSync(buf.subarray(frame.start, frame.end)).toString('utf8');
-    } catch {
-      /* 单帧解压失败不影响其余帧 */
+      piece = decompressFrame(buf.subarray(frame.start, frame.end)).toString('utf8');
+    } catch (error) {
+      /* 单帧解压失败不影响其余帧；但超限必须冒出去，不能被当成坏帧吞掉。 */
+      if (error?.code === 'ERR_BUFFER_TOO_LARGE') throw error;
+      continue;
     }
+    // 单帧有上限挡不住「几百帧各几十 MB」，这里再累计一层总量。
+    frameTotal += piece.length;
+    if (frameTotal > MAX_TOTAL_BYTES) throw new Error('会话日志解压后总量过大，拒绝打开');
+    text += piece;
   }
   return text;
 }
@@ -473,6 +517,7 @@ function restoreAttachments(entries) {
   let written = 0;
   let skipped = 0;
   let rejected = 0;
+  let bytes = 0;
   for (const [name, data] of entries) {
     const match = ATTACH_ENTRY_RE.exec(name);
     if (match === null) continue;
@@ -497,10 +542,17 @@ function restoreAttachments(entries) {
       skipped += 1;
       continue;
     }
+    // 配额要在「确实要写」之后判：本机已有的条目一个字节都不会落盘，
+    // 把它们算进额度会让「重开自己刚存的包」被判超限。
+    if (written + 1 > MAX_ATTACH_FILES || bytes + data.length > MAX_ATTACH_TOTAL_BYTES) {
+      rejected += 1;
+      continue;
+    }
     try {
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.writeFileSync(dest, data);
       written += 1;
+      bytes += data.length;
     } catch {
       rejected += 1;
     }
@@ -667,16 +719,22 @@ export function repairSession(buffer, options = {}) {
   if (frames.length === 0) return { buffer, report };
 
   const chunks = [];
+  let frameTotal = 0;
   for (const frame of frames) {
     let text;
     try {
-      text = zlib.zstdDecompressSync(buffer.subarray(frame.start, frame.end)).toString('utf8');
-    } catch {
+      text = decompressFrame(buffer.subarray(frame.start, frame.end)).toString('utf8');
+    } catch (error) {
+      /* 超限不是「这帧坏了」——吞掉会把炸弹包修成空会话，必须冒出去。 */
+      if (error?.code === 'ERR_BUFFER_TOO_LARGE') throw error;
       report.frames.broken += 1;
       report.notes.push('有一帧日志解不开，原样保留');
       chunks.push(buffer.subarray(frame.start, frame.end));
       continue;
     }
+    // 逐帧都解开，所以总量要在这里累计（单帧上限挡不住多帧叠乘）。
+    frameTotal += text.length;
+    if (frameTotal > MAX_TOTAL_BYTES) throw new Error('会话日志解压后总量过大，拒绝打开');
     const trailing = text.endsWith('\n') ? '\n' : '';
     const kept = [];
     let frameChanged = false;
@@ -1283,7 +1341,7 @@ function memoryDirFor(cwd) {
 function rewriteHeader(buf, patch) {
   const frames = scanZstdFrames(buf);
   if (frames.length === 0) throw new Error('会话日志里没有完整的 zstd 帧');
-  const head = zlib.zstdDecompressSync(buf.subarray(frames[0].start, frames[0].end)).toString('utf8');
+  const head = decompressFrame(buf.subarray(frames[0].start, frames[0].end)).toString('utf8');
   const nl = head.indexOf('\n');
   const before = JSON.parse(nl === -1 ? head : head.slice(0, nl));
   const tail = nl === -1 ? '' : head.slice(nl);
@@ -1295,7 +1353,19 @@ function rewriteHeader(buf, patch) {
 
 /** The cwd a package should land in: the recorded one if it exists here, else this host's cwd. */
 function landingCwd(preferred) {
-  if (typeof preferred === 'string' && preferred !== '' && fs.existsSync(preferred)) return preferred;
+  if (typeof preferred === 'string' && preferred !== '') {
+    // 必须是**目录**：existsSync 对普通文件也返回 true，放过去会在 sessions/ 下
+    // 建出以文件路径为键的目录（实测 sessions/--C-...-a-plain-file.txt--/）。
+    // 用 statSync 而不是 lstatSync——工作区可能是 junction，lstat 会让它们全部失效。
+    try {
+      if (fs.statSync(preferred).isDirectory()) return preferred;
+    } catch {
+      /* 落到下面抛错 */
+    }
+    // 明确给了但不合格时**不回落** process.cwd()：那样落点与用户以为的完全无关，
+    // 而且一个字都不提示。这里抛，由 importPackage 转成 bad-workspace。
+    throw new Error('工作区不可用');
+  }
   return process.cwd();
 }
 
@@ -1304,7 +1374,7 @@ function readTitle(buf) {
   for (const frame of scanZstdFrames(buf)) {
     let text;
     try {
-      text = zlib.zstdDecompressSync(buf.subarray(frame.start, frame.end)).toString('utf8');
+      text = decompressFrame(buf.subarray(frame.start, frame.end)).toString('utf8');
     } catch {
       continue;
     }
@@ -1495,7 +1565,21 @@ function importPackage(sourcePath, options = {}) {
     };
   }
 
-  const cwd = landingCwd(explicitCwd ?? manifest?.session?.cwd ?? original.cwd);
+  let cwd;
+  try {
+    cwd = landingCwd(explicitCwd ?? manifest?.session?.cwd ?? original.cwd);
+  } catch {
+    // 这条路走的是**正常返回体**，apply 的 catch 不会替我们过滤绝对路径，所以
+    // message 里一律不写路径（连 preferred 都不带）。
+    return {
+      status: 'bad-workspace',
+      sessionId: original.id,
+      title: readTitle(buf),
+      originalCwd: original.cwd,
+      sourcePath,
+      message: '这个位置不是一个可用的目录',
+    };
+  }
 
   let id = original.id;
   let renamed = false;
@@ -1645,9 +1729,20 @@ function importPackage(sourcePath, options = {}) {
   // 最后一道闸：无论 fileName 来自哪里，落点必须在 sessions 根之下
   if (!isInside(sessionsRoot(), target)) throw new Error('会话落点越界，拒绝写入');
   fs.mkdirSync(targetDir, { recursive: true });
-  // 只有「覆盖本机这份」这条明确选择的路径可以写已存在的文件
-  if (conflictResolved !== 'overwrite' && fs.existsSync(target)) {
-    throw new Error('目标位置已有同名会话文件，拒绝覆盖');
+  // 只有「覆盖本机这份」这条明确选择的路径可以写已存在的文件。
+  // 判据用 `wx` 一次成型，不用 existsSync：查到「不存在」到真正写下去之间有一段空档，
+  // 而这条判据的本意就是「不许覆盖别人的东西」——判据自己留着 TOCTOU 就白写了。
+  let claimed = false;
+  if (conflictResolved !== 'overwrite') {
+    let handle;
+    try {
+      handle = fs.openSync(target, 'wx');
+    } catch (error) {
+      if (error?.code === 'EEXIST') throw new Error('目标位置已有同名会话文件，拒绝覆盖');
+      throw error;
+    }
+    fs.closeSync(handle);
+    claimed = true;
   }
   // 先回填附件对象，再体检：体检要判「引用的对象在不在本机」，对象库得先就位，
   // 否则包里自带的图会被自己判成缺失、白白换成占位文字。失败不抛错（包可能天生就缺）。
@@ -1658,7 +1753,21 @@ function importPackage(sourcePath, options = {}) {
   const repaired = repairSession(finalBuf);
   finalBuf = repaired.buffer;
 
-  fs.writeFileSync(target, finalBuf);
+  // 原子写：先写同目录的临时文件再 rename。直接用 writeFileSync 的话，写到一半崩了
+  // 就在 sessions/ 下留半个会话文件，DSH 下次读到它只会报一句莫名其妙的解析错。
+  try {
+    writeAtomic(target, finalBuf, { createDir: true });
+  } catch (error) {
+    // 上面刚用 wx 建过一个空壳，写失败就把它收掉；只删自己建的那个（claimed 且确实是空文件）
+    if (claimed === true) {
+      try {
+        if (fs.statSync(target).size === 0) fs.rmSync(target, { force: true });
+      } catch {
+        /* ignore */
+      }
+    }
+    throw error;
+  }
 
   let memoryWritten = 0;
   let memorySkipped = 0;
@@ -1713,7 +1822,9 @@ function importPackage(sourcePath, options = {}) {
     memoryPlanned = planned.map((item) => ({ rel: item.rel, exists: item.existed }));
     for (const item of planned) {
       const { rel, dest, data } = item;
-      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      // 这里**不许**预先建目录：restore 模式碰到「本机没有这个文件」是直接跳过的，
+      // 预建会留下一个空目录（实测 handoff/ 被建出来，里面一个文件都没有）。
+      // 父目录放到真正要写的分支里再建——「不写」就必须一点副作用都没有。
       // 落点已被占用时两种模式的处理不同：
       //   copy    —— 内容相同就幂等跳过，不同就换下一个序号（绝不覆盖别人的文件）
       //   restore —— 内容相同就幂等跳过（重复点「合并」不产生一堆 .bak），不同就先备份再覆盖
@@ -1742,6 +1853,10 @@ function importPackage(sourcePath, options = {}) {
           }
           // 备份名是拼出来的路径，同样过 safeJoin；撞名就换序号重试。
           const backupDest = safeJoin(memory.dir, `${rel}.bak-${Date.now()}-${attempt}`);
+          // 备份文件和被覆盖的文件都在记忆目录里，父目录必须先存在（放在备份之前，
+          // 否则 copyFileSync 会以 ENOENT 失败，被下面的 catch 记成「写不进去」）。
+          fs.mkdirSync(path.dirname(backupDest), { recursive: true });
+          fs.mkdirSync(path.dirname(target), { recursive: true });
           try {
             fs.copyFileSync(target, backupDest, fs.constants.COPYFILE_EXCL);
             fs.writeFileSync(target, data);
@@ -1772,6 +1887,8 @@ function importPackage(sourcePath, options = {}) {
             break;
           }
           try {
+            // 走到这里才是真的要写：父目录此刻才建（copy 落副本、new 落原名都在这条）
+            fs.mkdirSync(path.dirname(target), { recursive: true });
             // wx：存在就失败。existsSync 与 write 之间的空档也不给穿越/覆盖用
             fs.writeFileSync(target, data, { flag: 'wx' });
             wrote = true;
@@ -2324,6 +2441,8 @@ async function handleOpen(request) {
       query.memory === 'restore' ? 'restore' : query.memory === 'new' ? 'new' : 'copy';
     const result = importPackage(source, { cwd, onConflict, memory: memoryMode });
     if (result.status === 'need-workspace') return jsonResponse(result);
+    // 落点不合格：明确拒绝，不落到 process.cwd()。400 而不是 500——包没坏，是位置不对。
+    if (result.status === 'bad-workspace') return jsonResponse(result, 400);
     if (result.conflict === true) return jsonResponse({ status: 'conflict', ...result }, 409);
     // 打开时就把该文件此刻的内容指纹记下来；顺带把「别处正在写 / 在同步盘里」这两件
     // 需要用户知道的事随结果带回去，界面上提示一句，但都不阻止打开。
@@ -2366,7 +2485,10 @@ export function apply(ctx) {
       try {
         return await handleSave(request);
       } catch (error) {
-        return jsonResponse({ status: 'error', message: String(error?.message ?? error) }, 500);
+        // 500 一律给固定文案：异常原文里常带绝对路径、主机名、内部模块名，
+        // 而这条响应会原样进浏览器。要区分业务原因请走 `status` 字段。
+        ctx.logger?.warn?.('[dsh-session-save] save route failed', error);
+        return jsonResponse({ status: 'error', message: '内部错误，详见日志' }, 500);
       }
     },
   });
@@ -2378,7 +2500,8 @@ export function apply(ctx) {
       try {
         return await handleOpen(request);
       } catch (error) {
-        return jsonResponse({ status: 'error', message: String(error?.message ?? error) }, 500);
+        ctx.logger?.warn?.('[dsh-session-save] open route failed', error);
+        return jsonResponse({ status: 'error', message: '内部错误，详见日志' }, 500);
       }
     },
   });
@@ -2386,7 +2509,16 @@ export function apply(ctx) {
     path: WORKSPACES_ROUTE,
     methods: ['GET', 'POST'],
     requestBody: 'buffered',
-    fetch: async (request) => handleWorkspaces(request),
+    fetch: async (request) => {
+      // 这条没有业务异常可抛，出错只会是读 storages/workspace.json 之类的基础故障；
+      // 别让同步异常冒到宿主的路由分发器里（那会变成一个没人接的 500 + 一串栈）。
+      try {
+        return await handleWorkspaces(request);
+      } catch (error) {
+        ctx.logger?.warn?.('[dsh-session-save] workspaces route failed', error);
+        return jsonResponse({ status: 'ok', workspaces: [] });
+      }
+    },
   });
   connection.fetch.register({
     path: AUTOSAVE_ROUTE,
@@ -2396,7 +2528,8 @@ export function apply(ctx) {
       try {
         return await handleAutosave(request);
       } catch (error) {
-        return jsonResponse({ status: 'error', message: String(error?.message ?? error) }, 500);
+        ctx.logger?.warn?.('[dsh-session-save] autosave route failed', error);
+        return jsonResponse({ status: 'error', message: '内部错误，详见日志' }, 500);
       }
     },
   });

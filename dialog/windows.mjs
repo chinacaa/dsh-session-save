@@ -78,15 +78,22 @@ export function readDialogResult(resultFile, stdout, error) {
 export function runDialog(scriptPath, initial) {
   return new Promise((resolve) => {
     if (!fs.existsSync(scriptPath)) return resolve(undefined);
-    const resultFile = path.join(
-      os.tmpdir(),
-      `dsh-session-save-dialog-${process.pid}-${Date.now()}.txt`,
-    );
-    try {
-      fs.unlinkSync(resultFile);
-    } catch {
-      /* ignore */
-    }
+    // 每次调用单独开一个随机目录：`%TEMP%` 对**同一用户的其他进程**是可写的，而
+    // 「pid + 毫秒」两个数字都猜得出来——抢在脚本写之前把同名文件换成别的，或者
+    // 反过来读走用户刚选的路径，都不需要什么本事。mkdtemp 的 6 位随机后缀是 8.3
+    // 短名之外唯一不靠猜的部分。末尾那个 `-` 不能省，否则随机后缀会和前缀粘在一起。
+    const resultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-session-save-dialog-'));
+    const resultFile = path.join(resultDir, 'result.txt');
+    // mkdtemp 出来的目录一定是空的，所以原来的「先 unlink 再写」成了死代码，删掉。
+    // 清理挂在三处：正常回调、进程退出（异常/超时兜底）。cleanup 本身幂等。
+    const cleanup = () => {
+      try {
+        fs.rmSync(resultDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    };
+    process.once('exit', cleanup);
     execFile(
       powerShellPath(),
       [
@@ -104,11 +111,10 @@ export function runDialog(scriptPath, initial) {
       { timeout: DIALOG_TIMEOUT_MS, windowsHide: false, maxBuffer: 1024 * 1024 },
       (error, stdout) => {
         const picked = readDialogResult(resultFile, stdout, error);
-        try {
-          fs.unlinkSync(resultFile);
-        } catch {
-          /* ignore */
-        }
+        // 正常路径要主动摘掉 exit 监听，否则同一个进程反复弹窗会一路堆到
+        // MaxListenersExceededWarning。
+        process.removeListener('exit', cleanup);
+        cleanup();
         resolve(picked);
       },
     );

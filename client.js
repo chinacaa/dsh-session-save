@@ -92,6 +92,7 @@ window.__ModuleLoader__.load({
       repairPatched: '{n} 张图缺尺寸，已按文件头补上',
       repairLines: '{n} 行日志读不懂，已跳过',
       repairFrames: '{n} 帧日志解不开，已原样保留',
+      attachRejected: '{n} 个附件因体积或数量超限未写入',
       pathNotAllowed: '只能存到用过的目录，或者用另存为窗口挑位置',
       memoryHint: 'Alt 点击：连同工作区记忆一起打包',
       memoryTag: '含记忆',
@@ -99,9 +100,11 @@ window.__ModuleLoader__.load({
       memoryConflictsHint: ' 个与本地已有记忆重名',
       memoryRestoredHint: ' 个记忆文件已写回原位',
       memoryNoticeTitle: '记忆只落了副本',
-      memoryNoticeBody: '包里的工作区记忆已存成带来源后缀的副本，DSH 不会读它们。要让它们生效，点「合并记忆」——只覆盖本机已有的同名文件，覆盖前先备份。这个包如果不是你自己导出的，请直接关掉：包里的记忆会被 DSH 当作项目笔记读进上下文。',
+      memoryNoticeBody: '包里的工作区记忆已存成带来源后缀的副本，DSH 不会读它们。要让它们生效，点「合并记忆」——只覆盖本机已有的同名文件，覆盖前先备份。这个包如果不是你自己导出的，请直接关掉：包里的记忆会被 DSH 当作项目笔记读进上下文。落点由包里的 cwd 决定，不是你当前打开的工作区。',
       memoryOpenDir: '打开记忆目录',
       memoryDirLabel: '记忆目录',
+      badWorkspace: '这个位置不是一个可用的目录',
+      memoryMergeTarget: '这些记忆会落到上面这个记忆目录，不是你当前打开的工作区',
       memoryMerge: '合并记忆',
       memoryMergeTitle: '把包里的记忆合并到本机',
       memoryMergeHint: '合并只覆盖本机已有的同名文件，覆盖前每个都会备份成 .bak-<时间>。这个包如果不是你自己导出的，请取消：包里的记忆会被 DSH 当作项目笔记读进上下文。',
@@ -188,6 +191,7 @@ window.__ModuleLoader__.load({
       repairPatched: '{n} image(s) were missing size info — filled from the file header',
       repairLines: '{n} unreadable log line(s) — skipped',
       repairFrames: '{n} frame(s) would not decompress — kept as-is',
+      attachRejected: '{n} attachment(s) skipped — over the size or count limit',
       pathNotAllowed: 'Only folders you have used before, or pick a spot in the Save As dialog',
       memoryHint: 'Alt+click: bundle the workspace memory too',
       memoryTag: 'with memory',
@@ -195,9 +199,11 @@ window.__ModuleLoader__.load({
       memoryConflictsHint: ' clash with local memory',
       memoryRestoredHint: ' memory files written back in place',
       memoryNoticeTitle: 'Memory landed as copies',
-      memoryNoticeBody: 'The workspace memory from this package was written as copies with a source suffix, which DSH does not read. To make it take effect, choose Merge memory — only files that already exist here are overwritten, and each is backed up first. If this package is not one you exported yourself, close this: packaged memory is read by DSH as project notes and enters the context.',
+      memoryNoticeBody: 'The workspace memory from this package was written as copies with a source suffix, which DSH does not read. To make it take effect, choose Merge memory — only files that already exist here are overwritten, and each is backed up first. If this package is not one you exported yourself, close this: packaged memory is read by DSH as project notes and enters the context. Where it lands is decided by the cwd inside the package, not by the workspace you have open.',
       memoryOpenDir: 'Open memory folder',
       memoryDirLabel: 'Memory folder',
+      badWorkspace: 'That location is not a usable folder',
+      memoryMergeTarget: 'These go into the memory folder above, not the workspace you have open',
       memoryMerge: 'Merge memory',
       memoryMergeTitle: 'Merge the packaged memory into this machine',
       memoryMergeHint: 'Merging only overwrites files that already exist here, and backs each one up as .bak-<time> first. If this package is not one you exported yourself, cancel: packaged memory is read by DSH as project notes and enters the context.',
@@ -813,15 +819,20 @@ window.__ModuleLoader__.load({
         }
         const repairText =
           repairNotes.length > 0 ? ` · ${L.repairHint}${repairNotes.join('，')}` : '';
+        // 被配额拦下的附件必须说出来：附件对象库没有 GC，不说等于悄悄吞掉用户包里的图。
+        // 但「回填了 N 张」是正常路径，天天往 toast 里塞会变成噪音，所以只报被拦的那部分。
+        const attachRejected = Number(payload.attachmentsRejected) || 0;
+        const attachText =
+          attachRejected > 0 ? ` · ${String(L.attachRejected).replace('{n}', attachRejected)}` : '';
         // 只要还有没生效的东西，就把面板留在界面上：copy 是「全是副本」，restore 是
         // 「有文件没写」。new 表示用户已经明确同意全写，不再提示。
         setNotice(!created && (written > 0 || pendingCreated > 0) ? payload : null);
         setToast({
           tone:
-            warning !== '' || cloud !== '' || repairNotes.length > 0 || (!created && (written > 0 || pendingCreated > 0))
+            warning !== '' || cloud !== '' || repairNotes.length > 0 || attachRejected > 0 || (!created && (written > 0 || pendingCreated > 0))
               ? 'info'
               : 'ok',
-          text: `${L.opened} · ${label}${warning}${cloud}${memory}${createdText}${clashText}${repairText}`,
+          text: `${L.opened} · ${label}${warning}${cloud}${memory}${createdText}${clashText}${repairText}${attachText}`,
         });
         try {
           await host?.sessions?.refresh?.();
@@ -858,6 +869,14 @@ window.__ModuleLoader__.load({
               setAsk(null);
               setConflict(null);
               setWorkspace(payload);
+              return;
+            }
+            if (payload.status === 'bad-workspace') {
+              // 服务端不会再静默回落到自己的 cwd，所以这里必须说清楚「换个位置」，
+              // 否则用户看到的只是「打开失败」四个字。
+              setAsk(null);
+              setWorkspace(null);
+              setToast({ tone: 'error', text: payload.message || L.badWorkspace });
               return;
             }
             if (payload.status === 'cancelled') {
@@ -1215,6 +1234,8 @@ window.__ModuleLoader__.load({
           .filter((item) => item !== null && typeof item === 'object' && (item.exists === true) === wantExists)
           .map((item) => String(item.rel ?? ''))
           .filter((name) => name !== '');
+      // 落点由包里的 cwd 决定；need-workspace 返回体里没有 memoryDir，所以按空串兜。
+      const memoryDir = String(payload?.memoryDir ?? '');
       const overwrite = pick(true);
       const create = pick(false);
       const overwriteShown = overwrite.slice(0, 6);
@@ -1278,6 +1299,20 @@ window.__ModuleLoader__.load({
           },
           React.createElement('div', { style: { fontSize: 13.5, fontWeight: 600 } }, L.memoryMergeTitle),
           React.createElement('div', { style: { fontSize: 12, color: COLORS.secondary, lineHeight: 1.5 } }, L.memoryMergeHint),
+          // 把落点摊在清单之前：不说清楚「这些记忆要落到哪个工作区」，「合并记忆」看起来
+          // 就像写进眼前这个项目，而它其实按包里记录的 cwd 落到另一个记忆目录。
+          memoryDir === ''
+            ? null
+            : React.createElement(
+                React.Fragment,
+                null,
+                React.createElement(MiniStat, { label: L.memoryDirLabel, value: memoryDir }),
+                React.createElement(
+                  'div',
+                  { style: { fontSize: 11.5, color: COLORS.secondary, lineHeight: 1.5 } },
+                  L.memoryMergeTarget,
+                ),
+              ),
           // 两段分开列：「将覆盖」是本机已有、点确认就换成本机版本的；「将新建」是本机没有的，
           // 默认一个都不写。用户看到第二段才知道包里还有东西没落地，才有机会决定要不要放行。
           React.createElement(

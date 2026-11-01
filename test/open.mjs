@@ -226,6 +226,44 @@ for (const name of memoryAfter) {
   if (memoryBefore.has(name)) continue;
   fs.rmSync(path.join(MEMORY, name), { recursive: true, force: true });
 }
+// ── R10：路由层的 500 不许把内部文本带出去 ────────────────────────────
+// 为什么用伪 Request：`handleOpen`/`handleSave` 内部都有自己的 try/catch，业务错误
+// 一律被它们转成带 status 的响应，根本到不了路由层。能漏到路由层的只有「handler 自己
+// 在 try 之外就抛了」这类故障——比如 URL 解析失败。这里正好用它：requestGate 对坏 URL
+// 是宽容的（`new URL` 失败就当没有 host，退回看 headers），`handleOpen` 里那句
+// `new URL(request.url)` 却会抛。于是异常确实走到 apply 的 catch，能验到文案。
+{
+  const bogus = { url: 'not a valid url', headers: new Headers({ host: '127.0.0.1:3080' }) };
+  const response = await handlers.get('/api/session.open')(bogus);
+  const body = await response.json();
+  const text = String(body?.message ?? '');
+  check(response.status === 500, 'R10 未捕获异常回 500', `HTTP ${response.status}`);
+  check(text === '内部错误，详见日志', 'R10 500 的 message 是固定文案', text);
+  check(
+    !/[A-Za-z]:[\/]/.test(text) && !text.includes('\\') && !text.includes('ENOENT') && !text.includes('Invalid URL'),
+    'R10 500 文案里没有盘符 / 反斜杠 / 内部错误关键词',
+    text,
+  );
+}
+
+// ── R10：workspaces 路由结构坏了也只返回空表，不冒 500 ────────────────
+{
+  const file = path.join(DSH_HOME, 'storages', 'workspace.json');
+  const backup = fs.existsSync(file) ? fs.readFileSync(file) : undefined;
+  fs.writeFileSync(file, '{ 这不是 JSON', 'utf8');
+  try {
+    const response = await handlers.get('/api/session.workspaces')(
+      new Request('http://127.0.0.1:3080/api/session.workspaces'),
+    );
+    const body = await response.json();
+    check(response.status === 200, 'R10 workspaces 读坏了也回 200 不冒 500', `HTTP ${response.status}`);
+    check(Array.isArray(body?.workspaces) && body.workspaces.length === 0, 'R10 workspaces 退回空表', JSON.stringify(body?.workspaces));
+  } finally {
+    if (backup === undefined) fs.rmSync(file, { force: true });
+    else fs.writeFileSync(file, backup);
+  }
+}
+
 fs.rmSync(tmpDir, { recursive: true, force: true });
 restoreState();
 check(listDirs(SESSIONS).size === sessionsBefore.size, '会话目录已复原', `${listDirs(SESSIONS).size} 个`);

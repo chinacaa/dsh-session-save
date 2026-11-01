@@ -19,7 +19,7 @@ node test/security.mjs                   # 碰到任何校验、或说不准有�
 node test/pathkey.mjs                    # 升级 DSH 后第一件事：路径键与官方逐字比对（几十毫秒）
 ```
 
-**收工前跑全部七套**，不是只跑改到的那一个；改过客户端再加一轮 `DSH_TEST_LOCALE=en-US node test/client.mjs`（中英词表两条路径都要过）。
+**收工前跑全部十一套**，不是只跑改到的那一个；改过客户端再加一轮 `DSH_TEST_LOCALE=en-US node test/client.mjs`（中英词表两条路径都要过）。
 
 测试自己建临时 `DSH_HOME`（`test/fixture.mjs`），跑完自己删——**不需要**再手工核对 `~/.dsh` 里的目录数，也不要让新测试去读真实 `~/.dsh`。
 
@@ -31,7 +31,7 @@ node test/pathkey.mjs                    # 升级 DSH 后第一件事：路径�
 4. `.ps1` 存成**带 BOM 的 UTF-8**；中文路径走 `-ResultFile`，别读 stdout（PS 5.1 是 `gb2312`，读回来是乱码）。
 5. 装插件别用 profile 的 `cordis.patch.yml` —— 靠包内 `cordis.patch.yml` + 包 `dsh.bundle.patch` + profile `dsh.profile.bundles`。
 6. 新测试先 `makeFixture()` 再 `loadRoutes()`，顺序反了会读到真实数据根。
-7. 安全校验一条都别放宽（`safeSegments` / `isInside` / `maxOutputLength` / `requestGate` / `manifest.parts` / 记忆永不落原名）；改这条线之前先读 AGENTS.md 红线 10。
+7. 安全校验一条都别放宽（`safeSegments` / `isInside` / `maxOutputLength` / `requestGate` / `manifest.parts`；记忆默认不落原名，`restore` / `new` 例外）；改这条线之前先读 AGENTS.md 红线 10。
 
 ## 改完之后
 

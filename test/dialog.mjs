@@ -358,6 +358,33 @@ try {
   assert.equal(readDialogResult('', '', new Error('spawn failed')), undefined);
   pass('结果文件优先于 stdout；两者都没有 RESULT 行时按 error 判定 undefined');
 
+  // ── R10：结果目录改成每次独占 ────────────────────────────────────
+  // 真跑一次 `runDialog` 会弹出真的保存窗口，让自检变成「得有人在电脑前点一下」，
+  // 所以这里只验能被静态验证的部分（同一套思路见文件头背景三）：命名方式必须不可预测、
+  // 清理必须覆盖整个目录。
+  {
+    const source = fs.readFileSync(path.join(here, '..', 'dialog', 'windows.mjs'), 'utf8');
+    assert.ok(
+      source.includes("fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-session-save-dialog-'))"),
+      '结果目录必须用 mkdtemp 独占创建',
+    );
+    assert.ok(
+      !source.includes('dsh-session-save-dialog-${process.pid}'),
+      '结果文件名不许再用 pid + 时间戳（两者都能猜）',
+    );
+    assert.ok(
+      source.includes('fs.rmSync(resultDir, { recursive: true, force: true })'),
+      '收尾要连目录一起删，不能只删文件',
+    );
+    assert.ok(
+      source.includes("process.removeListener('exit', cleanup)"),
+      '正常路径要摘掉 exit 监听，否则反复弹窗会堆到 MaxListenersExceeded',
+    );
+    // mkdtemp 出来的目录一定是空的，原来那句「先 unlink 再写」是死代码
+    assert.ok(!/resultFile[\s\S]{0,200}fs\.unlinkSync\(resultFile\)/.test(source), 'mkdtemp 之后不该再有 unlink 死代码');
+    pass('结果目录每次独占创建（mkdtemp），收尾删除整个目录');
+  }
+
   console.log('✅ dialog 自检通过');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });

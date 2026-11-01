@@ -21,7 +21,7 @@
 
 另有 `package.json` → `exports`：DSH 的 client-modules 要求声明了 `dsh.client` 的包**必须导出 `./client`**，否则启动即抛 `declares dsh.client but exports no "./client" bundle`（`dsh-client-modules/lib/index.js:738`）。本仓库导出 `"./client": "./client.js"`。
 
-`engines.dsh` = `>=0.2.1-rc.1`；`peerDependencies["@deepseek-ai/cordis"]` = `^4.0.1`。**这两个字段是给人和 npm 看的，DSH 自己不做版本拦截** —— 真正的兼容性只能靠本文档逐条核对。
+`engines.dsh` = `>=0.2.1-rc.1`；`peerDependencies["@deepseek-ai/cordis"]` = `^4.0.1`。**`engines.dsh` 是真拦截**：`dsh-app-boot` 用 `semver.satisfies(runtime, range, { includePrerelease: true })` 判定（`lib/index.js:276-284`），预发布版参与比较；一旦写了 `engines.dsh`，`peerDependencies` 里的 `@deepseek-ai/dsh*` **完全不参与判定**（`unmetRequirements` 只走一条分支），它只给 npm 看。版本判定细节与「别按版本分流」的理由见 `AGENTS.md` 的「版本与发行」节。
 
 ---
 
@@ -32,14 +32,14 @@
 ```js
 export const name = 'session-save'   // index.js:20  Loader 行名
 export const inject = ['connection'] // index.js:22  硬依赖：connection 不在就不 apply
-export function apply(ctx)           // index.js:2358
+export function apply(ctx)           // index.js:2477
 ```
 
 `inject` 声明的是 Cordis 服务名。写进数组 = 硬依赖（服务缺失则本插件不启动）；反之用 `ctx.get(name)` 拿的是可选依赖。
 
 ### 1.2 `ctx.connection`（Host 服务）
 
-- **取法**：`index.js:2359` `const connection = Reflect.get(ctx, 'connection')`。用 `Reflect.get` 而不是 `ctx.connection`，是为了在缺服务时拿到 `undefined` 而不是抛错。
+- **取法**：`index.js:2478` `const connection = Reflect.get(ctx, 'connection')`。用 `Reflect.get` 而不是 `ctx.connection`，是为了在缺服务时拿到 `undefined` 而不是抛错。
 - **只用了一个成员**：`connection.fetch.register(...)`。
 - **契约**（Inspect 实测 `host/Service.listService` → `connection`）：
 
@@ -59,14 +59,14 @@ interface ConnectionFetchRoute {
 
 | 路由 | 行号 | methods | requestBody |
 |---|---|---|---|
-| `/api/session.save` | `index.js:2362` | `['GET','POST']` | `buffered` |
-| `/api/session.open` | `index.js:2374` | `['GET','POST']` | `buffered` |
-| `/api/session.workspaces` | `index.js:2386` | `['GET','POST']` | `buffered` |
-| `/api/session.autosave` | `index.js:2392` | `['GET','POST']` | `buffered` |
+| `/api/session.save` | `index.js:2481` | `['GET','POST']` | `buffered` |
+| `/api/session.open` | `index.js:2496` | `['GET','POST']` | `buffered` |
+| `/api/session.workspaces` | `index.js:2509` | `['GET','POST']` | `buffered` |
+| `/api/session.autosave` | `index.js:2524` | `['GET','POST']` | `buffered` |
 
-`fetch` 收到的是标准 `Request`，返回标准 `Response`（`jsonResponse()`，`index.js:2068`）。四条都自己做了 `requestGate()` 来源校验（`index.js:1988`：回环 Host + 同源 Origin + 拒 cross-site），**不依赖 connection 的鉴权**——所以若 DSH 改变了 Host 头/Origin 的注入方式，这里会先拦住请求。
+`fetch` 收到的是标准 `Request`，返回标准 `Response`（`jsonResponse()`，`index.js:2185`）。四条都自己做了 `requestGate()` 来源校验（`index.js:2105`：回环 Host + 同源 Origin + 拒 cross-site），**不依赖 connection 的鉴权**——所以若 DSH 改变了 Host 头/Origin 的注入方式，这里会先拦住请求。
 
-`/api/session.open` 的出参比 DSH 给的会话对象多一项 **`repair`**（插件自产的体检报告，不是 DSH 契约）：`{ frames:{total,broken}, lines:{total,dropped}, parts:{total,missing,patched,dropped}, changed, notes }`。它由 `repairSession()`（`index.js:658`）在落盘前生成：逐帧 `zstdDecompressSync`（解不开的帧原样保留字节）、逐行 `JSON.parse`（坏行丢弃）、`repairPartNode()`（`index.js:585`）遍历 image part，本机没有的对象换成文字占位、缺尺寸的用 `imageInfoOf()`（`index.js:526`）按文件头补齐。**这条是 DSH 契约的探针**：DSH 一旦改了会话日志的帧结构或 part 形状（`attachment` 对象 vs 扁平 `attachmentId`），`repair.parts.total` 会先掉到 0——测试 `test/repair.mjs` 与 `test/open-repair.mjs` 盯着它。
+`/api/session.open` 的出参比 DSH 给的会话对象多一项 **`repair`**（插件自产的体检报告，不是 DSH 契约）：`{ frames:{total,broken}, lines:{total,dropped}, parts:{total,missing,patched,dropped}, changed, notes }`。它由 `repairSession()`（`index.js:710`）在落盘前生成：逐帧 `zstdDecompressSync`（解不开的帧原样保留字节）、逐行 `JSON.parse`（坏行丢弃）、`repairPartNode()`（`index.js:637`）遍历 image part，本机没有的对象换成文字占位、缺尺寸的用 `imageInfoOf()`（`index.js:578`）按文件头补齐。**这条是 DSH 契约的探针**：DSH 一旦改了会话日志的帧结构或 part 形状（`attachment` 对象 vs 扁平 `attachmentId`），`repair.parts.total` 会先掉到 0——测试 `test/repair.mjs` 与 `test/open-repair.mjs` 盯着它。
 
 四条路由的 409 语义（客户端按 `status` 字段分流，不是按 HTTP 码）：
 
@@ -82,7 +82,7 @@ interface ConnectionFetchRoute {
 
 ### 1.3 `ctx.effect` / `ctx.on`（Cordis 生命周期 + 事件）
 
-- **用法**（`index.js:2405-2418`）：
+- **用法**（`index.js:2538-2551`）：
 
 ```js
 if (typeof ctx.effect === 'function' && typeof ctx.on === 'function') {
@@ -114,15 +114,15 @@ if (typeof ctx.effect === 'function' && typeof ctx.on === 'function') {
 
 | 事实 | 代码位置 | 当前值 |
 |---|---|---|
-| 数据根 | `index.js:43` | `process.env.DSH_HOME \|\| <homedir>/.dsh` |
-| 会话目录 | `index.js:197` `findSessionFile()` | `<DSH_HOME>/sessions/<projectKey>/<encodeSegment(sessionId)>/session.v?.jsonl[.zstd]` |
-| 记忆目录 | `index.js:107` `resolveMemoryDir()` | `<DSH_HOME>/memory/workspaces/<slug>/` |
-| 工作区表 | `index.js:900` `readWorkspaces()` | `<DSH_HOME>/storages/workspace.json` → `tables.workspaces[<id>] = { path, title }` |
-| `projectKey` | `index.js:82` | 见下节逐字对照表 |
-| `encodeSegment` | `index.js:55` | 见下节逐字对照表 |
-| 日志文件名 | `index.js:390` `LOG_NAME_RE` | `/^session(\.[0-9A-Za-z]+)?\.jsonl(\.zstd)?$/` |
-| 帧结构 | `index.js:138` `scanZstdFrames()` | 单文件多帧 zstd 流，第 0 帧是 JSON header，后续帧是 JSONL 事件 |
-| 写回方式 | `index.js:1283` `rewriteHeader()` | **只重写第 0 帧**，其余帧字节原样保留 |
+| 数据根 | `index.js:80` | `process.env.DSH_HOME \|\| <homedir>/.dsh` |
+| 会话目录 | `index.js:246` `findSessionFile()` | `<DSH_HOME>/sessions/<projectKey>/<encodeSegment(sessionId)>/session.v?.jsonl[.zstd]` |
+| 记忆目录 | `index.js:149` `resolveMemoryDir()` | `<DSH_HOME>/memory/workspaces/<slug>/` |
+| 工作区表 | `index.js:958` `readWorkspaces()` | `<DSH_HOME>/storages/workspace.json` → `tables.workspaces[<id>] = { path, title }` |
+| `projectKey` | `index.js:119` | 见下节逐字对照表 |
+| `encodeSegment` | `index.js:92` | 见下节逐字对照表 |
+| 日志文件名 | `index.js:463` `LOG_NAME_RE` | `/^session(\.[0-9A-Za-z]+)?\.jsonl(\.zstd)?$/` |
+| 帧结构 | `index.js:187` `scanZstdFrames()` | 单文件多帧 zstd 流，第 0 帧是 JSON header，后续帧是 JSONL 事件 |
+| 写回方式 | `index.js:1341` `rewriteHeader()` | **只重写第 0 帧**，其余帧字节原样保留 |
 
 #### `projectKey` / `encodeSegment`（**错一个字符就找错目录**）
 
@@ -298,8 +298,8 @@ fetch(`${ROUTE}?${search.toString()}`, { method: 'GET', headers: { accept: 'appl
 2. **四个路由在不在**：`curl 'http://127.0.0.1:3080/api/session.workspaces'`（带 Host 头）应返回 JSON 列表而不是 404。
 3. **插槽还在不在**：`cordis_inspect_query` → `client/Slots.listSubTree` 传 `conversation.session.header.utilities`，看 5 个 occupant 是否全 `active`。
 4. **事件名没变**：`cordis_inspect_query` → `host/Event.listEvents` 传 `session/event`，确认签名仍是 `(session, event)`；再确认 `event.type` 仍可能是 `step/end` / `turn/end`。
-5. **会话文件还能读**：`node test/smoke.mjs`（打包 + 回读）与 `node test/open.mjs`（35 条，导入与冲突）。七套测试全部通过 `test/fixture.mjs` 自建临时 `DSH_HOME`，不读真实 `~/.dsh`。
-6. **跑满回归**：`for f in pathkey client dialog smoke open conflict security attach repair open-repair version; do node test/$f.mjs || exit 1; done`，应共 **309** 条 ✅（详见 `docs/TEST-MATRIX.md`）。其中 `pathkey.mjs` 是 rc.4 适配时新增的目录名派生回归。
+5. **会话文件还能读**：`node test/smoke.mjs`（打包 + 回读）与 `node test/open.mjs`（40 条，导入与冲突）。十一套测试全部通过 `test/fixture.mjs` 自建临时 `DSH_HOME`，不读真实 `~/.dsh`。
+6. **跑满回归**：`for f in pathkey client dialog smoke open conflict security attach repair open-repair version; do node test/$f.mjs || exit 1; done`，应共 **361** 条 ✅（详见 `docs/TEST-MATRIX.md`）。其中 `pathkey.mjs` 是 rc.4 适配时新增的目录名派生回归。
 7. **客户端能调 Host 吗**：`node test/client.mjs` 里已断言 `inject` 含 `remote` 与 `remote.session`、且源码不含 `uiWorkspace.openPath`。「打开记忆目录」失效是**静默**的（按钮点了没反应、不报错），只能靠这条断言兜住。
 
 ---
@@ -332,7 +332,7 @@ rc.3 的核对结论大部分仍然成立；rc.4 逐条复查后**只有目录�
 
 | # | 项目 | rc.3 → rc.4 | 对本插件的影响 |
 |---|---|---|---|
-| 1 | `projectKey` / `encodeSegment` | 实现未变，但**本插件当年抄错了三处**：尾部分隔符被剪、`codePointAt` 而非 `charCodeAt`、前导剪裁位置不对 | **已修**（`index.js:55`/`:82`）。真实数据从未触发（本机 5 个会话目录全部对得上），但构造路径必错。新增 `test/pathkey.mjs` 35 条钉住 |
+| 1 | `projectKey` / `encodeSegment` | 实现未变，但**本插件当年抄错了三处**：尾部分隔符被剪、`codePointAt` 而非 `charCodeAt`、前导剪裁位置不对 | **已修**（`index.js:92`/`:82`）。真实数据从未触发（本机 5 个会话目录全部对得上），但构造路径必错。新增 `test/pathkey.mjs` 35 条钉住 |
 | 2 | 官方 `encodeSegment` 空串 | 抛错（`cannot encode an empty path segment`） | 插件侧 `findSessionFile()` 先用 `isSessionId()` 挡掉非 id，不会走到这里 |
 | 3 | `projectDir(root, undefined)` | 回落 `_no-cwd` | 插件 `projectKey('')` 也回落 `_no-cwd`，一致 |
 | 4 | `session.openWorkspacePath` | 仍在 `dsh-api-remotes/lib/client.js`，参数 object、结果 `{ opened: true }` | 无需改动 |
@@ -350,7 +350,7 @@ node test/pathkey.mjs    # 目录名派生没漂
 node test/client.mjs     # 插槽 / inject / 前端接线没断
 ```
 
-其余五套（`dialog` `smoke` `open` `conflict` `security`）覆盖的是插件自己的落盘与安全逻辑，与 DSH 版本弱相关，但**改动后必须全跑**（合计 233 条）；`attach` / `repair` / `open-repair` 三套覆盖附件打包回填与打开前体检（26 条）。以上 233 + 43（`pathkey` 35 + `client` 8）+ 26 = 302 条，再加 `version` 7 条 = 全部 309 条。
+其余五套（`dialog` `smoke` `open` `conflict` `security`）覆盖的是插件自己的落盘与安全逻辑，与 DSH 版本弱相关，但**改动后必须全跑**（合计 283 条）；`attach` / `repair` / `open-repair` 三套覆盖附件打包回填与打开前体检（26 条）。以上 283 + 45（`pathkey` 35 + `client` 10）+ 26 = 354 条，再加 `version` 7 条 = 全部 361 条。
 
 ### 6.2 rc.2 → rc.4（npm `latest` 与当前运行版之间的对照）
 
