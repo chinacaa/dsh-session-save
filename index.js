@@ -29,6 +29,43 @@ export const AUTOSAVE_ROUTE = '/api/session.autosave';
 export const WORKSPACES_ROUTE = '/api/session.workspaces';
 
 const FORMAT = 'dshproj/1';
+/**
+ * 本插件自己的版本号：从同目录 `package.json` 读。
+ * 读不到就退回 `0.0.0` —— 版本只用来给「包比我新」这句提示加料，不该成为打开失败的理由。
+ */
+const PLUGIN_VERSION = (() => {
+  try {
+    const raw = fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8');
+    const version = JSON.parse(raw)?.version;
+    return typeof version === 'string' && version !== '' ? version : '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
+
+/**
+ * 比较两段版本号：`a` 比 `b` 新返回 1，旧返回 -1，一样返回 0。
+ * 只认点分的数字段，`-rc.1` 这类后缀直接丢掉 —— 这里只回答「谁更新」，
+ * 不判 semver 的兼容性语义（包格式看的是 `FORMAT`，不是这个）。
+ */
+export function compareVersions(a, b) {
+  const parse = (text) =>
+    String(text ?? '')
+      .split('-')[0]
+      .split('.')
+      .map((part) => {
+        const n = Number.parseInt(part, 10);
+        return Number.isFinite(n) ? n : 0;
+      });
+  const left = parse(a);
+  const right = parse(b);
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const x = left[i] ?? 0;
+    const y = right[i] ?? 0;
+    if (x !== y) return x > y ? 1 : -1;
+  }
+  return 0;
+}
 const ZSTD_MAGIC = 0xfd2fb528;
 /** Same frame parameters the official writer uses, so rewritten headers stay readable. */
 const CHECKSUM_OPTIONS = { params: { [zlib.constants.ZSTD_c_checksumFlag]: 1 } };
@@ -478,6 +515,225 @@ function isInside(root, dest) {
   return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
+/** 本机对象库里有没有这一份（kind: objects | files）。 */
+function hasAttachmentObject(kind, sha) {
+  const root = attachmentRootDir(kind);
+  const dest = path.join(root, sha.slice(0, 2), sha);
+  return isInside(root, dest) && fs.existsSync(dest);
+}
+
+/** 从图片头部读出宽高与真实类型。认不出就返回 undefined——猜出来的尺寸比没有更糟。 */
+function imageInfoOf(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < 24) return undefined;
+  if (buf.readUInt32BE(0) === 0x89504e47 && buf.readUInt32BE(4) === 0x0d0a1a0a) {
+    return { mediaType: 'image/png', width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+  }
+  if (buf.length >= 10 && buf.toString('ascii', 0, 3) === 'GIF') {
+    return { mediaType: 'image/gif', width: buf.readUInt16LE(6), height: buf.readUInt16LE(8) };
+  }
+  if (
+    buf.length >= 30 &&
+    buf.toString('ascii', 0, 4) === 'RIFF' &&
+    buf.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    const chunk = buf.toString('ascii', 12, 16);
+    if (chunk === 'VP8X') {
+      return {
+        mediaType: 'image/webp',
+        width: 1 + buf.readUIntLE(24, 3),
+        height: 1 + buf.readUIntLE(27, 3),
+      };
+    }
+    if (chunk === 'VP8L') {
+      const bits = buf.readUInt32LE(21);
+      return {
+        mediaType: 'image/webp',
+        width: 1 + (bits & 0x3fff),
+        height: 1 + ((bits >> 14) & 0x3fff),
+      };
+    }
+  }
+  if (buf[0] === 0xff && buf[1] === 0xd8) {
+    let i = 2;
+    while (i + 9 < buf.length) {
+      if (buf[i] !== 0xff) {
+        i += 1;
+        continue;
+      }
+      const marker = buf[i + 1];
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+        return {
+          mediaType: 'image/jpeg',
+          height: buf.readUInt16BE(i + 5),
+          width: buf.readUInt16BE(i + 7),
+        };
+      }
+      const size = buf.readUInt16BE(i + 2);
+      if (size < 2) break;
+      i += 2 + size;
+    }
+  }
+  return undefined;
+}
+
+const MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
+/**
+ * 逐个 part 看一遍：断链的图换成文字、缺的尺寸按对象文件补回、认不出的媒体类型按魔数纠正。
+ * 改过的节点返回新对象，没改的原样返回——外面靠引用比较决定要不要重写这一行。
+ */
+function repairPartNode(node, report, options, depth = 0) {
+  if (node === null || typeof node !== 'object' || depth > 64) return node;
+  if (Array.isArray(node)) {
+    let changed = false;
+    const next = node.map((item) => {
+      const fixed = repairPartNode(item, report, options, depth + 1);
+      if (fixed !== item) changed = true;
+      return fixed;
+    });
+    return changed ? next : node;
+  }
+  // 两种形状都得认：早期日志把 attachmentId 直接挂在 part 上，后来才包成 attachment 对象。
+  // 只认一种就会漏掉一半引用——漏掉的那半照样把会话打成 ATTACHMENT_NOT_FOUND。
+  const nested =
+    node.type === 'image' &&
+    node.attachment !== null &&
+    typeof node.attachment === 'object' &&
+    Array.isArray(node.attachment) === false;
+  const flat = node.type === 'image' && typeof node.attachmentId === 'string';
+  if (nested === true || flat === true) {
+    const att = nested === true ? node.attachment : node;
+    const raw = typeof att.attachmentId === 'string' ? att.attachmentId : '';
+    const sha = raw.startsWith('sha256:') ? raw.slice(7) : '';
+    const label =
+      typeof att.name === 'string' && att.name !== '' ? att.name : path.basename(String(att.name ?? 'image'));
+    report.parts.total += 1;
+    if (!/^[0-9a-f]{64}$/.test(sha) || !hasAttachmentObject('objects', sha)) {
+      report.parts.missing += 1;
+      if (options.keepMissing === true) return node;
+      report.parts.dropped += 1;
+      report.notes.push(`图片 ${label} 在本机没有对应对象，已换成文字占位`);
+      return { type: 'text', text: `[图片已丢失：${label}]` };
+    }
+    // 扁平形状没有尺寸字段，对象在就够了——没有的东西不该凭猜补上。
+    if (nested === false) return node;
+    const file = path.join(attachmentRootDir('objects'), sha.slice(0, 2), sha);
+    let bytes;
+    let info;
+    try {
+      bytes = fs.statSync(file).size;
+      info = imageInfoOf(fs.readFileSync(file));
+    } catch {
+      bytes = undefined;
+      info = undefined;
+    }
+    const patch = {};
+    const badNumber = (value) => typeof value !== 'number' || !Number.isFinite(value) || value <= 0;
+    if (badNumber(att.width) && info !== undefined) patch.width = info.width;
+    if (badNumber(att.height) && info !== undefined) patch.height = info.height;
+    if (badNumber(att.bytes) && bytes !== undefined) patch.bytes = bytes;
+    if (!MEDIA_TYPES.has(att.mediaType) && info !== undefined) patch.mediaType = info.mediaType;
+    if (Object.keys(patch).length === 0) return node;
+    report.parts.patched += 1;
+    report.notes.push(`图片 ${label} 的尺寸或类型不完整，已按对象文件补齐`);
+    return { ...node, attachment: { ...att, ...patch } };
+  }
+  let changed = false;
+  const next = {};
+  for (const key of Object.keys(node)) {
+    const fixed = repairPartNode(node[key], report, options, depth + 1);
+    if (fixed !== node[key]) changed = true;
+    next[key] = fixed;
+  }
+  return changed ? next : node;
+}
+
+/**
+ * 打开前体检：找出「一打开就会报错」的地方，能确定坏的就地修。
+ *
+ * 只处理三类确定性故障：解不开的帧（只记数不删）、读不懂的行（丢掉，否则整条会话打不开）、
+ * 引用了不存在的附件对象（换成文字占位）。拿不准的一律原样保留——导入是迁移，不是编辑。
+ * 帧结构保持不变：没改动的帧直接沿用原字节，改过的帧才重压。
+ */
+export function repairSession(buffer, options = {}) {
+  const frames = scanZstdFrames(buffer);
+  const report = {
+    frames: { total: frames.length, broken: 0 },
+    lines: { total: 0, dropped: 0 },
+    parts: { total: 0, missing: 0, patched: 0, dropped: 0 },
+    changed: false,
+    notes: [],
+  };
+  if (frames.length === 0) return { buffer, report };
+
+  const chunks = [];
+  for (const frame of frames) {
+    let text;
+    try {
+      text = zlib.zstdDecompressSync(buffer.subarray(frame.start, frame.end)).toString('utf8');
+    } catch {
+      report.frames.broken += 1;
+      report.notes.push('有一帧日志解不开，原样保留');
+      chunks.push(buffer.subarray(frame.start, frame.end));
+      continue;
+    }
+    const trailing = text.endsWith('\n') ? '\n' : '';
+    const kept = [];
+    let frameChanged = false;
+    for (const line of text.split('\n')) {
+      if (line.trim() === '') continue;
+      report.lines.total += 1;
+      let event;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        report.lines.dropped += 1;
+        frameChanged = true;
+        continue;
+      }
+      const fixed = repairPartNode(event, report, options);
+      if (fixed === event) {
+        kept.push(line);
+      } else {
+        frameChanged = true;
+        kept.push(JSON.stringify(fixed));
+      }
+    }
+    if (frameChanged === false) {
+      chunks.push(buffer.subarray(frame.start, frame.end));
+      continue;
+    }
+    report.changed = true;
+    const payload = Buffer.from(kept.join('\n') + trailing, 'utf8');
+    chunks.push(zlib.zstdCompressSync(payload, CHECKSUM_OPTIONS));
+  }
+  if (report.changed === false) return { buffer, report };
+  return { buffer: Buffer.concat(chunks), report };
+}
+
+/**
+ * 就地把已存在的会话体检一遍，只有真的改了才写回。
+ *
+ * 「打开」有两种落法：包里的会话是本机没有的（新写一份），或本机已经有了（直接切过去）。
+ * 后一种以前完全跳过体检——用户在同一台机器上重开自己的包，正好走这条路，
+ * 断链图就永远修不上。所以两条早退分支也要过一遍。
+ *
+ * 必须先回填附件再调这里：包自带的图还没进对象库时体检，会把它们当成缺失换掉。
+ */
+function repairInPlace(file, options = {}) {
+  let buf;
+  try {
+    buf = fs.readFileSync(file);
+  } catch (error) {
+    // 文件不在就没有可体检的东西，交给调用方按「没有会话」处理
+    if (error?.code === 'ENOENT') return undefined;
+    throw error;
+  }
+  const repaired = repairSession(buf, options);
+  if (repaired.report.changed === true) writeAtomic(file, repaired.buffer);
+  return repaired.report;
+}
+
 /** 一组允许写入的根目录里，是否有一个包含 dest。 */
 function isInsideAny(dest, roots) {
   return roots.some((root) => isInside(root, dest));
@@ -917,6 +1173,8 @@ function buildPackage(
 
   const manifest = {
     format: FORMAT,
+    // 写这个包的是哪个版本。读的一方凭它认出「包比我新」——比猜测条目前缀可靠。
+    plugin: { name: 'dsh-session-save', version: PLUGIN_VERSION },
     exportedAt: new Date().toISOString(),
     exportedBy: `dsh-session-save on ${os.hostname()}`,
     session: {
@@ -1086,6 +1344,37 @@ const ENTRY_ALLOW = [
 const CONTENT_ENTRY = /^(session\/|memory\/workspaces\/|attachments\/)/;
 
 /**
+ * 「这类条目是从哪个版本开始被认识的」。
+ * 包没写 `plugin.version` 时（老包、别的工具拼的包），靠它反推写包方有多新，
+ * 才能把「包里夹带了怪东西」和「你该升级插件了」分开说。
+ * 新增一类顶层条目时，记得在这里加一行。
+ */
+const ENTRY_SINCE = [[/^attachments\//, '0.3.0']];
+
+/**
+ * 白名单外的条目该怎么说。
+ *
+ * 0.2.x 打开 0.3.0 的包时只得到一句「包里有不认识的条目」—— 用户以为是包坏了，
+ * 其实只是插件旧了。这里先回答「是不是我太旧」，是就明说升级，别让人去怀疑文件。
+ */
+function unknownEntryMessage(entryName, manifest) {
+  const writer =
+    typeof manifest?.plugin?.version === 'string' && manifest.plugin.version !== ''
+      ? manifest.plugin.version
+      : undefined;
+  const since = ENTRY_SINCE.find(([pattern]) => pattern.test(entryName));
+  const need = since === undefined ? undefined : since[1];
+  const newerWriter = writer !== undefined && compareVersions(writer, PLUGIN_VERSION) > 0;
+  const newerEntry = need !== undefined && compareVersions(need, PLUGIN_VERSION) > 0;
+  if (newerWriter || newerEntry) {
+    const from =
+      writer !== undefined ? `写它的是 ${writer}` : `这类条目从 ${need} 才开始有`;
+    return `这个包来自更新版本的 dsh-session-save（${from}，本机是 ${PLUGIN_VERSION}）：先升级插件再打开。包本身没坏，升级后能照常打开。`;
+  }
+  return `包里有不认识的条目，拒绝打开：${entryName}`;
+}
+
+/**
  * 打开前的整包校验：条目白名单 + `manifest.parts` 的 sha256／体积比对。
  * digest 在打包时就写好了，这里第一次真正用它 —— 传输中被改动或被人塞了东西就能发现。
  *
@@ -1096,7 +1385,7 @@ const CONTENT_ENTRY = /^(session\/|memory\/workspaces\/|attachments\/)/;
 function verifyPackage(entries, manifest) {
   for (const name of entries.keys()) {
     if (!ENTRY_ALLOW.some((pattern) => pattern.test(name))) {
-      throw new Error(`包里有不认识的条目，拒绝打开：${name}`);
+      throw new Error(unknownEntryMessage(name, manifest));
     }
   }
   const parts = manifest?.parts;
@@ -1223,6 +1512,7 @@ function importPackage(sourcePath, options = {}) {
       // 同一会话的另一份（同 id + 同 createdAt + 同工作区）→ 直接打开本机这份，不复制
       // 直接打开本机这份，也照样回填附件：用户很可能就是拿这个包来补上次没带过来的图
       const attachRestore = restoreAttachments(entries);
+      const repairReport = repairInPlace(existing.file);
       const state = rememberSource(readState(), id, sourcePath);
       writeState(state);
       return {
@@ -1240,6 +1530,7 @@ function importPackage(sourcePath, options = {}) {
         attachmentsWritten: attachRestore.written,
         attachmentsSkipped: attachRestore.skipped,
         attachmentsRejected: attachRestore.rejected,
+        repair: repairReport,
         sourcePath,
         packageLock,
       };
@@ -1282,6 +1573,7 @@ function importPackage(sourcePath, options = {}) {
     if (mode === 'reuse') {
       // 直接打开本机这份，也照样回填附件：用户很可能就是拿这个包来补上次没带过来的图
       const attachRestore = restoreAttachments(entries);
+      const repairReport = repairInPlace(existing.file);
       const state = rememberSource(readState(), id, sourcePath);
       writeState(state);
       return {
@@ -1300,6 +1592,7 @@ function importPackage(sourcePath, options = {}) {
         attachmentsWritten: attachRestore.written,
         attachmentsSkipped: attachRestore.skipped,
         attachmentsRejected: attachRestore.rejected,
+        repair: repairReport,
         sourcePath,
         packageLock,
       };
@@ -1356,11 +1649,16 @@ function importPackage(sourcePath, options = {}) {
   if (conflictResolved !== 'overwrite' && fs.existsSync(target)) {
     throw new Error('目标位置已有同名会话文件，拒绝覆盖');
   }
-  fs.writeFileSync(target, finalBuf);
-
-  // 会话日志落盘之后紧接着回填附件对象：日志里引用的是内容哈希，对象不在就等于
-  // 打开时必然 ATTACHMENT_NOT_FOUND。失败不抛错（包可能天生就缺），只回报计数。
+  // 先回填附件对象，再体检：体检要判「引用的对象在不在本机」，对象库得先就位，
+  // 否则包里自带的图会被自己判成缺失、白白换成占位文字。失败不抛错（包可能天生就缺）。
   const attached = restoreAttachments(entries);
+
+  // 打开前体检：坏行、断链的图会让 DSH 一打开就报错，能确定坏的就地修掉再落盘。
+  // 导入是一次性迁移，这一刀不修，用户下次还得手动来一遍。
+  const repaired = repairSession(finalBuf);
+  finalBuf = repaired.buffer;
+
+  fs.writeFileSync(target, finalBuf);
 
   let memoryWritten = 0;
   let memorySkipped = 0;
@@ -1515,6 +1813,8 @@ function importPackage(sourcePath, options = {}) {
     attachmentsWritten: attached.written,
     attachmentsSkipped: attached.skipped,
     attachmentsRejected: attached.rejected,
+    // 打开前的体检结论：改了什么、还剩什么。changed=false 说明这个包本身是干净的。
+    repair: repaired.report,
     memoryConflicts,
     // 「本机没有、这次没写」的那批。界面据此提醒「有东西没写」，和 memoryConflicts 分开用。
     memoryCreated,

@@ -101,6 +101,29 @@ The target of a save is *the file at that path*, not *the path*. So every write 
 - **Autosave** finds it gone → **turns itself off** and tells you why (with the path); that round writes nothing.
 - The whole **folder** missing (an unmounted network drive, say) behaves the same: "target folder does not exist" instead of quietly `mkdir -p`-ing the directory and the file back into existence.
 
+### It checks the session before opening it
+
+A package may come from another machine, and files may have been deleted along the way. So before an import is written to disk, the session gets scanned once and whatever can be fixed is fixed:
+
+- **Image bytes not on this machine** → that spot becomes a readable line of text (`[image lost: page-2.png]`). Keeping a dangling reference only gets you a wall of `Attachment object is missing.` that retrying never repairs.
+- **Image present but missing width/height/bytes** → filled in from the image header (PNG / GIF / WebP / JPEG).
+- **A log line that will not parse** → that line is dropped; the rest of the events in the same record stay.
+- **A frame that will not decompress** → its bytes are kept as-is with a note. Nothing of yours is thrown away.
+
+Afterwards the UI lists what changed (how many images were missing, how many sizes were filled, how many lines were dropped). Only frames that actually changed are recompressed; untouched frames stay byte-identical — a repaired package is the same session, not a regenerated one. To inspect without changing anything, call `repairSession(buf, { keepMissing: true })`.
+
+### "This package is newer than your plugin", not "the package is broken"
+
+When a package carries entries this version does not recognise, the answer used to be a bare "unknown entry, refusing to open". That sends you the wrong way: you assume the file is damaged, go dig out a backup, save it again — when the real cause is just an old plugin.
+
+Packages now record the plugin version that wrote them (`manifest.plugin`), and opening compares the two first:
+
+- **Package newer than your plugin** → say so plainly: which version wrote it, which version you have, upgrade before opening — and make it clear the package itself is fine.
+- **Same version, unfamiliar entry** → still refused as an unknown entry. That is usually a package assembled by some other tool, not a version problem, so "you are old" would be a lie.
+- **Old package with no version field** → inferred from the entry prefix (`attachments/` only exists from 0.3.0), so you still get "upgrade" instead of "broken".
+
+Paths on your machine never appear in that message.
+
 ## How files are named
 
 ```

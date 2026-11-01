@@ -2,7 +2,7 @@
 
 本文从代码反推功能面（`index.js` 四条路由 + `client.js` 五个插槽项），逐条列出可观测行为、期望结果，以及由哪套测试覆盖。测试分两层：
 
-- **八套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共打印 286 行 ✅。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
+- **十一套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共打印 309 行 ✅。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
 - **审计验收脚本**（未随仓库分发）：针对历史漏洞的复现/防回归，判据写在下表里，可照着重写。
 
 所有套件都通过 `test/fixture.mjs` 自建临时 `DSH_HOME`（`os.tmpdir()` 下），跑完自删——**不读也不改真实 `~/.dsh`**，所以在任何机器、任何数据状态下结果一致。功能面的 F 编号是本文与 `test/*.mjs` 注释共同引用的锚点，改动功能时两边一起改。
@@ -111,9 +111,15 @@
 | `test/conflict.mjs` | 67 | F5–F7、F11、F28–F32、F44 | 四种冲突顺序 ask→reuse→copy→overwrite；覆盖前留 `.bak`；异机新鲜锁给理由；CAS 409 与 `force`；自动保存钩子写盘并递增 `writes`；关闭后不再写；同步盘识别；目录复原 |
 | `test/security.mjs` | 114 | F22–F27、F38–F43、F50 | V1 越界条目读包即拒；V2 恶意 `fileName` 被收敛；V3 200 MB / 1026:1 在解压前拒绝；V4 目录外 400 且不建树；V5 非 id 400；V6 不回显路径；V7 `parts` 不符 500；V8 跨站 403；R1 未声明条目拒绝；R4 默认永不落原名；R6 restore 只覆盖已有、`memory=new` 才新建；V12 记住的文件被删后再存必须 409 `missing-target` 且不重建、`recreate=1` 才落地、成功后清 `missing`；V12b 自动保存发现目标消失后自己关掉并带回原路径、不重建 |
 
+| F52 | 打开前体检自愈 | 包可能来自别的机器、中间也可能有文件被删过，会话里就会留下打不开的东西。`repairSession(buffer, options)` 在导入落盘前扫一遍：①逐帧 `zstdDecompressSync`，解不开的帧**原样保留原字节**并计 `frames.broken`（不替用户丢帧）；②逐行 `JSON.parse`，失败计 `lines.dropped` 并丢弃该行，同帧其余事件照常保留；③`repairPartNode` 递归遍历，**两种 image 形状都认**——`node.attachment` 对象（含 `attachmentId`/`mediaType`/`bytes`/`width`/`height`/`name`）与扁平 `node.attachmentId`。对象在本机不存在（`hasAttachmentObject('objects', sha)` 为假）→ 换成 `{type:'text', text:'[图片已丢失：<name>]'}`，计 `parts.missing`/`parts.dropped`；`keepMissing: true` 时只计数不改字节。对象在但 `width`/`height`/`bytes` 缺失或非正数、或 `mediaType` 不在 `image/png\|jpeg\|webp\|gif` 白名单 → 用 `imageInfoOf(buf)` 按文件头（PNG/GIF/WebP/JPEG）补齐，计 `parts.patched`；扁平形状没有这些字段，对象在就原样返回（不凭猜补）。④只有真改过的帧用 `zstdCompressSync(payload, CHECKSUM_OPTIONS)` 重压，未改帧逐字节沿用，帧结构不变；⑤返回 `{ buffer, report }`，`report = { frames:{total,broken}, lines:{total,dropped}, parts:{total,missing,patched,dropped}, changed, notes }`。⑥`importPackage` 里顺序固定为「先 `restoreAttachments(entries)` 回填附件 → 再 `repairSession(finalBuf)` → 才 `fs.writeFileSync`」：反了就会把包里自带的图判成缺失换成占位。⑦「本机已经有这份会话」的两条早退分支（同 id 同 cwd 的 `reused`、`mode === 'reuse'`）也走 `repairInPlace(existing.file)`，只在 `changed` 为真时 `writeAtomic` 写回——用户在同一台机器上重开自己的包走的正是这条路。⑧导入返回值新增 `repair` 报告 |
 | `test/attach.mjs` | 11 | F51 | A1 日志里只有 `sha256:` 引用、对象库有字节时，包内出现 1 个 `attachments/objects/<前2>/<sha>` 且 manifest 记账正确；A2 同一张图被引用两次只带一份（内容寻址去重）；A3 本机缺对象时包照常出、`manifest.attachments.missing` 记下该哈希、`SUMMARY.md` 说明缺几个；A4 对象库里的字节被改坏（哈希对不上）时不带；A5 导入回填把对象写进新 DSH_HOME 的 `objects/`；A6 再导一次是 `skipped` 不是 `written`、文件 mtime 不变；A7 被篡改的包内条目（内容与名字不符）计 `rejected` 且不落盘；A8 分片目录与哈希前缀不符同样 `rejected`；A9 `objects` 与 `file-objects` 两个池分开落盘；A10 `includeAttachments: false` 时一个附件条目都不带；A11 包内附件条目必须在 `parts` 里声明，否则 `verifyPackage` 拒绝 |
 
-合计 **286 条**。
+| F53 | 包比我新时说「升级」而不是「包坏了」 | 包格式新增 `manifest.plugin = { name, version }`（`PLUGIN_VERSION` 从同目录 `package.json` 读，读不到退 `0.0.0`）。`verifyPackage` 撞到 `ENTRY_ALLOW` 白名单外的条目时不再直接抛固定文案，交给 `unknownEntryMessage(entryName, manifest)`：①包写了版本且 `compareVersions(writer, PLUGIN_VERSION) > 0` → 「这个包来自更新版本的 dsh-session-save（写它的是 X，本机是 Y）：先升级插件再打开。包本身没坏」；②包没写版本时用 `ENTRY_SINCE`（`[/^attachments\//, '0.3.0']`）反推这类条目从哪个版本起才有，若比本版新同样提示升级；③都不成立（同版本 / 更旧的包 / 纯陌生条目）→ 保持原文案「包里有不认识的条目，拒绝打开」，不拿版本当借口糊掉真异常。`compareVersions` 只比点分数字段、丢弃 `-rc.1` 后缀，回答的是「谁更新」，不承担包格式兼容判断（那看 `FORMAT`）。提示文案不含路径，`handleOpen` 的 `leaksPath` 判据因此不会把它替换成通用文案 |
+| `test/repair.mjs` | 9 | F52 | R1 干净日志 `changed=false` 且 `buffer.equals(clean)`、帧数不变；R2 断链图换成 `[图片已丢失：lost.png]` 且会话里再无 `"type":"image"`；R3 缺尺寸的图按 PNG 头补成 640x480、`bytes` 等于真实字节数、`attachmentId` 未变；R4 坏行被丢、`lines.total` 仍按实际行数计、剩余行全部可 parse；R5 两帧结构下只有被改的那帧重写、另一帧字节 `equals` 不变；R6 `keepMissing: true` 时 `changed=false` 但仍报 `parts.missing=1`；R7 扁平 `attachmentId` 与嵌套 `attachment` 两种形状都认（断链换占位、健康的不动）；R8 修完 header 仍可读、`type==='session'`、id 一致，且对象库里的字节没有被碰 |
+| `test/version.mjs` | 7 | F53 | V1 `compareVersions` 五种情形（9.9.9 > 0.3.1、0.3.10 > 0.3.9 按数值比、1.0.0 > 0.9.9、自己跟自己相等、`0.3.0-rc.1` 丢后缀后等于 `0.3.0`）；V2 打出来的包 `manifest.plugin.name === 'dsh-session-save'` 且 `version` 等于 `package.json` 的版本；V3 把包改成「9.9.9 写的」并塞一条本版不认识的 `previews/…` 条目 → 打开返回 500，提示含「更新版本」「9.9.9」本机版本「升级」，且不含盘符路径；V4 同版本 + 陌生条目 → 仍报「不认识的条目」，不说「更新版本」；V5 删掉 `plugin` 字段的老包 + 陌生条目 → 照旧拒绝、不崩；V6 正常包照常打开（改了校验不等于改了放行） |
+| `test/open-repair.mjs` | 6 | F52 | 端到端走真实路由 save → open：O1 会话里放一个本机没有的 image 对象，打包照常成功；O2 打开返回 `repair.parts.missing=1` / `dropped=1` / `changed=true` 且 `notes` 非空；O3 落盘的会话文件里已无 `"type":"image"`、留有可读占位；O4 同一份包再打开不再报缺失（体检幂等）；O5 全程不碰夹具外的路径 |
+
+合计 **309 条**。
 
 ### 审计验收脚本（未随仓库分发）
 
@@ -153,7 +159,7 @@ node test/open.mjs
 node test/conflict.mjs
 node test/security.mjs
 node test/pathkey.mjs
-# 或一把梭：286 条全绿
+# 或一把梭：302 条全绿
 for f in client dialog smoke open conflict security pathkey; do node test/$f.mjs || exit 1; done
 ```
 

@@ -87,6 +87,11 @@ window.__ModuleLoader__.load({
       missingTargetRecreate: '就在这里新建',
       missingTargetSaveAs: '另存到别处',
       missingAutoOff: '自动保存已停用：目标文件不在了',
+      repairHint: '打开前体检：',
+      repairMissing: '{n} 张图的字节本机没有，已换成文字占位',
+      repairPatched: '{n} 张图缺尺寸，已按文件头补上',
+      repairLines: '{n} 行日志读不懂，已跳过',
+      repairFrames: '{n} 帧日志解不开，已原样保留',
       pathNotAllowed: '只能存到用过的目录，或者用另存为窗口挑位置',
       memoryHint: 'Alt 点击：连同工作区记忆一起打包',
       memoryTag: '含记忆',
@@ -178,6 +183,11 @@ window.__ModuleLoader__.load({
       missingTargetRecreate: 'Create a new one here',
       missingTargetSaveAs: 'Save somewhere else',
       missingAutoOff: 'Autosave stopped: the target file is gone',
+      repairHint: 'Checked before opening: ',
+      repairMissing: '{n} image(s) had no bytes here — replaced with a text placeholder',
+      repairPatched: '{n} image(s) were missing size info — filled from the file header',
+      repairLines: '{n} unreadable log line(s) — skipped',
+      repairFrames: '{n} frame(s) would not decompress — kept as-is',
       pathNotAllowed: 'Only folders you have used before, or pick a spot in the Save As dialog',
       memoryHint: 'Alt+click: bundle the workspace memory too',
       memoryTag: 'with memory',
@@ -787,12 +797,31 @@ window.__ModuleLoader__.load({
           : '';
         const createdText = pendingCreated > 0 ? ` · ${pendingCreated}${L.memoryCreatedHint}` : '';
         const clashText = clashes > 0 ? ` · ${clashes}${L.memoryConflictsHint}` : '';
+        // 打开前体检改了什么必须说出来——用户下次打开看到的是一份不同的会话，
+        // 不解释就成了「我的图怎么没了」。只报改过的项，没改就一个字不说。
+        const repair = payload.repair;
+        const repairNotes = [];
+        if (repair !== undefined && repair !== null && repair.changed === true) {
+          const dropped = Number(repair.parts?.dropped) || 0;
+          const patched = Number(repair.parts?.patched) || 0;
+          const lostLines = Number(repair.lines?.dropped) || 0;
+          const brokenFrames = Number(repair.frames?.broken) || 0;
+          if (dropped > 0) repairNotes.push(String(L.repairMissing).replace('{n}', dropped));
+          if (patched > 0) repairNotes.push(String(L.repairPatched).replace('{n}', patched));
+          if (lostLines > 0) repairNotes.push(String(L.repairLines).replace('{n}', lostLines));
+          if (brokenFrames > 0) repairNotes.push(String(L.repairFrames).replace('{n}', brokenFrames));
+        }
+        const repairText =
+          repairNotes.length > 0 ? ` · ${L.repairHint}${repairNotes.join('，')}` : '';
         // 只要还有没生效的东西，就把面板留在界面上：copy 是「全是副本」，restore 是
         // 「有文件没写」。new 表示用户已经明确同意全写，不再提示。
         setNotice(!created && (written > 0 || pendingCreated > 0) ? payload : null);
         setToast({
-          tone: warning !== '' || cloud !== '' || (!created && (written > 0 || pendingCreated > 0)) ? 'info' : 'ok',
-          text: `${L.opened} · ${label}${warning}${cloud}${memory}${createdText}${clashText}`,
+          tone:
+            warning !== '' || cloud !== '' || repairNotes.length > 0 || (!created && (written > 0 || pendingCreated > 0))
+              ? 'info'
+              : 'ok',
+          text: `${L.opened} · ${label}${warning}${cloud}${memory}${createdText}${clashText}${repairText}`,
         });
         try {
           await host?.sessions?.refresh?.();

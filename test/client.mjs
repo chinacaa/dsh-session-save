@@ -325,3 +325,17 @@ assert.ok(
   '自动保存被目标消失停掉时，界面要把原因（含原路径）说出来',
 );
 console.log('✅ 目标文件不在了会停下来问：missing-target 弹窗三选一、自动保存自停并说明原因，中英文案齐全');
+
+/* ── R8. 打开前体检：改了什么要让用户看见 ── */
+
+for (const key of ['repairHint', 'repairMissing', 'repairPatched', 'repairLines', 'repairFrames']) {
+  const hits = source.split(`${key}:`).length - 1;
+  assert.equal(hits, 2, `${key} 要中英各一份，实际 ${hits}`);
+}
+assert.ok(source.includes('payload.repair'), '打开结果里的 repair 报告必须被读取');
+assert.ok(source.includes('repair.changed === true'), '只有真的改过才提示，不能每次都报一遍');
+assert.ok(
+  source.includes('L.repairHint') && source.includes('repairNotes.join'),
+  '体检结果要拼成一句话说出来，而不是只存着',
+);
+console.log('✅ 打开前体检有交代：改了哪几类（缺字节/缺尺寸/坏行/坏帧）逐条列出，中英文案齐全');
