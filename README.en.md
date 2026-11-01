@@ -262,6 +262,17 @@ Do not just add an `- id/name` row to the profile's `cordis.patch.yml` — that 
 | lock format | `dshproj-lock/1` (`LOCK_FORMAT`) | only when `LOCK.json` gains fields |
 | host range | `engines.dsh`, peer `@deepseek-ai/cordis` | when new APIs or upstream bumps require it |
 
+Host range each release actually declared (verify with `npm view dsh-session-save@<version> engines --registry=https://registry.npmjs.org`):
+
+| Plugin | `engines.dsh` | Note |
+| --- | --- | --- |
+| 0.2.3 | `>=0.2.1-rc.1` | no upper bound |
+| 0.3.0 | `>=0.2.1-rc.1` | no upper bound; first release that packs attachments |
+| 0.4.0 | `>=0.2.1-rc.1 <0.3.0-0` | upper bound added |
+| 0.4.1 | `>=0.2.1-rc.1 <0.3.0-0` | same |
+
+The lower bound never moved: the attachment object layout that 0.3.0 depends on (`attachments/v1` with `objects`/`file-objects` shards) already exists in `@deepseek-ai/dsh-attachment-local@0.2.1-rc.1` (10 hits in that package), so it did not raise the floor. **The upper bound only arrived in 0.4.0** — earlier versions are not blocked by `engines` on dsh 0.3.x and will not error, but nobody has checked whether the APIs they use still exist. On dsh 0.3.0 and newer, use 0.4.x.
+
 ```bash
 node scripts/bump.mjs patch     # bug fix
 node scripts/bump.mjs minor     # feature

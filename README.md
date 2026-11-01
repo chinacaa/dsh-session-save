@@ -297,6 +297,17 @@ New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\profiles\web\node_modul
 | 锁格式 | `dshproj-lock/1`（`LOCK_FORMAT`） | `LOCK.json` 字段变了才动 |
 | 宿主范围 | `engines.dsh`、peer `@deepseek-ai/cordis` | 用了新 API 或官方包抬了下界 |
 
+各版本对外声明过的宿主范围（`npm view dsh-session-save@<版本> engines --registry=https://registry.npmjs.org` 可复核）：
+
+| 插件版本 | `engines.dsh` | 说明 |
+| --- | --- | --- |
+| 0.2.3 | `>=0.2.1-rc.1` | 没有上界 |
+| 0.3.0 | `>=0.2.1-rc.1` | 没有上界；起包内带附件对象 |
+| 0.4.0 | `>=0.2.1-rc.1 <0.3.0-0` | 补上界 |
+| 0.4.1 | `>=0.2.1-rc.1 <0.3.0-0` | 同上 |
+
+下界四个版本一致，因为 0.3.0 起依赖的附件对象库布局（`attachments/v1` 与 `objects`/`file-objects` 分片）在 `@deepseek-ai/dsh-attachment-local@0.2.1-rc.1` 里就已经存在（实测该包内命中 10 处），没有把下界推高。**上界是 0.4.0 才补的**：更早的版本在 dsh 0.3.x 上不会被 `engines` 挡住，装了也不报错，但那些接口还在不在没人验过。在 dsh 0.3.0 及以上请用 0.4.x。
+
 改版本用脚本，别手改（它会同步 `CHANGELOG.md`）：
 
 ```bash

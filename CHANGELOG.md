@@ -5,8 +5,6 @@
 
 ## [Unreleased]
 
-## [0.4.1] - 2026-11-01
-
 ### 文档
 
 - **DSH 0.2.1-rc.5 的适配核对结论记进了 `docs/DSH-API-SURFACE.md` §6.4，核对基线随之从 `0.2.1-rc.4` 改为 `0.2.1-rc.5`（npm `latest`）。** 插件依赖的接口在 rc.4 → rc.5 之间没有变化：`conversation.*` 插槽两版各 72 个且集合完全相同，附件对象库仍是 `dshHome/attachments/v1`（`objects` 与 `file-objects` 分片路径一致），`projectKey`/`encodeSegment`/`projectDir` 计数相同，会话格式仍到 `v4` 没有 v5，`session/event`、`ctx.effect`、`ctx.get` 都在，`engines` 判定仍是 `dsh-app-boot/lib/index.js:276-284` 那句 `semver.satisfies(runtimeVersion, range, { includePrerelease: true })`。本机装的 `0.2.2-alpha.2` 作为附注一并验过，**代码一行未改**，十二套 394 条仍全绿。文里同时记了两条判据，免得下次误读：`0.2.1-rc.5` 未单独安装，结论是 rc.4 与 `0.2.2-alpha.2` 两端夹逼推断出来的，不写成「已实测」；旧版目录里的 `*.dshpurge.bak` 会让 `diff -rq` 把补丁差异算成版本差异，判版本差异只能按插件关心的符号 `grep` 计数。
