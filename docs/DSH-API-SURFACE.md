@@ -4,8 +4,8 @@
 
 适配时从上到下过一遍，任何一条对不上就是必须改的点。
 
-- 核对基线：DSH **0.2.1-rc.4**（`C:\Users\aa\AppData\Roaming\dsh-tauri\dependencies\dsh\package.json`）、`@deepseek-ai/cordis` **4.0.5**、会话格式 `SESSION_FORMAT_VERSION = 4`。
-- 上一次全面核对是 rc.3；rc.3 → rc.4 与 rc.2（npm `latest`）→ rc.4 两轮差异、以及「为什么不需要旧版兼容 patch」，见文末「§6 版本差异账」。
+- 核对基线：DSH **0.2.1-rc.5**（`C:\Users\aa\AppData\Roaming\dsh-tauri\dependencies\dsh\package.json`）、`@deepseek-ai/cordis` **4.0.5**、会话格式 `SESSION_FORMAT_VERSION = 4`。
+- 历史轮次：rc.3 → rc.4、rc.2（当时的 npm `latest`）→ rc.4、rc.4 → 0.2.1-rc.5 三轮差异；以及「为什么不需要旧版兼容 patch」，见文末「§6 版本差异账」。最近一轮（rc.4 → 0.2.1-rc.5）结论是零接口差异，插件代码未改；本机另在 `0.2.2-alpha.2` 上复核过，见 §6.4。
 - 下文 `index.js:NNN` / `client.js:NNN` 均指本仓库同行号；行号会漂，**以函数名和代码形状为准**。
 - 取证方式分三类，每条都标注了：**Inspect 实测**（本机运行中的 DSH 通过 `cordis_inspect_query` 直读）、**源码核对**（读 `node_modules/@deepseek-ai/*` 的 `lib/`）、**运行时实测**（跑本仓库测试或 curl 本机 HTTP 接口）。
 
@@ -324,7 +324,7 @@ Remote 类方法（如 `openWorkspacePath`）**不在** Service 目录里，Insp
 
 ---
 
-## 6. 版本差异账（0.2.0 → rc.4）
+## 6. 版本差异账（0.2.0 → 0.2.2-alpha.2）
 
 ### 6.1 rc.3 → rc.4
 
@@ -352,9 +352,9 @@ node test/client.mjs     # 插槽 / inject / 前端接线没断
 
 其余五套（`dialog` `smoke` `open` `conflict` `security`）覆盖的是插件自己的落盘与安全逻辑，与 DSH 版本弱相关，但**改动后必须全跑**（合计 286 条）；`attach` / `repair` / `open-repair` 三套覆盖附件打包回填与打开前体检（26 条）。以上 308 + 46（`pathkey` 35 + `client` 11）+ 26 = 380 条，再加 `version` 7 条与 `locales` 5 条 = 全部 394 条。`locales` 覆盖语言包形状、客户端兜底、路由回落与跨站拦截。
 
-### 6.2 rc.2 → rc.4（npm `latest` 与当前运行版之间的对照）
+### 6.2 rc.2 → rc.4（2026-10 那轮的对照；本机现在跑 0.2.2-alpha.2）
 
-npm 上 `@deepseek-ai/dsh` 的 `dist-tags`：`latest = 0.2.1-rc.2`（`alpha = 0.2.2-alpha.2`）。本机跑的是 `0.2.1-rc.4`。下面这轮把**两个版本对同一批包逐字 diff**，结论是：**插件用到的接口一个都没变。**
+npm 上 `@deepseek-ai/dsh` 的 `dist-tags`：`latest = 0.2.1-rc.2`（`alpha = 0.2.2-alpha.2`）。当时本机跑的是 `0.2.1-rc.4`。下面这轮把**两个版本对同一批包逐字 diff**，结论是：**插件用到的接口一个都没变。**
 
 核对方式：`npm pack` 两版 → 解包到 `/tmp/pkhist/cmp-dsh-<pkg>-0.2.1-rc.{2,4}/` → `diff -rq` 找出差异文件 → 再对差异文件按插件关心的符号 `grep`。
 
@@ -379,6 +379,30 @@ npm 上 `@deepseek-ai/dsh` 的 `dist-tags`：`latest = 0.2.1-rc.2`（`alpha = 0.
 所以 patch 层无法「按版本号分流」。真要给某个旧版留后门，只有两条路：主干暴露一个 `config` 开关、由 patch 覆盖 `config` 打开（客户端 `apply(ctx, config)` 确实收 config，`dsh-cordis-client-runner/lib/client.js:627`）；或用 `disabled: !!js ...` 按**某个服务在不在**做能力探测。
 
 当前**没有任何需要这样做的项**：rc.2 ↔ rc.4 零接口差异，0.2.0 系已被 `engines.dsh` 挡住，且 hero 座位缺失本来就是优雅降级。所以 `cordis.patch.yml` 保持只有那一条 `insert`。
+
+### 6.4 rc.4 → 0.2.1-rc.5（npm `latest`），附 0.2.2-alpha.2 复核
+
+`dist-tags` 现状：`latest = 0.2.1-rc.5`、`next = 0.2.1-rc.5`、`alpha = 0.2.2-alpha.2`。**支持基线取 npm `latest` 的 `0.2.1-rc.5`**；本机实际装的是 `alpha` 的 `0.2.2-alpha.2`，作为附注一并核对。结论与上一轮相同：**插件用到的接口一个都没变，代码零改动。**
+
+核对方式：直接比对升级前后两份 `dependencies/dsh/node_modules/@deepseek-ai`（旧的那份是 `dsh-0.2.1-rc.4-40372188763`）。注意旧目录里有 `*.dshpurge.bak`，那是 dshpurge 补丁留下的备份，`diff -rq` 会把补丁差异算成版本差异 —— 所以判版本差异只按插件关心的符号 `grep` 计数，不做整文件 diff。
+
+| 接口 | 判定依据 | 结论 |
+| --- | --- | --- |
+| `conversation.*` 插槽 | 两版各 `72` 个 | 集合完全一致（`comm` 双向零差异）；`hero.options`、`session.header.utilities` 都在 |
+| 附件对象库 | `dsh-attachment-local/lib/index.js:996` 取 `dshHome/attachments/v1`，`:298` 落 `objects/<前2>/<sha>`，`:673` 落 `file-objects/<前2>/<sha>` | 与 `index.js` 的 `ATTACH_KIND_DIR` 逐段对应 |
+| 会话日志路径 | `projectKey` 3 处 / `encodeSegment` 37 处 / `projectDir` 4 处，两版计数相同 | 未变 |
+| 会话文件格式 | `dsh-session-format` 系列仍只到 `-v3-to-v4` | 没有 v5 |
+| `session/event` | 47 处 | 在（插件只监听这一个事件名） |
+| `ctx.effect` / `ctx.get(` | `dsh-client-ui-conversation/lib/client.js` 里 12 处 / 6 处 | 在 |
+| `engines.dsh` 判定 | `dsh-app-boot/lib/index.js:276-284` 的 `semver.satisfies(runtimeVersion, range, { includePrerelease: true })` | 逻辑与行号都没变 |
+
+表里对比的是 rc.4 与本机 `0.2.2-alpha.2` 两端：`0.2.1-rc.5` 的接口集合夹在这两者之间，未单独安装验证，按两端一致推断。
+
+比静态核对更硬的是真机验证：升版后插件确实装配成功。`curl -H "Origin: http://127.0.0.1:3080" http://127.0.0.1:3080/api/session.workspaces` 返回 `200`；`/api/session.locales?lang=en-US` 也返回 `200`，带回 114 键的英文包 —— Host 半边活着，四条路由都通。
+
+`engines.dsh = ">=0.2.1-rc.1 <0.3.0-0"` 对 `0.2.2-alpha.2` 判 **ALLOW**（预发布版落在范围内，靠 `includePrerelease: true`），对 `0.3.0-alpha.1` 与 `0.3.0` 仍是 **BLOCK**：上界没有因为这次升级被顺手放宽。
+
+十二套 **394 条全绿**，与发版前一致，零回退。
 
 ## 7. `engines.dsh` 的接口倒推依据
 
