@@ -2,7 +2,7 @@
 
 本文从代码反推功能面（`index.js` 四条路由 + `client.js` 五个插槽项），逐条列出可观测行为、期望结果，以及由哪套测试覆盖。测试分两层：
 
-- **十二套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共打印 394 行 ✅。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
+- **十二套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共打印 404 行 ✅。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
 - **审计验收脚本**（未随仓库分发）：针对历史漏洞的复现/防回归，判据写在下表里，可照着重写。
 
 所有套件都通过 `test/fixture.mjs` 自建临时 `DSH_HOME`（`os.tmpdir()` 下），跑完自删——**不读也不改真实 `~/.dsh`**，所以在任何机器、任何数据状态下结果一致。功能面的 F 编号是本文与 `test/*.mjs` 注释共同引用的锚点，改动功能时两边一起改。
@@ -125,7 +125,7 @@
 | F57 | 三处「只能报错」给出下一步 | ①`replaceFile=1`：`landingCwd` 判 `not-directory` 时把占位文件改名成 `<原名>.bak-<时间戳>` 并建目录，失败改回原名；返回体 `canReplace` / `replacedFile`。②`ignoreLock=1`：锁判定改成 `!force && !ignoreLock`，409 带 `canIgnoreLock: true`；`stale` / 覆盖确认 / 类型判断不受影响。③`repairPackage=1`：`verifyPackage(..., { lenient: true })` 摘掉白名单外、哈希或体积不符、未声明的条目并返回 `dropped`；`importPackage` 重读一次再宽松校验，`session/` 被摘光仍拒绝；成功则 `packageRepair = { dropped, reason }` 并收窄 `manifest.attachments`。`packageBrokenReport()` 生成可复制的 `prompt`。 |
 | F58 | 界面语言由语言包驱动 | `locales/<tag>.json` 是唯一真源（`zh-CN.json` 为源语言，114 键）；`index.js` 的 `listLocaleTags()` 只列目录里的 `*.json`，`resolveLocaleTag()` 先精确、再主语言前缀（`en` → `en-US`）、最后回 `zh-CN`，**绝不按请求字符串拼路径**（`?lang=../../package` 退化成中文）；`LOCALES_ROUTE = '/api/session.locales'` 过 `requestGate`（回环 Host + 同源 Origin，跨站 403），下发 `{status, lang, fallback, messages, available}`。客户端启动时 `void loadLocale()` 按 `navigator.language` 拉一次、`Object.assign(L, messages)` 就地合并（`L.xxx` 几百处直读，换引用等于重写），失败静默沿用内置中文兜底表。`scripts/check-locales.mjs` 校验 JSON 合法 / 值是字符串 / 键是源语言子集 / 占位符一致。 |
 
-合计 **394 条**。
+合计 **404 条**。
 
 ### 审计验收脚本（未随仓库分发）
 

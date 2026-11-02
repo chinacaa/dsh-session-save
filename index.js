@@ -1799,8 +1799,10 @@ function importPackage(sourcePath, options = {}) {
     const existingCwd = existing.header?.cwd;
     const sameCwd =
       typeof existingCwd === 'string' && path.resolve(existingCwd) === path.resolve(cwd);
-    if (sameSession && sameCwd) {
+    if (sameSession && sameCwd && mode !== 'overwrite') {
       // 同一会话的另一份（同 id + 同 createdAt + 同工作区）→ 直接打开本机这份，不复制
+      // 但用户明确选了「覆盖」时必须往下走：这一支只是「打开已有内容」的快捷路，
+      // 它不能替用户决定「别覆盖」——否则点了覆盖看到的还是旧内容（2026-11-02 报的 bug）
       // 直接打开本机这份，也照样回填附件：用户很可能就是拿这个包来补上次没带过来的图
       const attachRestore = restoreAttachments(entries);
       const repairReport = repairInPlace(existing.file);
@@ -1828,8 +1830,9 @@ function importPackage(sourcePath, options = {}) {
       };
     }
 
-    if (sameSession) {
+    if (sameSession && !(sameCwd && mode === 'overwrite')) {
       // 同一会话，但要求落到别的工作区 → 就地再开一份，换新 id（id 必须全机唯一）
+      // 「同会话同位置 + 用户要覆盖」不适用这一支：那种情况该盖掉原地那份，不是另起一份
       conflictResolved = 'relocate';
       id = `session-${randomUUID()}`;
       renamed = true;

@@ -1356,6 +1356,64 @@ const exists = (file) => {
 }
 
 
+/* ── R12：「覆盖」必须真的覆盖 ────────────────────────────────────
+   同一个会话（同 id + 同 createdAt + 同 cwd）的第二份包进来时，旧代码在
+   reused 那条捷径上直接返回，用户点了「覆盖」看到的还是旧内容。 */
+{
+  const STAMP = 'R12';
+  const sessionId = `session-${randomUUID()}`;
+  const packFor = (marker) => {
+    const log = frame(
+      `${headerOf(sessionId, OUT)}\n` +
+        `${JSON.stringify({ type: 'message', id: 'm1', role: 'user', content: [{ type: 'text', text: marker }] })}\n`,
+    );
+    const sessionName = 'session/session.v4.jsonl.zstd';
+    const manifest = {
+      format: 'dshproj/1',
+      plugin: { name: 'dsh-session-save', version: '0.4.0' },
+      session: { id: sessionId, title: marker, cwd: OUT, createdAt: 1792340086210 },
+      memoryFiles: [],
+      workspaceFiles: [],
+      attachments: { objects: [], files: [], missing: [] },
+      parts: { [sessionName]: { sha256: sha256(log), bytes: log.length } },
+    };
+    return zipWrite([
+      { name: sessionName, data: log },
+      { name: 'manifest.json', data: Buffer.from(JSON.stringify(manifest), 'utf8') },
+    ]);
+  };
+
+  const first = path.join(OUT, 'r12-first.dsproj');
+  write(first, packFor('FIRST'));
+  const opened = await call(open, '/api/session.open', { path: first, cwd: OUT });
+  check(opened.status === 200, `${STAMP} 第一份包正常打开`, `HTTP ${opened.status}`);
+  const target = String(opened.body?.target ?? '');
+  check(target !== '' && fs.existsSync(target), `${STAMP} 落盘位置存在`);
+  const before = fs.readFileSync(target);
+
+  const second = path.join(OUT, 'r12-second.dsproj');
+  write(second, packFor('SECOND'));
+
+  const reuse = await call(open, '/api/session.open', { path: second, cwd: OUT, onConflict: 'reuse' });
+  check(reuse.body?.reused === true, `${STAMP} 选「打开已有的那份」时仍然复用`, String(reuse.body?.reused));
+  check(fs.readFileSync(target).equals(before), `${STAMP} 复用这条路上一个字节都不写`);
+
+  const overwrite = await call(open, '/api/session.open', { path: second, cwd: OUT, onConflict: 'overwrite' });
+  check(overwrite.status === 200, `${STAMP} 选「覆盖」能成功`, `HTTP ${overwrite.status}`);
+  check(overwrite.body?.reused !== true, `${STAMP} 覆盖不再走「直接打开旧文件」那条捷径`, String(overwrite.body?.reused));
+  check(
+    overwrite.body?.conflictResolved === 'overwrite',
+    `${STAMP} 结论记为 overwrite`,
+    String(overwrite.body?.conflictResolved),
+  );
+  const after = fs.readFileSync(target);
+  check(!after.equals(before), `${STAMP} 文件内容真的换了`);
+  const text = zlib.zstdDecompressSync(after).toString('utf8');
+  check(text.includes('SECOND'), `${STAMP} 换成了包里的那份（不是原来那份）`);
+  const baks = fs.readdirSync(path.dirname(target)).filter((name) => name.includes('.bak-'));
+  check(baks.length >= 1, `${STAMP} 覆盖前留了备份`, String(baks.length));
+}
+
 /* ── 收拾 ──────────────────────────────────────────────────────── */
 fs.rmSync(BASE, { recursive: true, force: true });
 check(!exists(BASE), '临时目录已清理', BASE);

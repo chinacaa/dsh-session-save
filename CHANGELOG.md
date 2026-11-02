@@ -5,6 +5,11 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **同一个会话的第二份包点「覆盖」后，看到的还是旧内容。** 导入时「本机已有同 id、同创建时间、同工作区的会话」有一条捷径：直接打开本机那份、不写字节。它排在对 `onConflict` 的判断之前，所以用户明确选了「覆盖」也会被这条捷径截住，文件一个字节都没变。现在这条捷径只在「不是覆盖」时生效，覆盖会走真正的写盘路径（覆盖前留 `.bak-<时间>` 备份）；同会话但换了工作区的情况仍然另开一份，不会被当成覆盖目标。
+
+
 ### 文档
 
 - **DSH 0.2.1-rc.5 的适配核对结论记进了 `docs/DSH-API-SURFACE.md` §6.4，核对基线随之从 `0.2.1-rc.4` 改为 `0.2.1-rc.5`（npm `latest`）。** 插件依赖的接口在 rc.4 → rc.5 之间没有变化：`conversation.*` 插槽两版各 72 个且集合完全相同，附件对象库仍是 `dshHome/attachments/v1`（`objects` 与 `file-objects` 分片路径一致），`projectKey`/`encodeSegment`/`projectDir` 计数相同，会话格式仍到 `v4` 没有 v5，`session/event`、`ctx.effect`、`ctx.get` 都在，`engines` 判定仍是 `dsh-app-boot/lib/index.js:276-284` 那句 `semver.satisfies(runtimeVersion, range, { includePrerelease: true })`。本机装的 `0.2.2-alpha.2` 作为附注一并验过，**代码一行未改**，十二套 394 条仍全绿。文里同时记了两条判据，免得下次误读：`0.2.1-rc.5` 未单独安装，结论是 rc.4 与 `0.2.2-alpha.2` 两端夹逼推断出来的，不写成「已实测」；旧版目录里的 `*.dshpurge.bak` 会让 `diff -rq` 把补丁差异算成版本差异，判版本差异只能按插件关心的符号 `grep` 计数。
