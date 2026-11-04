@@ -50,19 +50,48 @@ const PLUGIN_VERSION = (() => {
  * 不判 semver 的兼容性语义（包格式看的是 `FORMAT`，不是这个）。
  */
 export function compareVersions(a, b) {
-  const parse = (text) =>
-    String(text ?? '')
-      .split('-')[0]
-      .split('.')
-      .map((part) => {
+  // semver：主版本段逐段比数字，缺位补 0；预发布段单独比，带预发布的小于同号正式版。
+  const parse = (text) => {
+    const raw = String(text ?? '').trim();
+    const dash = raw.indexOf('-');
+    const core = dash === -1 ? raw : raw.slice(0, dash);
+    const pre = dash === -1 ? undefined : raw.slice(dash + 1);
+    return {
+      nums: core.split('.').map((part) => {
         const n = Number.parseInt(part, 10);
         return Number.isFinite(n) ? n : 0;
-      });
+      }),
+      // '1.0.0-' 这种畸形写法按「没有预发布」处理，别当成最小的版本。
+      labels: pre === undefined || pre === '' ? undefined : pre.split('.'),
+    };
+  };
   const left = parse(a);
   const right = parse(b);
-  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
-    const x = left[i] ?? 0;
-    const y = right[i] ?? 0;
+  for (let i = 0; i < Math.max(left.nums.length, right.nums.length); i += 1) {
+    const x = left.nums[i] ?? 0;
+    const y = right.nums[i] ?? 0;
+    if (x !== y) return x > y ? 1 : -1;
+  }
+  // 主版本相同时，带预发布的那一侧更小（0.4.3-alpha.1 < 0.4.3）。
+  // 这一条不能省：插件跑 0.4.3-alpha.1、包是 0.4.3 写的，必须判成「包更新」，
+  // 否则会被当成「包里有不认识的条目」而报「包坏了」。
+  if (left.labels === undefined || right.labels === undefined) {
+    if (left.labels === undefined && right.labels === undefined) return 0;
+    return left.labels === undefined ? 1 : -1;
+  }
+  for (let i = 0; i < Math.max(left.labels.length, right.labels.length); i += 1) {
+    const x = left.labels[i];
+    const y = right.labels[i];
+    if (x === undefined) return -1; // 段数少的更小
+    if (y === undefined) return 1;
+    const nx = /^\d+$/.test(x) ? Number.parseInt(x, 10) : undefined;
+    const ny = /^\d+$/.test(y) ? Number.parseInt(y, 10) : undefined;
+    if (nx !== undefined && ny !== undefined) {
+      if (nx !== ny) return nx > ny ? 1 : -1;
+      continue;
+    }
+    if (nx !== undefined) return -1; // 数字段低于字母段
+    if (ny !== undefined) return 1;
     if (x !== y) return x > y ? 1 : -1;
   }
   return 0;

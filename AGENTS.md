@@ -9,7 +9,7 @@
 - 语言/运行时：纯 ESM（`"type": "module"`），零运行时依赖，只用 `node:` 内置模块；客户端只 `require('react')`。
 - 宿主：DSH `>=0.2.1-rc.1 <0.3.0-0`（`engines.dsh`），Cordis `^4.0.1`（peer）。
 - 平台：Windows 优先（原生对话框走 `powershell.exe` + WinForms）；macOS 走 `osascript` 的 Finder 面板；Linux/BSD 探 zenity / kdialog / qarma / matedialog。三者都没有时退回网页里的路径输入框。平台相关代码全部隔离在 `dialog/` 下（`index.mjs` 选实现、`shared.mjs` 共用工具、`windows.mjs` / `macos.mjs` / `linux.mjs` 各平台实现），`index.js` 只 import `dialog/index.mjs`，不认识具体实现。
-- 规模：`index.js` ≈3684 行、`client.js` ≈2530 行、二十套测试共 672 条 ✅（`smoke.mjs` 另有 12 处 throw 检查，只打一行汇总）。逐条覆盖见 `docs/TEST-MATRIX.md`。
+- 规模：`index.js` ≈3684 行、`client.js` ≈2530 行、二十套测试共 679 条 ✅（`smoke.mjs` 另有 12 处 throw 检查，只打一行汇总）。逐条覆盖见 `docs/TEST-MATRIX.md`。
 
 ## 红线（改之前先看，违反会静默坏掉）
 
@@ -44,7 +44,7 @@ scripts/release-notes.mjs 从 CHANGELOG 摘某版本正文当 Release 说明
 scripts/set-repo.mjs 把 OWNER 占位换成真实 GitHub 名字
 test/fixture.mjs    临时 DSH_HOME 夹具（二十套测试共用）
 test/*.mjs          二十套自检（见「测试」）
-locales/*.json      界面语言包（zh-CN 为源语言，117 键；新文案先加这里）
+locales/*.json      界面语言包（zh-CN 为源语言，118 键；新文案先加这里）
 docs/TEST-MATRIX.md 功能面 → 测试覆盖矩阵（84 条 F 编号）
 docs/DSH-API-SURFACE.md 用到的 DSH 接口清单（升级 DSH 时逐条核对）
 assets/             截图与方形图标（市场用）
@@ -169,7 +169,7 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
 
   **下限怎么定**：逐条列出插件真正用到的宿主接口（四个插槽座位名、`ctx.on('session/event')`、`ctx.get('connection')`、`ctx.effect`、四条 `/api/session.*` 路由依赖的 `connection` 形状、会话文件格式版本、附件对象库路径），对每个接口找到它**第一次存在**的 dsh 版本，取其中最晚的那个当下限。对照表在 `docs/DSH-API-SURFACE.md` §7；查不到的接口必须标 `UNKNOWN`，不许估一个看起来合理的版本号填上。
 
-  **改范围的前置条件**：在新范围声称支持的**每一个边界版本**上跑完二十套（`for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4; do node test/$f.mjs; done` 加 `DSH_TEST_LOCALE=en-US node test/client.mjs`），把「哪个版本、跑了什么、结果如何」写进 `docs/DSH-API-SURFACE.md` §6。**没跑过的版本不许进范围**，包括「应该没问题」的版本。
+  **改范围的前置条件**：在新范围声称支持的**每一个边界版本**上跑完二十套（`for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait; do node test/$f.mjs; done` 加 `DSH_TEST_LOCALE=en-US node test/client.mjs`），把「哪个版本、跑了什么、结果如何」写进 `docs/DSH-API-SURFACE.md` §6。**没跑过的版本不许进范围**，包括「应该没问题」的版本。
 
   **上限怎么处理**：`>=x` 这种开口写法，只在「下限之后每一个已发布的版本都实测过」时才成立。dsh 发新版后，新版**不在范围内是正常的**；把范围改到新版是那次实测的结论，不是发版当天的默认动作。新版改了你用的接口，正确做法是改代码适配，然后在新旧两版上都跑一遍，而不是把旧版从范围里删掉。
 
@@ -206,7 +206,7 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
 三条硬规矩：
 
 1. **别在文档里复述代码**。默认文件名规则的真源是 `index.js` 的 `suggestPath()`、上限常量在 `index.js` 顶部；文档只说结论和例子，不抄正则、不抄常量值。抄了就会在下次改代码时变成谎言。
-2. **数字必须当场能验**。文档里出现"11 条红线""672 条 ✅""F1–F84""≈3684 行"这类计数时，要能用一条命令复现（见「改完之后」）。改完顺手核一遍，别让读者去发现数字过期。
+2. **数字必须当场能验**。文档里出现"11 条红线""679 条 ✅""F1–F84""≈3684 行"这类计数时，要能用一条命令复现（见「改完之后」）。改完顺手核一遍，别让读者去发现数字过期。
 3. **中英必须同一次改完**。`README.md` 与 `README.en.md` 是同一份文档的两种语言：小标题顺序、表格列、示例文件名一一对应。只改一份等于给另一半读者发过期信息。
 
 还有两条不写在文档里的东西：进度和计划（放 issue / PR / 提交信息，不写进 README 的"路线图"）、本机路径与个人环境（`C:\Users\...`、profile 名、私有 registry）——后者写进文档等于把私有环境当契约。
@@ -288,7 +288,7 @@ grep -o '—' README.en.md | wc -l        # 英文 em dash，超过 45 同理
    wc -l index.js client.js                                  # 对应 AGENTS.md「规模」
    awk '/^## 红线/,/^## 目录/' AGENTS.md | grep -c '^[0-9]\+\. \*\*'   # 红线条数（必须限在红线节内：本文别处也有编号列表）
    grep -oE 'F[0-9]+' docs/TEST-MATRIX.md | sort -u | wc -l  # 功能面条数
-   for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4; do node test/$f.mjs | grep -c '✅' ; done   # 二十行相加 = 672
+   for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait; do node test/$f.mjs | grep -c '✅' ; done   # 二十行相加 = 679
    ```
 
 6. 确认测试没有留下垃圾：跑完 `git status` 应为只有你改的源文件，`os.tmpdir()` 下不该残留 `dshss-fx-*` / `dshss-sec-*` 目录（`autoCleanup` 会删，残留说明收尾路径漏了信号处理）。

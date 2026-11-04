@@ -299,7 +299,7 @@ fetch(`${ROUTE}?${search.toString()}`, { method: 'GET', headers: { accept: 'appl
 3. **插槽还在不在**：`cordis_inspect_query` → `client/Slots.listSubTree` 传 `conversation.session.header.utilities`，看 5 个 occupant 是否全 `active`。
 4. **事件名没变**：`cordis_inspect_query` → `host/Event.listEvents` 传 `session/event`，确认签名仍是 `(session, event)`；再确认 `event.type` 仍可能是 `step/end` / `turn/end`。
 5. **会话文件还能读**：`node test/smoke.mjs`（打包 + 回读）与 `node test/open.mjs`（40 条，导入与冲突）。十一套测试全部通过 `test/fixture.mjs` 自建临时 `DSH_HOME`，不读真实 `~/.dsh`。
-6. **跑满回归**：`for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4; do node test/$f.mjs || exit 1; done`，应共 **672** 条 ✅（详见 `docs/TEST-MATRIX.md`）。其中 `pathkey.mjs` 是 rc.4 适配时新增的目录名派生回归。
+6. **跑满回归**：`for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait; do node test/$f.mjs || exit 1; done`，应共 **679** 条 ✅（详见 `docs/TEST-MATRIX.md`）。其中 `pathkey.mjs` 是 rc.4 适配时新增的目录名派生回归。
 7. **客户端能调 Host 吗**：`node test/client.mjs` 里已断言 `inject` 含 `remote` 与 `remote.session`、且源码不含 `uiWorkspace.openPath`。「打开记忆目录」失效是**静默**的（按钮点了没反应、不报错），只能靠这条断言兜住。
 
 ---
@@ -402,7 +402,7 @@ npm 上 `@deepseek-ai/dsh` 的 `dist-tags`：`latest = 0.2.1-rc.2`（`alpha = 0.
 
 `engines.dsh = ">=0.2.1-rc.1 <0.3.0-0"` 对 `0.2.2-alpha.2` 判 **ALLOW**（预发布版落在范围内，靠 `includePrerelease: true`），对 `0.3.0-alpha.1` 与 `0.3.0` 仍是 **BLOCK**：上界没有因为这次升级被顺手放宽。
 
-十九套 **637 条全绿**，与发版前一致，零回退。
+二十套 **637 条全绿**，与发版前一致，零回退。
 
 ## 7. `engines.dsh` 的接口倒推依据
 

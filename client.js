@@ -36,6 +36,7 @@ window.__ModuleLoader__.load({
       opening: '正在打开…',
       opened: '已打开',
       openFailed: '打开失败',
+      listRefreshHint: '，会话索引还没跟上，稍等片刻它就会出现在左侧列表里',
       openPath: '打开会话工程',
       openPathHint: '输入 .dsproj 的完整路径',
       openConfirm: '打开',
@@ -826,6 +827,22 @@ window.__ModuleLoader__.load({
           await host?.sessions?.refresh?.();
         } catch {
           /* 索引刷新失败不阻断打开 */
+        }
+        // refresh() 只是把 session.list 发起一次，索引落进 sessions/summaries 要晚一拍。
+        // 立刻 openSession 会撞上 DSH 的 `sessions.retain: unknown session`——文件其实已经
+        // 导好了，界面却显示「打开失败」，用户只能以为导入坏了。所以这里等它真认识这个 id。
+        let recognized = host?.sessions?.get?.(payload.sessionId) !== undefined;
+        for (let attempt = 0; recognized === false && attempt < 15; attempt += 1) {
+          await new Promise((resolve) => { setTimeout(resolve, 100); });
+          recognized = host?.sessions?.get?.(payload.sessionId) !== undefined;
+          if (recognized === false && (attempt === 4 || attempt === 9)) {
+            try { await host?.sessions?.refresh?.(); } catch { /* 再拉一次就够了 */ }
+          }
+        }
+        if (recognized === false) {
+          // 列表没跟上不是打开失败：包已经落盘了，只是这一跳跳不过去。
+          setToast({ tone: 'info', text: `${L.opened} · ${label}${L.listRefreshHint}` });
+          return;
         }
         try {
           host?.uiWorkspace?.openSession?.(payload.sessionId);

@@ -15,6 +15,7 @@
   "opening": "正在打开…",
   "opened": "已打开",
   "openFailed": "打开失败",
+  "listRefreshHint": "，会话索引还没跟上，稍等片刻它就会出现在左侧列表里",
   "openPath": "打开会话工程",
   "openPathHint": "输入 .dsproj 的完整路径",
   "openConfirm": "打开",
