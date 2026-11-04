@@ -136,6 +136,8 @@ jobs:
             *-*) DIST_TAG=alpha ;;
             *)   DIST_TAG=latest ;;
           esac
+          # 这个步骤自己的 env 只有 VER/TAG，NAME 得现取，否则 set -u 直接把整步打断（v0.4.3-alpha.1 首次发预发布就栽在这里）。
+          NAME=$(node -p "require('./package.json').name")
           echo "::notice::发布 $NAME@$VER，dist-tag=$DIST_TAG"
           npm publish --provenance --access public --tag "$DIST_TAG"
 
