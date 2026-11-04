@@ -112,5 +112,7 @@
   "memoryMergeWithNew": "合并并新建",
   "memoryMergeNoOverwrite": "没有需要覆盖的文件",
   "memoryCreatedHint": " 个新文件未写入",
-  "memoryNewHint": " 个已写回原位（含新建）"
+  "memoryNewHint": " 个已写回原位（含新建）",
+  "contextTrimmed": "{n} 轮更早的对话没有进入上下文（完整日志仍在工程包里）",
+  "backupKeep": "覆盖前先备份原文件"
 }

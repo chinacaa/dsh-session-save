@@ -112,5 +112,7 @@
   "memoryMergeWithNew": "Merge and create",
   "memoryMergeNoOverwrite": "Nothing to overwrite",
   "memoryCreatedHint": " new files not written",
-  "memoryNewHint": " written back in place (incl. new)"
+  "memoryNewHint": " written back in place (incl. new)",
+  "contextTrimmed": "{n} earlier turn(s) kept out of the context (the full log stays in the package)",
+  "backupKeep": "Back up the original before overwriting"
 }

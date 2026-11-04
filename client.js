@@ -104,8 +104,10 @@ window.__ModuleLoader__.load({
       missingTargetHint: '该位置原有一份工程包，当前无法读取（已被删除、移动，或所在磁盘未挂载）。继续保存将在该位置新建同名文件，原文件内容将丢失。',
       missingTargetRecreate: '在该位置新建',
       missingTargetSaveAs: '另存到其他位置',
+      backupKeep: '覆盖前先备份原文件',
       missingAutoOff: '自动保存已停用：目标文件不存在',
       repairHint: '打开前检查：',
+      contextTrimmed: '{n} 轮更早的对话没有进入上下文（完整日志仍在工程包里）',
       repairMissing: '{n} 张图片的原始数据不在本机，已替换为文字占位',
       repairPatched: '{n} 张图片缺少尺寸信息，已按文件头补全',
       repairLines: '{n} 行日志无法解析，已跳过',
@@ -608,7 +610,7 @@ window.__ModuleLoader__.load({
             key: 'stale',
             payload: stale,
             busy,
-            onOverwrite: () => save({ force: '1' }),
+            onOverwrite: (keep) => save({ force: '1', backup: keep === false ? '0' : '1' }),
             onSaveAs: () => save({ ask: '1' }),
             onCancel: () => {
               setStale(null);
@@ -798,6 +800,12 @@ window.__ModuleLoader__.load({
         }
         const repairText =
           repairNotes.length > 0 ? ` · ${L.repairHint}${repairNotes.join('，')}` : '';
+        // 按上下文预算裁过就得说：不说清，用户会以为聊天记录被吃了。
+        const contextTrim = payload.context?.trim;
+        const contextText =
+          contextTrim !== undefined && contextTrim !== null && contextTrim.trimmed === true
+            ? ` · ${String(L.contextTrimmed).replace('{n}', Number(contextTrim.droppedTurns) || 0)}`
+            : '';
         // 被配额拦下的附件必须说出来：附件对象库没有 GC，不说等于悄悄吞掉用户包里的图。
         // 但「回填了 N 张」是正常路径，天天往 toast 里塞会变成噪音，所以只报被拦的那部分。
         const attachRejected = Number(payload.attachmentsRejected) || 0;
@@ -808,10 +816,10 @@ window.__ModuleLoader__.load({
         setNotice(!created && (written > 0 || pendingCreated > 0) ? payload : null);
         setToast({
           tone:
-            warning !== '' || cloud !== '' || repairNotes.length > 0 || attachRejected > 0 || (!created && (written > 0 || pendingCreated > 0))
+            warning !== '' || cloud !== '' || repairNotes.length > 0 || attachRejected > 0 || contextText !== '' || (!created && (written > 0 || pendingCreated > 0))
               ? 'info'
               : 'ok',
-          text: `${L.opened} · ${label}${warning}${cloud}${memory}${createdText}${clashText}${repairText}${attachText}`,
+          text: `${L.opened} · ${label}${warning}${cloud}${memory}${createdText}${clashText}${repairText}${attachText}${contextText}`,
         });
         try {
           await host?.sessions?.refresh?.();
@@ -919,7 +927,8 @@ window.__ModuleLoader__.load({
             key: 'conflict',
             conflict: flow.conflict,
             busy: flow.busy,
-            onChoose: (mode) => flow.open({ path: flow.conflict.sourcePath, onConflict: mode }),
+            onChoose: (mode, keep) =>
+              flow.open({ path: flow.conflict.sourcePath, onConflict: mode, backup: keep === false ? '0' : '1' }),
             onCancel: () => {
               flow.setConflict(null);
               flow.setToast({ tone: 'info', text: L.cancelled });
@@ -987,10 +996,10 @@ window.__ModuleLoader__.load({
             key: 'merge',
             payload: flow.merge,
             busy: flow.busy,
-            onConfirm: () => {
+            onConfirm: (keep) => {
               const source = flow.merge.sourcePath;
               flow.setMerge(null);
-              flow.open({ path: source, memory: 'restore' });
+              flow.open({ path: source, memory: 'restore', backup: keep === false ? '0' : '1' });
             },
             // 「合并并新建」是这一轮新增的第二个按钮：本机没有的文件默认不写，
             // 用户看到「将新建」段之后才有机会明确放行。
@@ -1032,6 +1041,8 @@ window.__ModuleLoader__.load({
 
     /** 同 id 不同会话时问用户怎么办。 */
     function ConflictModal({ conflict, busy, onChoose, onCancel }) {
+      // 覆盖前要不要留一份原文件，默认留。取消勾选时才真的什么都不留。
+      const [keepBackup, setKeepBackup] = React.useState(true);
       const local = conflict.existing || {};
       const incoming = conflict.incoming || {};
       const when = (ms) => {
@@ -1044,7 +1055,7 @@ window.__ModuleLoader__.load({
           {
             type: 'button',
             disabled: busy,
-            onClick: () => onChoose(mode),
+            onClick: () => onChoose(mode, keepBackup),
             style: {
               padding: '6px 12px',
               fontSize: 12.5,
@@ -1126,6 +1137,26 @@ window.__ModuleLoader__.load({
             ),
           ),
           React.createElement('div', { style: { fontSize: 11.5, color: COLORS.secondary, lineHeight: 1.5 } }, L.conflictId),
+          React.createElement(
+            'label',
+            {
+              style: {
+                display: 'flex',
+                gap: 6,
+                alignItems: 'center',
+                fontSize: 12,
+                color: COLORS.secondary,
+                cursor: busy ? 'default' : 'pointer',
+              },
+            },
+            React.createElement('input', {
+              type: 'checkbox',
+              checked: keepBackup,
+              disabled: busy,
+              onChange: (event) => setKeepBackup(event.target.checked),
+            }),
+            L.backupKeep,
+          ),
           React.createElement(
             'div',
             { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' } },
@@ -1232,6 +1263,8 @@ window.__ModuleLoader__.load({
 
     /** 合并前把要覆盖的文件列出来，避免用户不知道自己在覆盖什么。 */
     function MemoryMergeModal({ payload, busy, onConfirm, onNew, onCancel }) {
+      // 覆盖本机记忆文件前要不要先备份，默认备份。
+      const [keepBackup, setKeepBackup] = React.useState(true);
       // 清单来自 memoryPlanned（copy 模式也返回），不是 memoryConflicts。后者只记「覆盖了
       // 哪些」，本机没有的文件压根不在里面——上一轮「弹窗列表为空、点确认却落了原名」
       // 就是拿它当清单用出来的。exists 由服务端用 safeJoin 落点判，前端只负责分两段显示。
@@ -1398,13 +1431,33 @@ window.__ModuleLoader__.load({
                 ),
               ),
           React.createElement(
+            'label',
+            {
+              style: {
+                display: 'flex',
+                gap: 6,
+                alignItems: 'center',
+                fontSize: 12,
+                color: COLORS.secondary,
+                cursor: busy ? 'default' : 'pointer',
+              },
+            },
+            React.createElement('input', {
+              type: 'checkbox',
+              checked: keepBackup,
+              disabled: busy,
+              onChange: (event) => setKeepBackup(event.target.checked),
+            }),
+            L.backupKeep,
+          ),
+          React.createElement(
             'div',
             { style: { display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 2 } },
             button(L.wsCancel, onCancel, false),
             // 两个按钮都给：只给「合并已有」的话，用户根本没法在全新机器上恢复记忆；
             // 只给「合并并新建」的话，等于把默认不放行的那一步做成了一键。
             button(L.memoryMergeWithNew, onNew, false, create.length === 0),
-            button(L.memoryMergeConfirm, onConfirm, true, overwrite.length === 0),
+            button(L.memoryMergeConfirm, () => onConfirm(keepBackup), true, overwrite.length === 0),
           ),
         ),
       );
@@ -1774,6 +1827,8 @@ window.__ModuleLoader__.load({
     }
 
     function StaleModal({ payload, busy, onOverwrite, onSaveAs, onCancel }) {
+      // 覆盖磁盘上那份之前要不要先备份，默认备份。
+      const [keepBackup, setKeepBackup] = React.useState(true);
       const since = payload?.stale?.since;
       const when = typeof since === 'string' && since !== '' ? new Date(since).toLocaleString() : '未知';
       const bytes = Number(payload?.stale?.bytes) || 0;
@@ -1853,11 +1908,31 @@ window.__ModuleLoader__.load({
             React.createElement(MiniStat, { label: L.conflictCwd, value: String(payload?.path || '-') }),
           ),
           React.createElement(
+            'label',
+            {
+              style: {
+                display: 'flex',
+                gap: 6,
+                alignItems: 'center',
+                fontSize: 12,
+                color: COLORS.secondary,
+                cursor: busy ? 'default' : 'pointer',
+              },
+            },
+            React.createElement('input', {
+              type: 'checkbox',
+              checked: keepBackup,
+              disabled: busy,
+              onChange: (event) => setKeepBackup(event.target.checked),
+            }),
+            L.backupKeep,
+          ),
+          React.createElement(
             'div',
             { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' } },
             button(L.cancel, onCancel, false, false),
             button(L.staleSaveAs, onSaveAs, true, false),
-            button(L.staleOverwrite, onOverwrite, false, true),
+            button(L.staleOverwrite, () => onOverwrite(keepBackup), false, true),
           ),
         ),
       );
