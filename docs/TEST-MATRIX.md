@@ -2,7 +2,7 @@
 
 本文从代码反推功能面（`index.js` 四条路由 + `client.js` 五个插槽项），逐条列出可观测行为、期望结果，以及由哪套测试覆盖。测试分两层：
 
-- **二十套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共 674 条用例（`grep -c '✅'` 逐行相加的实测值）。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
+- **二十套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共 672 条用例（`grep -c '✅'` 逐行相加的实测值）。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
 - **审计验收脚本**（未随仓库分发）：针对历史漏洞的复现/防回归，判据写在下表里，可照着重写。
 
 所有套件都通过 `test/fixture.mjs` 自建临时 `DSH_HOME`（`os.tmpdir()` 下），跑完自删——**不读也不改真实 `~/.dsh`**，所以在任何机器、任何数据状态下结果一致。功能面的 F 编号是本文与 `test/*.mjs` 注释共同引用的锚点，改动功能时两边一起改。
@@ -110,7 +110,7 @@
 | `test/open.mjs` | 40 | F13–F21、F23 | 复用不写盘；新 cwd 落地并改写 header；`need-workspace` 列工作区；选好工作区后打开；帧 1..n 原字节一致；坏路径 404 且不回显 |
 | `test/conflict.mjs` | 67 | F5–F7、F11、F28–F32、F44 | 四种冲突顺序 ask→reuse→copy→overwrite；覆盖前留 `.bak`；异机新鲜锁给理由；CAS 409 与 `force`；自动保存钩子写盘并递增 `writes`；关闭后不再写；同步盘识别；目录复原 |
 | `test/audit-r2.mjs` | 18 | F69–F79 | B1 单个巨轮被裁且 tokensAfter 变小；B2 尾轮超大同样标 oversizeTurn；B3 86 汉字不误拒；B4 84 汉字 + copy 后缀不误拒；B5 NFD 名不误拒；B6 带端口 host 报 bad-host 且不串槽位；B7 炸弹包失败后无空目录；B8 标题不被提到文件最前；B9 无 `Atomics.wait(`；B10 状态写支持 scoped；B11 `isDsprojFile` 不整文件读；B12 改读 EOCD；B13 `[v6]` 剥端口 |
-| `test/audit-r3.mjs` | 48 | R3-1–R3-8 | 坏包/截断包走 `package-broken` 而不是裸 500；落盘名前逐段校验（尾点、ADS 冒号、CON/NUL）且被拒时零残留；`writeAtomic` 失败后 ADS 裸文件被清掉；未来时间戳的锁放行、侧车锁冲突是 409 且 `ignoreLock` 能真绕过；`trimSession` 没丢东西不再报 `trimmed:true`；`ENTRY_SINCE` 每项 ≤ `PLUGIN_VERSION` |
+| `test/audit-r3.mjs` | 46 | R3-1–R3-8 | 坏包/截断包走 `package-broken` 而不是裸 500；落盘名前逐段校验（尾点、ADS 冒号、CON/NUL）且被拒时零残留；`writeAtomic` 失败后 ADS 裸文件被清掉；未来时间戳的锁放行、侧车锁冲突是 409 且 `ignoreLock` 能真绕过；`trimSession` 没丢东西不再报 `trimmed:true`；`ENTRY_SINCE` 每项 ≤ `PLUGIN_VERSION` |
 | `test/audit-r4.mjs` | 36 | F80–F84 | U1 累计超上限抛 `E_LOG_TOO_LARGE` 且文案说「包太大、不是损坏」，默认额度下多帧包照常；U2 末帧缺 checksum 时帧表少一帧、`truncated` 为真、体检报告带出、覆盖率闸拒写；U3 校验失败包不落 `paths`、成功包记下 `paths` 与 `stamps`、别的会话键原样保留；U4 root 是链接 / dest 是链接 / dest 经链接逃出 root 三种情形（前两者判是、逃出判否）；U5 别工区 slug → `memoryForeign:true` + `memoryForeignSlug` + 实际落点，同工区不误报 |
 | `test/audit-r1.mjs` | 17 | F62–F68 | A1 RLE 帧能被认出且覆盖到末尾；A2 三帧（中间 RLE）扫出三帧；A3 重写 header 后正文帧不丢；A4 扫描不完整时 `rewriteHeader` 抛错；A5 200 MB 炸弹包被拒；A6 失败后 sessions 里无 0 字节文件；A7–A9 ADS / 尾点 / 设备名的记忆条目被拒；A10 保存到不存在的多级目录被拒且不建目录；A11 relocate 后 bili 记 `renamed`；A12 `__proto__` 的 header.id 被拒 |
 | `test/security.mjs` | 198 | F22–F27、F38–F43、F50、F61 | V1 越界条目读包即拒；V2 恶意 `fileName` 被收敛；V3 200 MB / 1026:1 在解压前拒绝；V4 目录外 400 且不建树；V5 非 id 400；V6 不回显路径；V7 `parts` 不符 500；V8 跨站 403；R1 未声明条目拒绝；R4 默认永不落原名；R6 restore 只覆盖已有、`memory=new` 才新建；V12 记住的文件被删后再存必须 409 `missing-target` 且不重建、`recreate=1` 才落地、成功后清 `missing`；V12b 自动保存发现目标消失后自己关掉并带回原路径、不重建；R7 附件条目 64 KB 起就算压缩比（3 MiB 全零 → 500 且对象库零写入）、2001 个附件只写 2000、超 128 MB 截断、正常包不受影响、已存在的不占配额；R8 六处解压单帧 64 MB 上限（900 MB 炸弹抛 `ERR_BUFFER_TOO_LARGE` 而**不是**当成坏帧静默跳过）、打包与体检的全解路径另有 512 MB 累计预算；R9 cwd 是普通文件或不存在的目录 → 400 `bad-workspace` 且不建目录、拒绝时回显包内原路径 + `reason`（`not-directory` / `missing`）+ 本机可用工作区，`ws` 与 `ws\` 落到两个记忆目录且不覆盖原 `MEMORY.md`；R10 打开失败只回通用文案、会话日志用临时文件 + `rename` 原子落盘、`wx` 撞名重试、部分失败时目录不残留 |
@@ -160,7 +160,7 @@
 | F83 | `isInside` 解析符号链接 | 两端都走 `realTarget()`（从最深的已存在祖先 realpath 再拼回剩余段）后 `path.relative` 判前缀；root 自己是 junction、dest 是 junction 但仍在 root 内都判是，dest 经 junction 逃出 root 判否 |
 | F84 | 跨工区记忆如实提示 | 包内 slug（`memory/workspaces/<slug>/…` 第一段）与本机 `memoryDirFor(cwd)` 解析出的 slug 不同时，返回体带 `memoryForeign:true` + `memoryForeignSlug`（落点仍由 `memoryDir` 给出）；合并记忆弹窗显示 `memoryForeignNote`（中英各一份），同工区不误报 |
 
-合计 **674 条**。
+合计 **672 条**。
 
 ### 审计验收脚本（未随仓库分发）
 
@@ -200,7 +200,7 @@ node test/open.mjs
 node test/conflict.mjs
 node test/security.mjs
 node test/pathkey.mjs
-# 或一把梭：二十套 674 条全绿
+# 或一把梭：二十套 672 条全绿
 for f in pathkey client dialog smoke open conflict security attach repair open-repair version context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4; do node test/$f.mjs || exit 1; done
 ```
 
