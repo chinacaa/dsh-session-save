@@ -35,6 +35,16 @@
 
 ### 修复
 
+- **多帧各自合法、加起来几十 GB 的包会把内存吃满。** `estimateContext()` 与 `trimSession()` 逐帧解压累加，单帧有 `maxOutputLength` 挡着，累计没有：几百帧各自几十 MB 时内存一路涨到进程被系统杀掉。现在这两条路径与打包、体检同口径，累计到 512 MB 就停下并抛 `E_LOG_TOO_LARGE`，打开路由回 `413 status:'too-large'`，文案说清「这个工程包太大，不是文件损坏」以及下一步。正常包不受影响：附件额度 128 MB 且附件本身已压缩，合规包的会话日志解出来远到不了这个量。
+
+- **末帧被截断的日志会被当成「正好覆盖整个文件」。** 帧扫描靠帧头魔数定位，末帧缺 checksum 时 `end` 被 `Math.min` 夹回文件长度，覆盖率闸因此放行，`rewriteHeader` 把半截帧当正文照搬。现在 `scanZstdFramesDetailed()` 单独带出 `truncated`，覆盖率闸据此拒绝重写并说清「末帧可能被截断」，体检报告 `frames.truncated` 如实带出。
+
+- **`verify-failed` 时「没写」与磁盘不一致。** bili 状态回读校验发现内容不对，返回体记 `rejected`，文件却已经落在盘上；同一次导入的状态文件里还多了一条 `paths`。现在回读不一致就删掉刚写的那份（可重建的派生缓存）并带 `removed`；状态提交收敛成 `commitSource()`，只在返回体成型之后执行、只覆盖本次会话的键，失败路径一条都不写——`handleOpen` 尾部那次用旧快照整表写回也随之去掉（它会抹掉导入刚记下的 `stamps`）。
+
+- **`isInside` 不解符号链接。** 判据看的是字面路径，落点若是指向别处的 junction，检查通过而真实写入落在 root 之外。现在两端都先解析（从最深的已存在祖先 realpath 再拼回剩余段）再比：经链接逃出 root 判否；root 自己是链接、dest 是链接但仍落在 root 内，照旧判是——本机的工作区与插件本身都装在 junction 上，误判等于打不开自己的东西。
+
+- **`memory=restore` 写进别的工区的记忆目录时，界面一个字都不说。** 包里的 slug 与本机解析出的 slug 不同，写的就是另一个工作区的项目笔记。返回体新增 `memoryForeign` 与 `memoryForeignSlug`，合并记忆弹窗多一行说明「这个包记录的是另一个工作区（{slug}）的记忆」，文案在 `locales/zh-CN.json` 与 `en-US.json` 各一份。
+
 - **坏包只回一句 500，修包指引永远拿不到（P1）。** `importPackage` 第一行的 `zipRead` 不在任何 try 里：不是 ZIP、中央目录/条目越界、单条或整包超限，全冒到 `handleOpen` 的兜底 catch，变成 `500 {"status":"error"}`。客户端是按 `status: 'package-broken'` 弹修复面板的，所以「把这段话贴给 AI 重新打包」这条出口对这些包根本不存在。现在解包阶段的抛错一律走 `packageBrokenReport`。
 - **保存落点没有文件名校验，冒号路径留下 0 字节垃圾（P2）。** `?path=...ds:stream.dsproj` 只做了 roots 校验：`writeFileSync` 先按 ADS 语义建出裸文件 `ads`，`rename` 再 EINVAL，`unlink(tmp)` 只删掉数据流，`ads` 留在目录里。现在落盘前复用包内路径那套逐段校验（冒号、设备名、尾点、尾空格），并且 `writeAtomic` 失败时补删 ADS 前面那个裸文件；`x.dsproj.` 这种尾点也直接 400 而不是被补成 `x.dsproj..dsproj`。
 - **未来时间戳的锁永不过期（P2）。** `lockBlocks` 写的是 `Date.now() - at < LOCK_STALE_MS`，时钟回拨或跨机同步让 `at` 落在未来时差值为负，判定恒真；侧车锁踩到这条路直接 `throw` → 500，还没有 `canIgnoreLock`，用户只能自己去删 `.lock`。现在取绝对值，并把侧车锁冲突映射成 `409 locked`（带 `canIgnoreLock`，`ignoreLock=1` 真的能跳过，stale / confirm-overwrite 那几条不受影响）。
@@ -46,16 +56,6 @@
 - **「覆盖磁盘文件」勾着备份却不备份。** 磁盘内容被别处改过后点覆盖，服务端的备份条件只看了「覆盖的不是自己记住的那个文件」，于是用户勾着默认勾选的「覆盖前先备份原文件」，一个 `.bak-<时间>` 都不留——同步盘/另一台机器改过的内容被直接抹掉，勾选框对这条路径等于摆设。现在 `staleOf()` 提到分支外算一次，`force=1` 时同样按勾选决定是否先备份；取消勾选照旧不留备份。
 
 - **中文界面的备份勾选框显示英文。** `client.js` 的中文兜底表里 `backupKeep` 写了两遍，后一条是英文译文；对象字面量同名键后者覆盖前者，语言包到达前的中文首屏三个弹窗都显示 `Back up the original before overwriting`。删掉重复行。
-
-### 已知边界
-
-以下是第二轮审计确认、这一轮**没有修**的项，写在这里免得下次重新发现：
-
-- **全解路径没有累计字节上限**（estimateContext / trimSession）。单帧上限管住了，累计没有：多帧各自合法、加起来很大时仍会吃满内存。
-- **覆盖率闸只判「扫到哪」**：末帧缺 checksum 仍判完整。影响极低（要构造合法但尾部截断的 zstd 帧）。
-- **`verify-failed` 时状态其实已写入**：返回体说没写，实际 `rememberSource` 已经落盘。
-- **`isInside` 不解符号链接**：落点若是指向别处的 junction，判据看的是字面路径。
-- **`memory=restore` 跨工作区覆盖不提示**：slug 不同即视为不同工作区，界面没有并列提示。
 
 ## [0.4.2] - 2026-11-02
 

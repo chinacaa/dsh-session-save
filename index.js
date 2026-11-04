@@ -185,8 +185,10 @@ function decompressFrame(slice) {
  * @param buf - whole log file
  * @returns array of { start, end } frame bounds
  */
-export function scanZstdFrames(buf) {
+export function scanZstdFramesDetailed(buf) {
   const frames = [];
+  // 认出了帧头、但帧体（或末块之后的 checksum）没读完 —— 末帧被截断。
+  let truncated = false;
   let p = 0;
   while (p + 8 <= buf.length && buf.readUInt32LE(p) === ZSTD_MAGIC) {
     const start = p;
@@ -218,15 +220,29 @@ export function scanZstdFrames(buf) {
       }
       if (p > buf.length) break;
       if (last) {
+        // checksum 的 4 个字节也是帧的一部分。以前不管 p 是否越过文件末尾都置 complete，
+        // 随后 end 被 Math.min 夹回 buf.length —— 一个被砍掉 checksum 的末帧于是看起来
+        // 「正好覆盖到文件末尾」，覆盖率闸放行，rewriteHeader 把半截帧当正文照搬。
         if (checksum) p += 4;
-        complete = true;
+        if (p <= buf.length) complete = true;
         break;
       }
     }
-    if (!complete) break; // 末尾半写帧不计入
-    frames.push({ start, end: Math.min(p, buf.length) });
+    if (!complete) {
+      truncated = true;
+      break;
+    }
+    frames.push({ start, end: p });
   }
-  return frames;
+  return { frames, truncated };
+}
+
+/**
+ * 帧边界列表。截断标记只在需要区分「文件末尾正好是一帧」与「末帧没写完」的地方用
+ * （覆盖率闸、体检报告）；其余调用方要的只是边界。
+ */
+export function scanZstdFrames(buf) {
+  return scanZstdFramesDetailed(buf).frames;
 }
 
 function readHeader(buf) {
@@ -715,7 +731,17 @@ function restoreBili(entries, expectedSessionId, backupWanted = true) {
     // 这里回读一次，确认落下去的确实是我们这份（长度 + 首尾字节）。
     const back = fs.readFileSync(dest);
     if (back.length !== payload.length || back.equals(payload) !== true) {
-      return { written: 0, skipped: 0, rejected: 1, reason: 'verify-failed' };
+      // 回读到的不是我们写的那份。以前只记 rejected 就返回，文件却留在盘上 ——
+      // 返回体说「没写」，磁盘上却多了一份没人验证过的 bili 状态。
+      // 它是可重建的派生缓存（bili 下次会重写），删掉才能让「没写」是真的。
+      let removed = false;
+      try {
+        fs.rmSync(dest, { force: true });
+        removed = fs.existsSync(dest) !== true;
+      } catch {
+        removed = false;
+      }
+      return { written: 0, skipped: 0, rejected: 1, reason: 'verify-failed', removed };
     }
     return { written: 1, skipped: 0, rejected: 0, reason: 'ok' };
   } catch (error) {
@@ -770,10 +796,36 @@ function restoreAttachments(entries) {
   return { written, skipped, rejected };
 }
 
-/** dest 是否严格落在 root 之内（root 自身不算）。用 relative 判前缀，别用字符串 startsWith。 */
-function isInside(root, dest) {
-  const rootAbs = path.resolve(root);
-  const rel = path.relative(rootAbs, path.resolve(dest));
+/** 把一段路径解析成真实落点：从最深的已存在祖先开始 realpath，再把剩下的段拼回去。 */
+function realTarget(target) {
+  const abs = path.resolve(target);
+  const rest = [];
+  let head = abs;
+  for (;;) {
+    try {
+      const real = typeof fs.realpathSync.native === 'function' ? fs.realpathSync.native(head) : fs.realpathSync(head);
+      return rest.length === 0 ? real : path.join(real, ...rest.reverse());
+    } catch {
+      const up = path.dirname(head);
+      // 一路走到根还解析不出来（盘符不存在、没有权限）：退回字面路径。
+      // 宁可少判一层链接，也不能把一条合法路径判成越界 —— 工作区与插件本身
+      // 在本机就是 junction，误判等于打不开自己的东西。
+      if (up === head) return abs;
+      rest.push(path.basename(head));
+      head = up;
+    }
+  }
+}
+
+/**
+ * dest 是否严格落在 root 之内（root 自身不算）。
+ *
+ * 必须比解析后的路径：落点可能是 junction / symlink，字面路径在 root 里、真实写入
+ * 却落在别处。两端都走 realTarget，于是「root 自己是链接」「dest 是链接」
+ * 「dest 经链接逃出 root」三种情形都对。判前缀仍用 path.relative，不用字符串 startsWith。
+ */
+export function isInside(root, dest) {
+  const rel = path.relative(realTarget(root), realTarget(dest));
   return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
@@ -927,10 +979,44 @@ function repairPartNode(node, report, options, depth = 0) {
 const CONTEXT_BUDGET_TOKENS = 150000;
 const BYTES_PER_TOKEN = 3.2;
 
-export function estimateContext(buffer) {
+/**
+ * 全解路径的累计字节上限（estimateContext / trimSession）。
+ *
+ * 为什么单帧上限不够：MAX_FRAME_BYTES 只管一帧，几百帧各自几十 MB 加起来仍是几十 GB，
+ * 逐帧解压、逐帧累加，内存一路涨到进程被系统杀掉。这里与 decodeLogText / repairSession
+ * 同口径取 MAX_TOTAL_BYTES —— 那两条也是「所有帧都解开」的路径，数字对齐才不会出现
+ * 「打包能过、估算先死」。
+ * 为什么不会误杀正常的大包：附件额度是 128 MB，且附件本身已压缩（合法包接近 1:1），
+ * 一个合规的包里会话日志解开后远到不了 512 MB。
+ */
+function logTooLargeError(maxBytes) {
+  const limit = Math.round(maxBytes / (1024 * 1024));
+  const error = new Error(
+    `会话日志解开后超过 ${limit} MB，已停止读取：这个工程包太大，不是文件损坏。` +
+      '请先导出更短的会话区间，或把包分卷后再打开。',
+  );
+  error.code = 'E_LOG_TOO_LARGE';
+  return error;
+}
+
+/** 上限取值：调用方可以显式给一个更小的额度，否则用整包口径。 */
+function readLimit(value) {
+  return Number.isFinite(value) && value > 0 ? value : MAX_TOTAL_BYTES;
+}
+
+/** 累计已解出的字节数；越过上限就停在这里，不再解下一帧。 */
+function countScanned(scanned, length, maxBytes) {
+  const total = scanned + length;
+  if (total > maxBytes) throw logTooLargeError(maxBytes);
+  return total;
+}
+
+export function estimateContext(buffer, options = {}) {
+  const maxBytes = readLimit(options.maxBytes);
   const frames = scanZstdFrames(buffer);
   let bytes = 0;
   let lines = 0;
+  let scanned = 0;
   for (const frame of frames) {
     let text;
     try {
@@ -939,6 +1025,7 @@ export function estimateContext(buffer) {
       if (error?.code === 'ERR_BUFFER_TOO_LARGE') throw error;
       continue;
     }
+    scanned = countScanned(scanned, text.length, maxBytes);
     for (const line of text.split('\n')) {
       if (line === '') continue;
       bytes += Buffer.byteLength(line, 'utf8');
@@ -951,7 +1038,9 @@ export function estimateContext(buffer) {
 export function trimSession(buffer, options = {}) {
   const budget = Number.isFinite(options.budget) && options.budget > 0 ? options.budget : CONTEXT_BUDGET_TOKENS;
   const budgetBytes = Math.floor(budget * BYTES_PER_TOKEN);
+  const maxBytes = readLimit(options.maxBytes);
   const rows = [];
+  let scanned = 0;
   for (const frame of scanZstdFrames(buffer)) {
     let text;
     try {
@@ -960,6 +1049,8 @@ export function trimSession(buffer, options = {}) {
       if (error?.code === 'ERR_BUFFER_TOO_LARGE') throw error;
       continue;
     }
+    // 与 estimateContext 同一个累计口径：这条路径同样会把每一帧都解开。
+    scanned = countScanned(scanned, text.length, maxBytes);
     for (const line of text.split('\n')) if (line !== '') rows.push(line);
   }
   const typeOf = (line) => {
@@ -1116,9 +1207,12 @@ export function trimSession(buffer, options = {}) {
 }
 
 export function repairSession(buffer, options = {}) {
-  const frames = scanZstdFrames(buffer);
+  // 截断标记要如实带出去：末帧没写完时帧数比文件短一截，
+  // 只说「共 N 帧」会让人以为日志是完整的。
+  const scan = scanZstdFramesDetailed(buffer);
+  const frames = scan.frames;
   const report = {
-    frames: { total: frames.length, broken: 0 },
+    frames: { total: frames.length, broken: 0, truncated: scan.truncated },
     lines: { total: 0, dropped: 0 },
     parts: { total: 0, missing: 0, patched: 0, dropped: 0 },
     changed: false,
@@ -1447,6 +1541,23 @@ function rememberSource(state, id, sourcePath) {
   delete state.stale[id];
   if (state.missing !== undefined && typeof state.missing === 'object') delete state.missing[id];
   return state;
+}
+
+/**
+ * 成功导入的最后一件事：记住「本机这份会话来自哪个包」。
+ *
+ * 为什么排在返回体成型之后：状态文件是用户看得见的「这个包我打开过」，返回体是
+ * 「这次到底成没成」。先落状态再拼返回体，任何一步在两者之间抛错（readStats 的
+ * 超限重抛、返回体里新加的字段解析）都会留下「说没打开、状态里却有」的记录。
+ * 只覆盖本次会话的键 —— 读-改-写之间可能隔着对话框，整表覆盖会抹掉别的会话。
+ */
+function commitSource(result, id, sourcePath) {
+  try {
+    writeState(rememberSource(readState(), id, sourcePath), { scoped: [id] });
+  } catch {
+    // 状态写不进去不影响这次打开；下次保存会重新问一遍路径。
+  }
+  return result;
 }
 
 
@@ -1874,7 +1985,9 @@ export function rewriteHeader(buf, patch) {
   // 这时 `buf.subarray(frames[1].start)` 看着像「正文」，其实是把认不出的部分整段丢掉——
   // 实测三帧 396 B 会被重写成 161 B 单帧，正文全没了还回 200。
   if (frames[frames.length - 1].end !== buf.length) {
-    throw new Error(`会话日志的帧扫描不完整（覆盖到 ${frames[frames.length - 1].end}/${buf.length} 字节），拒绝重写`);
+    throw new Error(
+      `会话日志的帧扫描不完整（覆盖到 ${frames[frames.length - 1].end}/${buf.length} 字节，末帧可能被截断），拒绝重写`,
+    );
   }
   const head = decompressFrame(buf.subarray(frames[0].start, frames[0].end)).toString('utf8');
   const nl = head.indexOf('\n');
@@ -2361,9 +2474,7 @@ function importPackage(sourcePath, options = {}) {
       const attachRestore = restoreAttachments(entries);
       const biliRestore = restoreBili(entries, id, backupWanted);
       const repairReport = repairInPlace(existing.file, { backup: backupWanted });
-      const state = rememberSource(readState(), id, sourcePath);
-      writeState(state, { scoped: [id] });
-      return {
+      const result = {
         sessionId: id,
         cwd,
         target: existing.file,
@@ -2384,6 +2495,7 @@ function importPackage(sourcePath, options = {}) {
         sourcePath,
         packageLock,
       };
+      return commitSource(result, id, sourcePath);
     }
 
     if (sameSession && !(sameCwd && mode === 'overwrite')) {
@@ -2426,9 +2538,7 @@ function importPackage(sourcePath, options = {}) {
       const attachRestore = restoreAttachments(entries);
       const biliRestore = restoreBili(entries, id, backupWanted);
       const repairReport = repairInPlace(existing.file, { backup: backupWanted });
-      const state = rememberSource(readState(), id, sourcePath);
-      writeState(state, { scoped: [id] });
-      return {
+      const result = {
         sessionId: id,
         cwd: existing.header?.cwd ?? cwd,
         target: existing.file,
@@ -2450,6 +2560,7 @@ function importPackage(sourcePath, options = {}) {
         sourcePath,
         packageLock,
       };
+      return commitSource(result, id, sourcePath);
     }
 
     if (mode === 'overwrite') {
@@ -2600,9 +2711,23 @@ function importPackage(sourcePath, options = {}) {
   const prefix = 'memory/workspaces/';
   const memoryKeys = [...entries.keys()].filter((name) => name.startsWith(prefix));
   let memoryDir;
+  // 包内的记忆属于「打包方那个工作区」：条目名第一段就是它的 slug。与本次落点的 slug
+  // 不同时，restore 写进的是另一个工区的记忆目录 —— 界面必须说出来，否则「合并记忆」
+  // 看起来像写进眼前这个项目，实际落在别人的项目笔记里。
+  let memoryForeign = false;
+  let memoryForeignSlug;
   if (memoryKeys.length > 0 && memoryMode !== undefined) {
     const memory = memoryDirFor(cwd);
     memoryDir = memory.dir;
+    const packageSlugs = new Set(
+      memoryKeys.map((key) => key.slice(prefix.length).split(/[\\/]+/).filter((part) => part !== '')[0] ?? ''),
+    );
+    for (const slug of packageSlugs) {
+      if (slug !== memory.slug) {
+        memoryForeign = true;
+        memoryForeignSlug = memoryForeignSlug ?? slug;
+      }
+    }
     const stamp = new Date().toISOString().slice(0, 10);
     // 先把所有落点算完再写：任意一条越界都整包拒绝，不给「写了一半」留机会
     const planned = [];
@@ -2723,10 +2848,7 @@ function importPackage(sourcePath, options = {}) {
     }
   }
 
-  const state = rememberSource(readState(), id, sourcePath);
-  writeState(state, { scoped: [id] });
-
-  return {
+  return commitSource({
     sessionId: id,
     cwd,
     target,
@@ -2751,6 +2873,10 @@ function importPackage(sourcePath, options = {}) {
     memoryCreated,
     // 执行前的清单：[{ rel, exists }]。copy 模式也返回，界面靠它渲染「将覆盖 / 将新建」。
     memoryPlanned,
+    // 这次写的是不是另一个工区的记忆：true 时界面必须直说，别让「合并记忆」
+    // 看起来像写进当前打开的工作区。
+    memoryForeign,
+    memoryForeignSlug,
     // 记忆落点目录（服务端按 cwd 解析出来的，不是请求里带来的路径），前端「打开记忆目录」用。
     memoryDir,
     memoryMode: memoryMode ?? 'none',
@@ -2758,7 +2884,7 @@ function importPackage(sourcePath, options = {}) {
     cloud: cloudMarkOf(sourcePath),
     packageLock,
     packageLockBlocked: lockBlocks(packageLock),
-  };
+  }, id, sourcePath);
 }
 
 /* ───────────────────────── 自动保存 ───────────────────────── */
@@ -3435,10 +3561,8 @@ async function handleOpen(request) {
     // 包校验没过 / 包比插件新：都不是 200。沿用原来的 500，客户端按 status 字段决定弹哪个窗。
     if (result.status === 'package-broken' || result.status === 'newer-package') return jsonResponse(result, 500);
     if (result.conflict === true) return jsonResponse({ status: 'conflict', ...result }, 409);
-    // 打开时就把该文件此刻的内容指纹记下来；顺带把「别处正在写 / 在同步盘里」这两件
-    // 需要用户知道的事随结果带回去，界面上提示一句，但都不阻止打开。
-    const state = rememberSource(readState(), result.sessionId, source);
-    writeState(state);
+    // 来源指纹已经在 importPackage 的成功路径末尾（commitSource）记过一次，这里不再写第二遍：
+    // 这一步用的是打开之前读到的 state 快照，整表写回会把导入期间别的会话的键抹掉。
     return jsonResponse({
       status: 'opened',
       ...result,
@@ -3450,6 +3574,11 @@ async function handleOpen(request) {
     // 否则用户只看到一句通用文案，分不清是包坏了、还是被哪条安全校验挡了。
     console.warn('[dsh-session-save] 打开失败', source, error);
     const raw = String(error?.message ?? '');
+    // 累计解压超限：包没坏，只是太大。别再让它混进「不是有效的工程包」那句里 ——
+    // 那句话会让用户去翻备份重存一份，而这份包一个字节都没坏。
+    if (error?.code === 'E_LOG_TOO_LARGE') {
+      return jsonResponse({ status: 'too-large', message: raw }, 413);
+    }
     const leaksPath = raw === '' || raw.includes(source) || raw.includes(os.homedir()) || /[A-Za-z]:[\\/]/.test(raw);
     return jsonResponse(
       {

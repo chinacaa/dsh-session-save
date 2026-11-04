@@ -124,6 +124,7 @@ window.__ModuleLoader__.load({
       memoryOpenDir: '打开记忆目录',
       memoryDirLabel: '记忆目录',
       memoryMergeTarget: '记忆将写入上方显示的记忆目录，而非当前打开的工作区',
+      memoryForeignNote: '这个包记录的是另一个工作区（{slug}）的记忆：下面列出的文件会写进那个工作区的记忆目录，不是当前打开的工作区。',
       memoryMerge: '合并记忆',
       memoryMergeTitle: '将包内记忆合并到本机',
       memoryMergeHint: '合并仅覆盖本机已有的同名文件，覆盖前每个文件将备份为 .bak-<时间>。若该包并非本人导出，请取消：包内记忆会被 DSH 当作项目笔记读入上下文。',
@@ -1353,6 +1354,15 @@ window.__ModuleLoader__.load({
                   L.memoryMergeTarget,
                 ),
               ),
+          // 跨工作区必须直说。slug 不同就是另一个项目的记忆目录：用户以为自己只把
+          // 包里的笔记并进眼前这个项目，实际写的是别处 —— 这一句是他唯一能察觉的机会。
+          payload?.memoryForeign === true
+            ? React.createElement(
+                'div',
+                { style: { fontSize: 11.5, color: COLORS.danger, lineHeight: 1.5 } },
+                String(L.memoryForeignNote).replace('{slug}', String(payload?.memoryForeignSlug ?? '')),
+              )
+            : null,
           // 两段分开列：「将覆盖」是本机已有、点确认就换成本机版本的；「将新建」是本机没有的，
           // 默认一个都不写。用户看到第二段才知道包里还有东西没落地，才有机会决定要不要放行。
           React.createElement(
