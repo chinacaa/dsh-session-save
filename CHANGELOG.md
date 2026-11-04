@@ -5,24 +5,12 @@
 
 ## [Unreleased]
 
-### 修复
+### 新增
 
-- **坏包只回一句 500，修包指引永远拿不到（P1）。** `importPackage` 第一行的 `zipRead` 不在任何 try 里：不是 ZIP、中央目录/条目越界、单条或整包超限，全冒到 `handleOpen` 的兜底 catch，变成 `500 {"status":"error"}`。客户端是按 `status: 'package-broken'` 弹修复面板的，所以「把这段话贴给 AI 重新打包」这条出口对这些包根本不存在。现在解包阶段的抛错一律走 `packageBrokenReport`。
-- **保存落点没有文件名校验，冒号路径留下 0 字节垃圾（P2）。** `?path=...ds:stream.dsproj` 只做了 roots 校验：`writeFileSync` 先按 ADS 语义建出裸文件 `ads`，`rename` 再 EINVAL，`unlink(tmp)` 只删掉数据流，`ads` 留在目录里。现在落盘前复用包内路径那套逐段校验（冒号、设备名、尾点、尾空格），并且 `writeAtomic` 失败时补删 ADS 前面那个裸文件；`x.dsproj.` 这种尾点也直接 400 而不是被补成 `x.dsproj..dsproj`。
-- **未来时间戳的锁永不过期（P2）。** `lockBlocks` 写的是 `Date.now() - at < LOCK_STALE_MS`，时钟回拨或跨机同步让 `at` 落在未来时差值为负，判定恒真；侧车锁踩到这条路直接 `throw` → 500，还没有 `canIgnoreLock`，用户只能自己去删 `.lock`。现在取绝对值，并把侧车锁冲突映射成 `409 locked`（带 `canIgnoreLock`，`ignoreLock=1` 真的能跳过，stale / confirm-overwrite 那几条不受影响）。
-- **`trimSession` 一刀没落也报 `trimmed: true`（P3）。** 单行就超过预算时（一行 200 KB 的 JSON）按行切切不动，`tail` 仍是整轮，却被标成 `partial`，于是 `droppedTurns: 0` 还报裁剪，插一条「更早的 0 轮没有带进上下文」，产物反而比原文大（64117 → 64232 tokens）。现在只有真被切掉行才标 `partial`，没丢东西就原样返回、`trimmed: false`、`oversizeTurn` 如实带出。
-- **`ENTRY_SINCE` 把 `bili/` 标成未发布的 0.4.3（P3）。** 提示于是自相矛盾：「写它的是 0.4.2，本机是 0.4.2：先升级插件」。改成 0.4.2（真正首发版本），并加断言保证这张表的版本永远不大于 `PLUGIN_VERSION`。
-- **附件被重新压缩时只丢一句「压缩比异常」（P2，不取消闸门）。** 别人用 7-Zip 重打包会把 1 MiB 文本压到 1 KB（约 1014:1），整包打不开。闸门保留——3 MiB 全零条目 935:1 的放大是真的（`test/security` R7 在守）——但提示改成「附件条目压缩比异常：被重新压缩过，本插件写包用 store」，指路而不是只报错。
+- **覆盖前可选留一份原文件。** 冲突面板（导入时选「覆盖」）、磁盘内容被改过的提示、合并记忆三个弹窗都多了一个默认勾选的「覆盖前先备份原文件」；取消勾选就真的不留 `.bak-<时间>`。保存到陌生文件时同样适用（这一路以前是直接覆盖，不留退路）。请求侧关闭开关是 `backup=0`，默认开启。
 
-### 已知边界
-
-以下是第二轮审计确认、这一轮**没有修**的项，写在这里免得下次重新发现：
-
-- **全解路径没有累计字节上限**（estimateContext / trimSession）。单帧上限管住了，累计没有：多帧各自合法、加起来很大时仍会吃满内存。
-- **覆盖率闸只判「扫到哪」**：末帧缺 checksum 仍判完整。影响极低（要构造合法但尾部截断的 zstd 帧）。
-- **`verify-failed` 时状态其实已写入**：返回体说没写，实际 `rememberSource` 已经落盘。
-- **`isInside` 不解符号链接**：落点若是指向别处的 junction，判据看的是字面路径。
-- **`memory=restore` 跨工作区覆盖不提示**：slug 不同即视为不同工作区，界面没有并列提示。
+- **导入时按上下文预算从尾部保留完整轮次，默认 150000 token，不调就防爆。** 一条几百轮的会话折算下来是几十万到几千万 token，`billion-context` 这类在 wire 层做增量压缩的插件也接不住：它按会话记住自己已折叠过哪些消息，第一次见到一个从外面搬进来的会话时手里没有历史，只能把整包发上游。所以 `importPackage` 先 `estimateContext()` 量一下体量，超预算就 `trimSession()` 从最后一轮往前保留完整 turn，在头部插一条说明（省了几轮、完整日志仍在工程包里），turn 号重排为从 1 连续。只从轮次边界切，不会把工具调用与结果拆开；`?contextBudget=0` 关闭，`?contextBudget=<n>` 自定义。返回体新增 `context: { before, trim }`。
+- **`.dsproj` 带上 billion-context 的压缩块。** bili 按会话 id 记住哪些消息已经折叠过，状态存在它自己的目录里；换台机器打开一个大会话时它手里没有这份历史，第一轮只能把整段重发一遍，而 bili 关掉了 DSH 的原生压缩，这一层没有兜底。现在导出会把状态打包成 `bili/session.json`（内含 `plugin` / `schema` / `sessionId` / `protocol` / `host` 与原始状态），导入按 `<host>_<sha256(sessionId) 前 24 位>.json` 重建文件名写回。只恢复这一个会话：块里的 `sessionId` 不是本次导入的会话就不写（记 `session-mismatch`），`protocol` / `host` 过白名单且落点必须仍在 bili 的会话目录内；bili 刚写过那一份（2 秒内）先等一下，仍新鲜就让开（记 `busy`），写完回读校验。三条边界：`schema` 不是 3 的不写、本机那份 `savedAt` 更新不覆盖（它带着包导出之后的对话）、bili 没装或包里没有这一条只记原因不算错。返回体新增 `bili: { written, skipped, rejected, reason }`。
 
 ### 安全
 
@@ -47,17 +35,27 @@
 
 ### 修复
 
+- **坏包只回一句 500，修包指引永远拿不到（P1）。** `importPackage` 第一行的 `zipRead` 不在任何 try 里：不是 ZIP、中央目录/条目越界、单条或整包超限，全冒到 `handleOpen` 的兜底 catch，变成 `500 {"status":"error"}`。客户端是按 `status: 'package-broken'` 弹修复面板的，所以「把这段话贴给 AI 重新打包」这条出口对这些包根本不存在。现在解包阶段的抛错一律走 `packageBrokenReport`。
+- **保存落点没有文件名校验，冒号路径留下 0 字节垃圾（P2）。** `?path=...ds:stream.dsproj` 只做了 roots 校验：`writeFileSync` 先按 ADS 语义建出裸文件 `ads`，`rename` 再 EINVAL，`unlink(tmp)` 只删掉数据流，`ads` 留在目录里。现在落盘前复用包内路径那套逐段校验（冒号、设备名、尾点、尾空格），并且 `writeAtomic` 失败时补删 ADS 前面那个裸文件；`x.dsproj.` 这种尾点也直接 400 而不是被补成 `x.dsproj..dsproj`。
+- **未来时间戳的锁永不过期（P2）。** `lockBlocks` 写的是 `Date.now() - at < LOCK_STALE_MS`，时钟回拨或跨机同步让 `at` 落在未来时差值为负，判定恒真；侧车锁踩到这条路直接 `throw` → 500，还没有 `canIgnoreLock`，用户只能自己去删 `.lock`。现在取绝对值，并把侧车锁冲突映射成 `409 locked`（带 `canIgnoreLock`，`ignoreLock=1` 真的能跳过，stale / confirm-overwrite 那几条不受影响）。
+- **`trimSession` 一刀没落也报 `trimmed: true`（P3）。** 单行就超过预算时（一行 200 KB 的 JSON）按行切切不动，`tail` 仍是整轮，却被标成 `partial`，于是 `droppedTurns: 0` 还报裁剪，插一条「更早的 0 轮没有带进上下文」，产物反而比原文大（64117 → 64232 tokens）。现在只有真被切掉行才标 `partial`，没丢东西就原样返回、`trimmed: false`、`oversizeTurn` 如实带出。
+- **`ENTRY_SINCE` 把 `bili/` 标成未发布的 0.4.3（P3）。** 提示于是自相矛盾：「写它的是 0.4.2，本机是 0.4.2：先升级插件」。改成 0.4.2（真正首发版本），并加断言保证这张表的版本永远不大于 `PLUGIN_VERSION`。
+- **附件被重新压缩时只丢一句「压缩比异常」（P2，不取消闸门）。** 别人用 7-Zip 重打包会把 1 MiB 文本压到 1 KB（约 1014:1），整包打不开。闸门保留——3 MiB 全零条目 935:1 的放大是真的（`test/security` R7 在守）——但提示改成「附件条目压缩比异常：被重新压缩过，本插件写包用 store」，指路而不是只报错。
+
+
 - **「覆盖磁盘文件」勾着备份却不备份。** 磁盘内容被别处改过后点覆盖，服务端的备份条件只看了「覆盖的不是自己记住的那个文件」，于是用户勾着默认勾选的「覆盖前先备份原文件」，一个 `.bak-<时间>` 都不留——同步盘/另一台机器改过的内容被直接抹掉，勾选框对这条路径等于摆设。现在 `staleOf()` 提到分支外算一次，`force=1` 时同样按勾选决定是否先备份；取消勾选照旧不留备份。
 
 - **中文界面的备份勾选框显示英文。** `client.js` 的中文兜底表里 `backupKeep` 写了两遍，后一条是英文译文；对象字面量同名键后者覆盖前者，语言包到达前的中文首屏三个弹窗都显示 `Back up the original before overwriting`。删掉重复行。
 
-### 新增
+### 已知边界
 
-- **覆盖前可选留一份原文件。** 冲突面板（导入时选「覆盖」）、磁盘内容被改过的提示、合并记忆三个弹窗都多了一个默认勾选的「覆盖前先备份原文件」；取消勾选就真的不留 `.bak-<时间>`。保存到陌生文件时同样适用（这一路以前是直接覆盖，不留退路）。请求侧关闭开关是 `backup=0`，默认开启。
+以下是第二轮审计确认、这一轮**没有修**的项，写在这里免得下次重新发现：
 
-- **导入时按上下文预算从尾部保留完整轮次，默认 150000 token，不调就防爆。** 一条几百轮的会话折算下来是几十万到几千万 token，`billion-context` 这类在 wire 层做增量压缩的插件也接不住：它按会话记住自己已折叠过哪些消息，第一次见到一个从外面搬进来的会话时手里没有历史，只能把整包发上游。所以 `importPackage` 先 `estimateContext()` 量一下体量，超预算就 `trimSession()` 从最后一轮往前保留完整 turn，在头部插一条说明（省了几轮、完整日志仍在工程包里），turn 号重排为从 1 连续。只从轮次边界切，不会把工具调用与结果拆开；`?contextBudget=0` 关闭，`?contextBudget=<n>` 自定义。返回体新增 `context: { before, trim }`。
-- **`.dsproj` 带上 billion-context 的压缩块。** bili 按会话 id 记住哪些消息已经折叠过，状态存在它自己的目录里；换台机器打开一个大会话时它手里没有这份历史，第一轮只能把整段重发一遍，而 bili 关掉了 DSH 的原生压缩，这一层没有兜底。现在导出会把状态打包成 `bili/session.json`（内含 `plugin` / `schema` / `sessionId` / `protocol` / `host` 与原始状态），导入按 `<host>_<sha256(sessionId) 前 24 位>.json` 重建文件名写回。只恢复这一个会话：块里的 `sessionId` 不是本次导入的会话就不写（记 `session-mismatch`），`protocol` / `host` 过白名单且落点必须仍在 bili 的会话目录内；bili 刚写过那一份（2 秒内）先等一下，仍新鲜就让开（记 `busy`），写完回读校验。三条边界：`schema` 不是 3 的不写、本机那份 `savedAt` 更新不覆盖（它带着包导出之后的对话）、bili 没装或包里没有这一条只记原因不算错。返回体新增 `bili: { written, skipped, rejected, reason }`。
-
+- **全解路径没有累计字节上限**（estimateContext / trimSession）。单帧上限管住了，累计没有：多帧各自合法、加起来很大时仍会吃满内存。
+- **覆盖率闸只判「扫到哪」**：末帧缺 checksum 仍判完整。影响极低（要构造合法但尾部截断的 zstd 帧）。
+- **`verify-failed` 时状态其实已写入**：返回体说没写，实际 `rememberSource` 已经落盘。
+- **`isInside` 不解符号链接**：落点若是指向别处的 junction，判据看的是字面路径。
+- **`memory=restore` 跨工作区覆盖不提示**：slug 不同即视为不同工作区，界面没有并列提示。
 
 ## [0.4.2] - 2026-11-02
 
