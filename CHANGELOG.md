@@ -5,6 +5,13 @@
 
 ## [Unreleased]
 
+## [0.5.0-alpha.3] - 2026-11-05
+
+### 修复
+
+- **导入后停在「会话索引还没跟上」，会话一次也没真的打开。** 上一版在跳转前用 `sessions.get(id)` 轮询判「索引认不认识它」，但 DSH 的 `sessions` 服务只有 `refresh()` / `retain()`，没有 `get()`：条件永远不成立，于是重试走到头、只弹一句提示就返回，用户看到的就是「还是打不开」。现在改成直接跳：`openSession()` 认不出会话会抛 `sessions.retain: unknown session`，抛了就刷新一次索引、等 150 ms 再试（最多 12 次），其它错误只试一次并原样报出来。跳转逻辑收成 `jumpWhenReady()`，用假的 host 把三条路径（晚一拍后跳过去 / 一直不认识 / 真错误）都跑一遍。
+- **新增一条拿 DSH 自己的索引做断言的回归。** `test/dsh-list.mjs` 在临时 DSH_HOME 里落一份会话，再用 `@deepseek-ai/dsh-session-persistence-jsonl` 真实扫盘列一遍，断言它认得这个 id：这层认不出，客户端重试多少遍都没用；本机没装 DSH 时这条自动跳过。
+
 ## [0.5.0-alpha.2] - 2026-11-05
 
 ### 修复

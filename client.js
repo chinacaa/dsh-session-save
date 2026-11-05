@@ -19,7 +19,37 @@ window.__ModuleLoader__.load({
     const AUTOSAVE_ROUTE = 'api/session.autosave';
     const WORKSPACES_ROUTE = 'api/session.workspaces';
 
-    const ZH = {
+    // 跳到一个刚导入的会话。DSH 的 sessions 服务只提供 refresh() / retain()，
+// 没有「这个 id 在不在」的查询方法（sessions.get 不存在），所以不能先问再跳：
+// 直接试一次，retain() 不认识它就抛 `sessions.retain: unknown session`，
+// 这时刷新一次索引、稍等一下再试。其它错误不重试，原样交回。
+async function jumpWhenReady(host, sessionId, options = {}) {
+  const ui = host?.uiWorkspace;
+  if (ui === undefined || ui === null || typeof ui.openSession !== 'function') {
+    return { jumped: false, error: new Error('uiWorkspace.openSession 不可用') };
+  }
+  const attempts = Number.isFinite(options.attempts) ? options.attempts : 12;
+  const delay = Number.isFinite(options.delay) ? options.delay : 150;
+  const wait = typeof options.wait === 'function'
+    ? options.wait
+    : (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+  let lastUnknown = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      ui.openSession(sessionId);
+      return { jumped: true };
+    } catch (error) {
+      const text = String(error && error.message ? error.message : error);
+      if (!/unknown session/i.test(text)) return { jumped: false, error };
+      lastUnknown = error;
+    }
+    try { await host?.sessions?.refresh?.(); } catch { /* 刷新失败就再等一轮 */ }
+    await wait(delay);
+  }
+  return { jumped: false, unknown: lastUnknown };
+}
+
+const ZH = {
       button: '保存会话',
       buttonHint: '保存',
       saving: '正在保存…',
@@ -829,26 +859,16 @@ window.__ModuleLoader__.load({
           /* 索引刷新失败不阻断打开 */
         }
         // refresh() 只是把 session.list 发起一次，索引落进 sessions/summaries 要晚一拍。
-        // 立刻 openSession 会撞上 DSH 的 `sessions.retain: unknown session`——文件其实已经
-        // 导好了，界面却显示「打开失败」，用户只能以为导入坏了。所以这里等它真认识这个 id。
-        let recognized = host?.sessions?.get?.(payload.sessionId) !== undefined;
-        for (let attempt = 0; recognized === false && attempt < 15; attempt += 1) {
-          await new Promise((resolve) => { setTimeout(resolve, 100); });
-          recognized = host?.sessions?.get?.(payload.sessionId) !== undefined;
-          if (recognized === false && (attempt === 4 || attempt === 9)) {
-            try { await host?.sessions?.refresh?.(); } catch { /* 再拉一次就够了 */ }
-          }
-        }
-        if (recognized === false) {
-          // 列表没跟上不是打开失败：包已经落盘了，只是这一跳跳不过去。
-          setToast({ tone: 'info', text: `${L.opened} · ${label}${L.listRefreshHint}` });
+        // 立刻 openSession 会撞上 DSH 的 `sessions.retain: unknown session`，文件其实已经导好了。
+        // sessions 服务没有 get(id) 这种查询方法，所以只能真跳一次、跳不动再刷新重试。
+        const outcome = await jumpWhenReady(host, payload.sessionId);
+        if (outcome.jumped === true) return;
+        if (outcome.error !== undefined) {
+          setToast({ tone: 'error', text: `${L.openFailed} · ${String(outcome.error && outcome.error.message ? outcome.error.message : outcome.error)}` });
           return;
         }
-        try {
-          host?.uiWorkspace?.openSession?.(payload.sessionId);
-        } catch (error) {
-          setToast({ tone: 'error', text: `${L.openFailed} · ${String(error && error.message ? error.message : error)}` });
-        }
+        // 一直卡在「索引不认识」：包已经落盘了，只是这一跳跳不过去。
+        setToast({ tone: 'info', text: `${L.opened} · ${label}${L.listRefreshHint}` });
       }, []);
 
       const open = useCallback(

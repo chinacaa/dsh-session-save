@@ -2,7 +2,7 @@
 
 本文从代码反推功能面（`index.js` 四条路由 + `client.js` 五个插槽项），逐条列出可观测行为、期望结果，以及由哪套测试覆盖。测试分两层：
 
-- **二十套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共 679 条用例（`grep -c '✅'` 逐行相加的实测值）。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
+- **二十二套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共 683 条用例（`grep -c '✅'` 逐行相加的实测值）。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
 - **审计验收脚本**（未随仓库分发）：针对历史漏洞的复现/防回归，判据写在下表里，可照着重写。
 
 所有套件都通过 `test/fixture.mjs` 自建临时 `DSH_HOME`（`os.tmpdir()` 下），跑完自删——**不读也不改真实 `~/.dsh`**，所以在任何机器、任何数据状态下结果一致。功能面的 F 编号是本文与 `test/*.mjs` 注释共同引用的锚点，改动功能时两边一起改。
@@ -99,7 +99,7 @@
 
 ## 二、测试矩阵（用例 → 期望 → 覆盖）
 
-### 二十套回归
+### 二十二套回归
 
 | 套件 | 条数 | 覆盖功能 | 关键期望 |
 | --- | --- | --- | --- |
@@ -160,7 +160,7 @@
 | F83 | `isInside` 解析符号链接 | 两端都走 `realTarget()`（从最深的已存在祖先 realpath 再拼回剩余段）后 `path.relative` 判前缀；root 自己是 junction、dest 是 junction 但仍在 root 内都判是，dest 经 junction 逃出 root 判否 |
 | F84 | 跨工区记忆如实提示 | 包内 slug（`memory/workspaces/<slug>/…` 第一段）与本机 `memoryDirFor(cwd)` 解析出的 slug 不同时，返回体带 `memoryForeign:true` + `memoryForeignSlug`（落点仍由 `memoryDir` 给出）；合并记忆弹窗显示 `memoryForeignNote`（中英各一份），同工区不误报 |
 
-合计 **679 条**。
+合计 **683 条**。
 
 ### 审计验收脚本（未随仓库分发）
 
@@ -200,8 +200,8 @@ node test/open.mjs
 node test/conflict.mjs
 node test/security.mjs
 node test/pathkey.mjs
-# 或一把梭：二十套 679 条全绿
-for f in pathkey client dialog smoke open conflict security attach repair open-repair version context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait; do node test/$f.mjs || exit 1; done
+# 或一把梭：二十二套 683 条全绿
+for f in pathkey client dialog smoke open conflict security attach repair open-repair version context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait dsh-list; do node test/$f.mjs || exit 1; done
 ```
 
 `pathkey.mjs` 只依赖 `index.js` 里的两个纯函数，不建夹具、不写盘，跑起来几十毫秒——**每次升级 DSH 后第一件事就是跑它**，比读官方源码快。
