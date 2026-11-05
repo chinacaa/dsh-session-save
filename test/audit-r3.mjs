@@ -338,7 +338,10 @@ const headerOf = (id) =>
     `${same.body?.status ?? ''}`,
   );
   check(!String(same.body?.message ?? '').includes('更新版本'), 'R3-6 同版本的提示里不出现「更新版本」');
-  const newer = await call(openRoute, OPEN_ROUTE, { path: makePackage('0.4.3'), cwd: OUT });
+  // 版本号不能写死：这里要的是「一定比当前插件新」，
+  // 写死成 0.4.3 的话，插件发到 0.5.x 之后这条就变成「旧包」，断言会假红。
+  const newerVersion = `${Number(pkg.version.split('.')[0]) + 1}.0.0`;
+  const newer = await call(openRoute, OPEN_ROUTE, { path: makePackage(newerVersion), cwd: OUT });
   check(newer.body?.status === 'newer-package', 'R3-6 真更新的包才说「先升级插件」', `${newer.body?.status ?? ''}`);
 }
 
