@@ -5,6 +5,12 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **导入不再改写存档文件**。以前超预算时会先按整轮裁一遍再把裁剪结果写进 `sessions/`，用户手里那份 `.dsproj` 一旦删掉，砍掉的 turn 就再也回不来了。现在预算只用来出报告（`context.trim.applied = false`），落盘恒为包里的完整日志；真正管「带多少进上下文」留给运行期（billion-context 折叠 / DSH 装载）。实测一条 45 万 token 的包：落盘 162 帧 / 295 行 / 两个 turn，与包内逐字节同构。
+- **空壳压缩块不再覆盖本机状态**。`bili/session.json` 里 `state.payload` 为空时 `restoreBili` 直接让开（`written: 0, reason: 'empty-payload'`），不再把本机一份有效状态换成一张白纸还报 `ok`。
+- `test/pathkey.mjs` 的目录形状断言放过 DSH 自己的 `_no-cwd`（「没有工作区」的内部会话），不再把别人建的目录算成插件的违规产出。
+
 ## [0.5.0-alpha.3] - 2026-11-05
 
 ### 修复

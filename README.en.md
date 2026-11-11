@@ -211,11 +211,11 @@ Two limits: if `session/` is the broken entry, there is nothing left to rescue a
 
 A few hundred turns add up to hundreds of thousands — or tens of millions — of tokens. Open one of those and the first request fills the context; an incremental compressor like `billion-context` cannot save it either, because it tracks which messages it has already folded per session, and a session that arrives from elsewhere has no history on this machine. The first request ships the whole thing.
 
-So the import measures the session first (decompressed bytes divided by 3.2). Above **150000 tokens** it keeps whole turns from the end and drops the earlier ones, inserting one line that says how many turns were left out and that the full log is still inside the package. Turn numbers are renumbered from 1, so the UI never shows "turn 87" as the first thing you see.
+So the import measures the session first (decompressed bytes divided by 3.2). Above **150000 tokens** the report says how much the whole conversation would cost and how many trailing turns a budget would keep — but **the file written to disk is still the complete session**. Trimming is advice for this one load, not an edit to your archive; what actually bounds the context is the runtime (billion-context folding, DSH loading).
 
 - Only whole turns are dropped: a tool call never gets separated from its result.
 - The file written to disk is the trimmed copy. The `.dsproj` is untouched — unpack it and read `session/*.jsonl.zstd` for anything that was left out.
-- Turn it off with `?contextBudget=0`, or pick another budget with `?contextBudget=300000`.
+- Turn the report off with `?contextBudget=0`, or pick another budget with `?contextBudget=300000`.
 - The UI says "N earlier turns kept out of the context"; this never happens silently.
 
 

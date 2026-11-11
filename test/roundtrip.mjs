@@ -257,10 +257,8 @@ if (realAvailable === true) {
   const landedLines = linesOf(landedBuf);
   const droppedLines = Number(repair?.lines?.dropped ?? 0);
   check(
-    trimmedAway === true
-      ? landedLines < srcLines && Number(trim?.droppedTurns) > 0
-      : landedLines === srcLines - droppedLines,
-    'A13 行数账目对得上（体检丢的行、被裁的轮次都单独记账）',
+    landedLines === srcLines - droppedLines,
+    'A13 行数账目对得上（体检丢的行单独记账，裁剪不动落盘文件）',
     `${srcLines} 行 → ${landedLines} 行 · repair.drop=${droppedLines} · trim.droppedTurns=${trim?.droppedTurns ?? 0}`,
   );
   check(
@@ -303,13 +301,19 @@ if (realAvailable === true) {
       }
     }).length;
   check(
-    turnStarts === Number(trimReport?.keptTurns) && Number(trimReport?.keptTurns) + Number(trimReport?.droppedTurns) === Number(trimReport?.turns),
-    'A19 裁剪后落盘的就是「保留的那几轮完整 turn」（账目自洽）',
-    `turn/start=${turnStarts} kept=${trimReport?.keptTurns} + dropped=${trimReport?.droppedTurns} = ${trimReport?.turns}`,
+    Number(trimReport?.keptTurns) + Number(trimReport?.droppedTurns) === Number(trimReport?.turns),
+    'A19 裁剪报告的账目自洽（kept + dropped = 总轮次）',
+    `kept=${trimReport?.keptTurns} + dropped=${trimReport?.droppedTurns} = ${trimReport?.turns}`,
+  );
+  // 存档是用户的：预算只影响「这次带多少进上下文」，不许拿裁剪结果覆盖落盘文件。
+  check(
+    turnStarts === Number(trimReport?.turns) && trimReport?.applied === false,
+    'A20 超预算时落盘仍是完整会话、裁剪只出报告（applied=false）',
+    `落盘 turn/start=${turnStarts} / 报告 turns=${trimReport?.turns} / applied=${trimReport?.applied}`,
   );
   check(
-    textOf(trimmedBuf).includes('没有带进上下文'),
-    'A20 被裁掉的轮次在日志里留了说明（用户看得到）',
+    textOf(trimmedBuf).includes('没有带进上下文') === false,
+    'A21 落盘文件里不会被塞进「已裁掉」的说明',
   );
 }
 
@@ -542,7 +546,14 @@ if (realAvailable === true) {
           protocol: 'anthropic',
           host,
           savedAt,
-          state: { id, savedAt, meta: { protocol: 'anthropic', upstreamOrigin: `https://${host}` }, marker },
+          state: {
+            id,
+            savedAt,
+            // payload 是压缩块本体。真状态里它非空；这里的替身只要「非空对象」就能过判空闸。
+            payload: { version: 3, blocks: [{ id: 'b1', marker }] },
+            meta: { protocol: 'anthropic', upstreamOrigin: `https://${host}` },
+            marker,
+          },
         }),
         'utf8',
       );

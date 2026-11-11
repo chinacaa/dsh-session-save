@@ -155,8 +155,11 @@ function officialProjectKey(cwd) {
     const sample = projectKey('C:\\Users\\aa\\workspace');
     const hit = dirs.includes(sample);
     ok('本机当前工作区键与磁盘对照', hit ? `${sample} 存在` : `${sample} 不在磁盘上（${dirs.length} 个目录）`);
-    const shaped = dirs.filter((name) => !/^--.*--$/.test(name));
-    check(shaped.length === 0, '磁盘上的项目目录都符合 --…-- 形状', shaped.slice(0, 5).join(','));
+    // 剥掉本插件算出来的键之后，磁盘上可能还有别人建的目录（DSH 自己的 `_no-cwd`
+    // 放置「没有工作区」的内部会话，以及用户手建的东西）。断言只该管本插件的产出，
+    // 不能因为别人往 sessions/ 里放一个目录就红。
+    const shaped = dirs.filter((name) => !/^--.*--$/.test(name) && name !== '_no-cwd');
+    check(shaped.length === 0, '磁盘上的项目目录都符合 --…-- 形状（`_no-cwd` 是 DSH 自己的）', shaped.slice(0, 5).join(','));
   }
 }
 

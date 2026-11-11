@@ -706,6 +706,17 @@ function restoreBili(entries, expectedSessionId, backupWanted = true) {
   if (String(state?.id ?? '') !== sessionId) {
     return { written: 0, skipped: 0, rejected: 1, reason: 'session-mismatch' };
   }
+  // payload 是压缩块本体。空壳（payload 为 null/undefined/空对象）说明导出那一刻
+  // bili 手里根本没有可折叠的内容 —— 写进去等于把本机一份好状态换成一张白纸，
+  // 而返回体还会报 ok。宁可什么都不做，让本机那份继续用。
+  const statePayload = state?.payload;
+  const payloadEmpty =
+    statePayload === null ||
+    statePayload === undefined ||
+    (typeof statePayload === 'object' && Object.keys(statePayload).length === 0);
+  if (payloadEmpty === true) {
+    return { written: 0, skipped: 1, rejected: 0, reason: 'empty-payload' };
+  }
   const root = biliSessionsRoot();
   try {
     fs.accessSync(root);
@@ -754,12 +765,12 @@ function restoreBili(entries, expectedSessionId, backupWanted = true) {
         }
       }
     }
-    const payload = Buffer.from(JSON.stringify(state), 'utf8');
-    writeAtomic(dest, payload);
+    const stateBytes = Buffer.from(JSON.stringify(state), 'utf8');
+    writeAtomic(dest, stateBytes);
     // 写成功不等于写对：同步盘/杀软偶尔会短暂挡住 rename 后的读，
     // 这里回读一次，确认落下去的确实是我们这份（长度 + 首尾字节）。
     const back = fs.readFileSync(dest);
-    if (back.length !== payload.length || back.equals(payload) !== true) {
+    if (back.length !== stateBytes.length || back.equals(stateBytes) !== true) {
       // 回读到的不是我们写的那份。以前只记 rejected 就返回，文件却留在盘上 ——
       // 返回体说「没写」，磁盘上却多了一份没人验证过的 bili 状态。
       // 它是可重建的派生缓存（bili 下次会重写），删掉才能让「没写」是真的。
@@ -2681,16 +2692,20 @@ function importPackage(sourcePath, options = {}) {
   repaired = repairSession(finalBuf);
   finalBuf = repaired.buffer;
 
-  // 上下文预算：上面那个 repair 只修坏行和断链，不改体量。一条 86 MB 的会话换算下来
-  // 是两千多万 token，带进上下文等于把模型堵死，所以超预算时从尾部保留完整 turn。
+  // 上下文预算：一条 86 MB 的会话换算下来是两千多万 token，整段带进上下文等于把模型堵死。
+  // 但这里只报告「这份日志整段装进去要多少」，**不拿裁剪结果覆盖落盘文件**。
+  // 存档是用户的东西：导入的语义是「把会话原样搬到这台机器」，文件一旦被削，
+  // 削掉的那些 turn 就只剩 .dsproj 里那一份，而用户往往导完就把包删了。
+  // 真正该管「带多少进上下文」的是运行期（billion-context 的折叠 / DSH 自己的装载），
+  // 不是一次性的导入动作。预算算出来的数字进 context 报告，供界面提示用。
   const contextBefore = estimateContext(finalBuf);
   const budgetRaw =
     options.contextBudget === undefined ? CONTEXT_BUDGET_TOKENS : Number.parseInt(String(options.contextBudget), 10);
   let contextTrim;
   if (Number.isFinite(budgetRaw) && budgetRaw > 0 && contextBefore.tokens > budgetRaw) {
-    const trimmed = trimSession(finalBuf, { budget: budgetRaw });
-    finalBuf = trimmed.buffer;
-    contextTrim = trimmed.report;
+    // 只算不写：trimSession 是纯函数，拿到报告即可，buffer 丢掉。
+    const preview = trimSession(finalBuf, { budget: budgetRaw });
+    contextTrim = { ...preview.report, applied: false };
   }
   contextReport = { before: contextBefore, trim: contextTrim };
 

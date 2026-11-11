@@ -299,7 +299,7 @@ fetch(`${ROUTE}?${search.toString()}`, { method: 'GET', headers: { accept: 'appl
 3. **插槽还在不在**：`cordis_inspect_query` → `client/Slots.listSubTree` 传 `conversation.session.header.utilities`，看 5 个 occupant 是否全 `active`。
 4. **事件名没变**：`cordis_inspect_query` → `host/Event.listEvents` 传 `session/event`，确认签名仍是 `(session, event)`；再确认 `event.type` 仍可能是 `step/end` / `turn/end`。
 5. **会话文件还能读**：`node test/smoke.mjs`（打包 + 回读）与 `node test/open.mjs`（40 条，导入与冲突）。十一套测试全部通过 `test/fixture.mjs` 自建临时 `DSH_HOME`，不读真实 `~/.dsh`。
-6. **跑满回归**：`for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait dsh-list; do node test/$f.mjs || exit 1; done`，应共 **683** 条 ✅（详见 `docs/TEST-MATRIX.md`）。其中 `pathkey.mjs` 是 rc.4 适配时新增的目录名派生回归。
+6. **跑满回归**：`for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait dsh-list; do node test/$f.mjs || exit 1; done`，应共 **682** 条 ✅（详见 `docs/TEST-MATRIX.md`）。其中 `pathkey.mjs` 是 rc.4 适配时新增的目录名派生回归。
 7. **客户端能调 Host 吗**：`node test/client.mjs` 里已断言 `inject` 含 `remote` 与 `remote.session`、且源码不含 `uiWorkspace.openPath`。「打开记忆目录」失效是**静默**的（按钮点了没反应、不报错），只能靠这条断言兜住。
 
 ---

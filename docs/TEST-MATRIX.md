@@ -2,7 +2,7 @@
 
 本文从代码反推功能面（`index.js` 四条路由 + `client.js` 五个插槽项），逐条列出可观测行为、期望结果，以及由哪套测试覆盖。测试分两层：
 
-- **二十二套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共 683 条用例（`grep -c '✅'` 逐行相加的实测值）。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
+- **二十二套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共 682 条用例（`grep -c '✅'` 逐行相加的实测值）。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
 - **审计验收脚本**（未随仓库分发）：针对历史漏洞的复现/防回归，判据写在下表里，可照着重写。
 
 所有套件都通过 `test/fixture.mjs` 自建临时 `DSH_HOME`（`os.tmpdir()` 下），跑完自删——**不读也不改真实 `~/.dsh`**，所以在任何机器、任何数据状态下结果一致。功能面的 F 编号是本文与 `test/*.mjs` 注释共同引用的锚点，改动功能时两边一起改。
@@ -125,14 +125,14 @@
 | `test/repair.mjs` | 9 | F52 | R1 干净日志 `changed=false` 且 `buffer.equals(clean)`、帧数不变；R2 断链图换成 `[图片已丢失：lost.png]` 且会话里再无 `"type":"image"`；R3 缺尺寸的图按 PNG 头补成 640x480、`bytes` 等于真实字节数、`attachmentId` 未变；R4 坏行被丢、`lines.total` 仍按实际行数计、剩余行全部可 parse；R5 两帧结构下只有被改的那帧重写、另一帧字节 `equals` 不变；R6 `keepMissing: true` 时 `changed=false` 但仍报 `parts.missing=1`；R7 扁平 `attachmentId` 与嵌套 `attachment` 两种形状都认（断链换占位、健康的不动）；R8 修完 header 仍可读、`type==='session'`、id 一致，且对象库里的字节没有被碰 |
 | `test/version.mjs` | 7 | F53 | V1 `compareVersions` 五种情形（9.9.9 > 0.3.1、0.3.10 > 0.3.9 按数值比、1.0.0 > 0.9.9、自己跟自己相等、`0.3.0-rc.1` 丢后缀后等于 `0.3.0`）；V2 打出来的包 `manifest.plugin.name === 'dsh-session-save'` 且 `version` 等于 `package.json` 的版本；V3 把包改成「9.9.9 写的」并塞一条本版不认识的 `previews/…` 条目 → 打开返回 500，提示含「更新版本」「9.9.9」本机版本「升级」，且不含盘符路径；V4 同版本 + 陌生条目 → 仍报「不认识的条目」，不说「更新版本」；V5 删掉 `plugin` 字段的老包 + 陌生条目 → 照旧拒绝、不崩；V6 正常包照常打开（改了校验不等于改了放行） |
 | `test/bili.mjs` | 13 | F60 | B1 状态文件按 host + sha256(id) 前 24 位命名；B2 打包进 `bili/session.json`；B3 块内 plugin/schema/sessionId/protocol 齐全；B4 `manifest.bili.present` 与 `savedAt`；B5 导入回填 `written=1` 且路径一致；B6 本机更新时不覆盖；B7 schema≠3 不写盘；B8 未装 bili 照常 200；B9 老包 `absent`；B10 块里是别的 sessionId 时拒绝写入且不建别人的槽位；B11 protocol/host 带分隔符时落回默认目录、不逃出会话目录 |
-| `test/roundtrip.mjs` | 90 | F1、F2、F13、F51、F52、F59、F61 | A 真实会话往返：样本取自本机 `session-403aa63e…`（4708 帧 / 21 MB）的前 10 帧，导出后 `manifest.session.frames` 与 `parts` 逐条 sha256/bytes 与包内实体一致；导进另一个 `DSH_HOME` 后 id / createdAt / cwd / 帧数原样回来，解压文本逐字一致；体检改过时行数账目与 `repair.notes` 对得上；干净合成会话导入后字节级一致；再打开走 `reused`；`contextBudget=3000` 时按整轮裁剪、落盘 `turn/start` 数等于 `trim.keptTurns`、日志里留了说明。C 附件：图片与文件对象进包、缺的进 `manifest.attachments.missing`、删掉本机对象后导入回填且字节一致、再导入幂等（0 写 2 跳过）、内容与文件名不符的对象计 `rejected` 且不落盘。D 备份开关四个覆盖点：冲突选覆盖（`.bak` 等于被覆盖前的字节）、记忆 restore（`.bak` 是原文、返回体带备份路径）、bili 状态（`.bak` 是旧状态）、磁盘被改后 `force=1` 与覆盖陌生同名包；每处都验 `backup=0` 时不多出 `.bak` 而内容照样换。E 冲突载荷（两侧 id/createdAt/`lock`）与记忆清单 `memoryPlanned.exists`、默认不落原名 |
+| `test/roundtrip.mjs` | 91 | F1、F2、F13、F51、F52、F59、F61 | A 真实会话往返：样本取自本机 `session-403aa63e…`（4708 帧 / 21 MB）的前 10 帧，导出后 `manifest.session.frames` 与 `parts` 逐条 sha256/bytes 与包内实体一致；导进另一个 `DSH_HOME` 后 id / createdAt / cwd / 帧数原样回来，解压文本逐字一致；体检改过时行数账目与 `repair.notes` 对得上；干净合成会话导入后字节级一致；再打开走 `reused`；`contextBudget=3000` 时报告账目自洽（kept + dropped = 总轮次）、落盘 `turn/start` 数仍等于全部轮次且 `applied=false`（存档不被改）。C 附件：图片与文件对象进包、缺的进 `manifest.attachments.missing`、删掉本机对象后导入回填且字节一致、再导入幂等（0 写 2 跳过）、内容与文件名不符的对象计 `rejected` 且不落盘。D 备份开关四个覆盖点：冲突选覆盖（`.bak` 等于被覆盖前的字节）、记忆 restore（`.bak` 是原文、返回体带备份路径）、bili 状态（`.bak` 是旧状态）、磁盘被改后 `force=1` 与覆盖陌生同名包；每处都验 `backup=0` 时不多出 `.bak` 而内容照样换。E 冲突载荷（两侧 id/createdAt/`lock`）与记忆清单 `memoryPlanned.exists`、默认不落原名 |
 | `test/backup-ui.mjs` | 37 | F34、F58、F61 | 带真状态的小号 React 挂载组件：陈旧弹窗（`stale` → `StaleModal`）勾着点覆盖 → `force=1&backup=1`，取消勾选 → `backup=0`；冲突弹窗（`conflict` 409）选覆盖 → `onConflict=overwrite&backup=1`，选另存为副本 → `copy&backup=0`；合并记忆（`memoryMode=copy` 的 `MemoryNotice` → `MemoryMergeModal`）确认 → `memory=restore&backup=1`，取消勾选 → `backup=0`；三个弹窗各只有一个复选框、默认勾选、文案取自语言包。文案完整性：`client.js` 里每个 `L.<key>`（剥掉注释后）都在两份语言包、中文兜底表无重复键且键数与 `zh-CN.json` 相等、`backupKeep` 兜底值与源语言一致、`scripts/check-locales.mjs` 通过 |
 | `test/context.mjs` | 8 | F59 | C1 估算给出行数与 token（token < 字节）；C2 预算够时 `trimmed=false` 且 buffer 逐字节不变（不重压）；C3 超预算从尾保留完整 turn、token 真降；C4 裁完 header 在、id 未改、每行可解析、`turn/start` 与 `turn/end` 成对；C5 turn 号重排为 1..N 连续；C6 省略说明恰一条且写明轮数；C7 零轮会话不炸 |
 | `test/open-repair.mjs` | 6 | F52 | 端到端走真实路由 save → open：O1 会话里放一个本机没有的 image 对象，打包照常成功；O2 打开返回 `repair.parts.missing=1` / `dropped=1` / `changed=true` 且 `notes` 非空；O3 落盘的会话文件里已无 `"type":"image"`、留有可读占位；O4 同一份包再打开不再报缺失（体检幂等）；O5 全程不碰夹具外的路径 |
 
 | F57 | 三处「只能报错」给出下一步 | ①`replaceFile=1`：`landingCwd` 判 `not-directory` 时把占位文件改名成 `<原名>.bak-<时间戳>` 并建目录，失败改回原名；返回体 `canReplace` / `replacedFile`。②`ignoreLock=1`：锁判定改成 `!force && !ignoreLock`，409 带 `canIgnoreLock: true`；`stale` / 覆盖确认 / 类型判断不受影响。③`repairPackage=1`：`verifyPackage(..., { lenient: true })` 摘掉白名单外、哈希或体积不符、未声明的条目并返回 `dropped`；`importPackage` 重读一次再宽松校验，`session/` 被摘光仍拒绝；成功则 `packageRepair = { dropped, reason }` 并收窄 `manifest.attachments`。`packageBrokenReport()` 生成可复制的 `prompt`。 |
 | F58 | 界面语言由语言包驱动 | `locales/<tag>.json` 是唯一真源（`zh-CN.json` 为源语言，114 键）；`index.js` 的 `listLocaleTags()` 只列目录里的 `*.json`，`resolveLocaleTag()` 先精确、再主语言前缀（`en` → `en-US`）、最后回 `zh-CN`，**绝不按请求字符串拼路径**（`?lang=../../package` 退化成中文）；`LOCALES_ROUTE = '/api/session.locales'` 过 `requestGate`（回环 Host + 同源 Origin，跨站 403），下发 `{status, lang, fallback, messages, available}`。客户端启动时 `void loadLocale()` 按 `navigator.language` 拉一次、`Object.assign(L, messages)` 就地合并（`L.xxx` 几百处直读，换引用等于重写），失败静默沿用内置中文兜底表。`scripts/check-locales.mjs` 校验 JSON 合法 / 值是字符串 / 键是源语言子集 / 占位符一致。 |
-| F59 | 导入按上下文预算裁剪 | `estimateContext()` 逐帧解压累加行字节，按 `字节 / 3.2` 估 token；`trimSession()` 按 `turn/start`…`turn/end` 切块，从尾往前保留完整 turn 直到预算，头部插一条说明（省了几轮、完整日志仍在工程包里），turn 号重排为 1..N 连续，整包重压成单帧；`importPackage` 默认 `CONTEXT_BUDGET_TOKENS = 150000`，`?contextBudget=0` 关、`?contextBudget=<n>` 自定义，返回体 `context: { before, trim }` |
+| F59 | 导入按上下文预算裁剪 | `estimateContext()` 逐帧解压累加行字节，按 `字节 / 3.2` 估 token；`trimSession()` 按 `turn/start`…`turn/end` 切块、从尾往前保留完整 turn 直到预算（它只算不写），返回报告 `{ trimmed, budget, turns, keptTurns, droppedTurns, tokensBefore, tokensAfter }`；`importPackage` 默认 `CONTEXT_BUDGET_TOKENS = 150000`，超预算时报告标 `applied: false` 且**落盘仍是完整日志**，`?contextBudget=0` 关、`?contextBudget=<n>` 自定义，返回体 `context: { before, trim }` |
 | F60 | bili 压缩块随包 | `bili/session.json` 打包 bili 会话状态（`plugin` / `schema` / `sessionId` / `protocol` / `host` + 原状态），`manifest.bili` 记 `present` / `savedAt`；导入按 `<host>_<sha256(sessionId) 前 24 位>.json` 重建文件名写回。`schema` 不是 3 不写（`schema-mismatch`）、本机 `savedAt` 更新不覆盖（`newer-local`）、bili 没装记 `not-installed`、老包记 `absent`，四种都不是错误 |
 | F61 | 覆盖前可选备份 | 冲突面板（`onConflict=overwrite`）、磁盘被改过（`force=1`）、合并记忆（`memory=restore`）三处都带「覆盖前先备份原文件」勾选框，默认勾选；请求侧 `backup=0` 关闭。关闭时会话覆盖、记忆覆盖、bili 状态覆盖都不建 `.bak-`，内容照样换成本机包里的那份 |
 | F62 | 帧扫描按规范算 RLE | RLE 块载荷恒 1 字节（`type===1 → +1`），raw/compressed 加 `size`，`reserved` 视为不可解析；含 300 KB 连续空格的帧能被认出且覆盖到字节末尾，三帧日志扫出三帧 |
@@ -160,7 +160,7 @@
 | F83 | `isInside` 解析符号链接 | 两端都走 `realTarget()`（从最深的已存在祖先 realpath 再拼回剩余段）后 `path.relative` 判前缀；root 自己是 junction、dest 是 junction 但仍在 root 内都判是，dest 经 junction 逃出 root 判否 |
 | F84 | 跨工区记忆如实提示 | 包内 slug（`memory/workspaces/<slug>/…` 第一段）与本机 `memoryDirFor(cwd)` 解析出的 slug 不同时，返回体带 `memoryForeign:true` + `memoryForeignSlug`（落点仍由 `memoryDir` 给出）；合并记忆弹窗显示 `memoryForeignNote`（中英各一份），同工区不误报 |
 
-合计 **683 条**。
+合计 **682 条**。
 
 ### 审计验收脚本（未随仓库分发）
 
@@ -200,7 +200,7 @@ node test/open.mjs
 node test/conflict.mjs
 node test/security.mjs
 node test/pathkey.mjs
-# 或一把梭：二十二套 683 条全绿
+# 或一把梭：二十二套 682 条全绿
 for f in pathkey client dialog smoke open conflict security attach repair open-repair version context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait dsh-list; do node test/$f.mjs || exit 1; done
 ```
 

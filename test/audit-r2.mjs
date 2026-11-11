@@ -139,7 +139,14 @@ const turn = (seq, body) =>
 /* ── R2-4：bili host 带端口要写进正确槽位 ── */
 {
   const id = `session-${randomUUID()}`;
-  const state = { id, savedAt: 1, meta: { protocol: 'anthropic', upstreamOrigin: 'https://api.example.com:8443' }, seq: 0 };
+  // payload 非空：这个用例测的是 host 解析，不该先撞上「空壳状态不覆盖」那道闸。
+  const state = {
+    id,
+    savedAt: 1,
+    payload: { version: 3, blocks: [] },
+    meta: { protocol: 'anthropic', upstreamOrigin: 'https://api.example.com:8443' },
+    seq: 0,
+  };
   const biliDir = path.join(fx.home, 'bili-sessions', 'anthropic');
   fs.mkdirSync(biliDir, { recursive: true });
   process.env.BILI_SESSIONS_DIR = path.join(fx.home, 'bili-sessions');
