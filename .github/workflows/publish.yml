@@ -124,10 +124,22 @@ jobs:
           npm pack --dry-run
           npm pkg get name version
 
+      # pre-release（版本号带 `-`）不能占 latest：npm publish 默认就打 latest，
+      # 0.4.3-alpha.1 会把别人的 `npm i dsh-session-save` 换到 alpha 上。
+      # 带 `-` 改打 alpha 这个 dist-tag，稳定版照旧 latest。
       - name: 发布
         if: ${{ !inputs.dry_run && env.SKIP_PUBLISH != '1' }}
         shell: bash
-        run: npm publish --provenance --access public
+        run: |
+          set -euo pipefail
+          case "$VER" in
+            *-*) DIST_TAG=alpha ;;
+            *)   DIST_TAG=latest ;;
+          esac
+          # 这个步骤自己的 env 只有 VER/TAG，NAME 得现取，否则 set -u 直接把整步打断（v0.4.3-alpha.1 首次发预发布就栽在这里）。
+          NAME=$(node -p "require('./package.json').name")
+          echo "::notice::发布 $NAME@$VER，dist-tag=$DIST_TAG"
+          npm publish --provenance --access public --tag "$DIST_TAG"
 
       # 发布成功后把 npm 实际收下的那个 tarball 传成 Release 附件。
       #
@@ -204,10 +216,13 @@ jobs:
           node scripts/release-notes.mjs "$VER" \
             --fallback "本版变更见 [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/CHANGELOG.md)。" \
             > "$RUNNER_TEMP/notes.md"
+          # 版本号带 `-` 的标成 prerelease，别让它看起来像正式版
+          PRE=""
+          case "$VER" in *-*) PRE="--prerelease" ;; esac
           gh release create "$TAG" \
             --title "$TAG" \
             --notes-file "$RUNNER_TEMP/notes.md" \
-            --verify-tag
+            --verify-tag $PRE
 
       - name: 上传 tarball 到 Release
         if: ${{ !inputs.dry_run && env.SKIP_UPLOAD != '1' && env.TARBALL != '' }}

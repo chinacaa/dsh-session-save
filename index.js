@@ -50,19 +50,48 @@ const PLUGIN_VERSION = (() => {
  * 不判 semver 的兼容性语义（包格式看的是 `FORMAT`，不是这个）。
  */
 export function compareVersions(a, b) {
-  const parse = (text) =>
-    String(text ?? '')
-      .split('-')[0]
-      .split('.')
-      .map((part) => {
+  // semver：主版本段逐段比数字，缺位补 0；预发布段单独比，带预发布的小于同号正式版。
+  const parse = (text) => {
+    const raw = String(text ?? '').trim();
+    const dash = raw.indexOf('-');
+    const core = dash === -1 ? raw : raw.slice(0, dash);
+    const pre = dash === -1 ? undefined : raw.slice(dash + 1);
+    return {
+      nums: core.split('.').map((part) => {
         const n = Number.parseInt(part, 10);
         return Number.isFinite(n) ? n : 0;
-      });
+      }),
+      // '1.0.0-' 这种畸形写法按「没有预发布」处理，别当成最小的版本。
+      labels: pre === undefined || pre === '' ? undefined : pre.split('.'),
+    };
+  };
   const left = parse(a);
   const right = parse(b);
-  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
-    const x = left[i] ?? 0;
-    const y = right[i] ?? 0;
+  for (let i = 0; i < Math.max(left.nums.length, right.nums.length); i += 1) {
+    const x = left.nums[i] ?? 0;
+    const y = right.nums[i] ?? 0;
+    if (x !== y) return x > y ? 1 : -1;
+  }
+  // 主版本相同时，带预发布的那一侧更小（0.4.3-alpha.1 < 0.4.3）。
+  // 这一条不能省：插件跑 0.4.3-alpha.1、包是 0.4.3 写的，必须判成「包更新」，
+  // 否则会被当成「包里有不认识的条目」而报「包坏了」。
+  if (left.labels === undefined || right.labels === undefined) {
+    if (left.labels === undefined && right.labels === undefined) return 0;
+    return left.labels === undefined ? 1 : -1;
+  }
+  for (let i = 0; i < Math.max(left.labels.length, right.labels.length); i += 1) {
+    const x = left.labels[i];
+    const y = right.labels[i];
+    if (x === undefined) return -1; // 段数少的更小
+    if (y === undefined) return 1;
+    const nx = /^\d+$/.test(x) ? Number.parseInt(x, 10) : undefined;
+    const ny = /^\d+$/.test(y) ? Number.parseInt(y, 10) : undefined;
+    if (nx !== undefined && ny !== undefined) {
+      if (nx !== ny) return nx > ny ? 1 : -1;
+      continue;
+    }
+    if (nx !== undefined) return -1; // 数字段低于字母段
+    if (ny !== undefined) return 1;
     if (x !== y) return x > y ? 1 : -1;
   }
   return 0;
@@ -185,8 +214,10 @@ function decompressFrame(slice) {
  * @param buf - whole log file
  * @returns array of { start, end } frame bounds
  */
-export function scanZstdFrames(buf) {
+export function scanZstdFramesDetailed(buf) {
   const frames = [];
+  // 认出了帧头、但帧体（或末块之后的 checksum）没读完 —— 末帧被截断。
+  let truncated = false;
   let p = 0;
   while (p + 8 <= buf.length && buf.readUInt32LE(p) === ZSTD_MAGIC) {
     const start = p;
@@ -206,18 +237,41 @@ export function scanZstdFrames(buf) {
       const type = (bh >> 1) & 3;
       const size = bh >>> 3;
       p += 3;
-      if (type !== 1) p += size; // raw/rle blocks carry their payload
+      // zstd 规范：Block_Type=1（RLE）的 Block_Size 是解压后大小，载荷恒 1 字节。
+      // 早先按「非 RLE 才加 size」算，RLE 块加 0 → p 从此错位，后面全是垃圾，
+      // 整帧被当成「没写完」丢掉：一条带 300 KB 连续空格的普通消息就能触发，
+      // rewriteHeader 随即把正文帧全扔了，还回 HTTP 200 说一切正常。
+      if (type === 1) p += 1;
+      else if (type === 0 || type === 2) p += size;
+      else {
+        complete = false; // 3 = reserved，规范里不存在，当损坏处理
+        break;
+      }
       if (p > buf.length) break;
       if (last) {
+        // checksum 的 4 个字节也是帧的一部分。以前不管 p 是否越过文件末尾都置 complete，
+        // 随后 end 被 Math.min 夹回 buf.length —— 一个被砍掉 checksum 的末帧于是看起来
+        // 「正好覆盖到文件末尾」，覆盖率闸放行，rewriteHeader 把半截帧当正文照搬。
         if (checksum) p += 4;
-        complete = true;
+        if (p <= buf.length) complete = true;
         break;
       }
     }
-    if (!complete) break; // 末尾半写帧不计入
-    frames.push({ start, end: Math.min(p, buf.length) });
+    if (!complete) {
+      truncated = true;
+      break;
+    }
+    frames.push({ start, end: p });
   }
-  return frames;
+  return { frames, truncated };
+}
+
+/**
+ * 帧边界列表。截断标记只在需要区分「文件末尾正好是一帧」与「末帧没写完」的地方用
+ * （覆盖率闸、体检报告）；其余调用方要的只是边界。
+ */
+export function scanZstdFrames(buf) {
+  return scanZstdFramesDetailed(buf).frames;
 }
 
 function readHeader(buf) {
@@ -233,12 +287,15 @@ function readStats(buf) {
   const frames = scanZstdFrames(buf);
   let lines = 0;
   for (const frame of frames) {
+    let text;
     try {
-      const text = decompressFrame(buf.subarray(frame.start, frame.end)).toString('utf8');
-      for (const line of text.split('\n')) if (line.trim() !== '') lines += 1;
-    } catch {
-      /* 单帧解压失败不影响打包 */
+      text = decompressFrame(buf.subarray(frame.start, frame.end)).toString('utf8');
+    } catch (error) {
+      // 超单帧上限是攻击信号，不是「这帧坏了」；吞掉等于让炸弹包通过体检。
+      if (error?.code === 'ERR_BUFFER_TOO_LARGE') throw error;
+      continue;
     }
+    for (const line of text.split('\n')) if (line.trim() !== '') lines += 1;
   }
   return { frames: frames.length, lines };
 }
@@ -426,12 +483,18 @@ export function zipRead(buf) {
     if (dataStart + csize > buf.length) throw new Error(`条目数据越界：${name}`);
     if (usize > MAX_ENTRY_BYTES) throw new Error(`条目解压后过大（${usize} 字节），拒绝打开：${name}`);
     if (csize > MAX_ENTRY_BYTES) throw new Error(`条目压缩体积过大，拒绝打开：${name}`);
-    // 附件是已压缩的二进制，合法包的压缩比接近 1:1，不存在「小条目需要放过」的理由。
-    // 给它们沿用 4 MB 的豁免，等于允许 3 MiB 的全零缓冲区把总配额撑满（实测 935× 放大）。
+    // 附件条目不再整段豁免：本插件写包时一律 store，但别人重打包（7-Zip、资源管理器
+    // 的「发送到压缩文件夹」）会 DEFLATE，1 MiB 文本压成 1 KB、比值上千——那是合法包。
+    // 这里不取消闸门（3 MiB 全零缓冲区 935:1 的放大是真的，见 test/security 的 R7），
+    // 而是把话说明白：提示它「被重新压缩过、请按 store 重打包」，而不是只丢一句比值异常。
     const isAttachment = name.startsWith('attachments/');
     const ratioFloor = isAttachment ? 64 * 1024 : RATIO_FLOOR_BYTES;
     if (usize > ratioFloor && csize > 0 && usize / csize > MAX_RATIO) {
-      throw new Error(`条目压缩比异常（约 ${Math.round(usize / csize)}:1），拒绝打开：${name}`);
+      throw new Error(
+        isAttachment
+          ? `附件条目压缩比异常：被重新压缩过（约 ${Math.round(usize / csize)}:1，本插件写包用 store），拒绝打开：${name}`
+          : `条目压缩比异常（约 ${Math.round(usize / csize)}:1），拒绝打开：${name}`,
+      );
     }
     const raw = buf.subarray(dataStart, dataStart + csize);
     let data;
@@ -514,6 +577,218 @@ export function attachmentRefs(buf) {
  * 三道校验——条目名合法、分片目录与哈希前缀一致、内容真的哈希成这个名字，
  * 任何一条不成立就整条跳过：宁可少恢复一个对象，也不往对象库里写来路不明的字节。
  */
+// ── billion-context 压缩块 ──────────────────────────────────────────
+// bili 把每个会话的压缩状态存在自己的 XDG 目录里，文件名是
+// `<上游 host>_<sha256(sessionId) 的前 24 位十六进制>.json`（实测 0.1.211）。
+// 导出时把这份状态原样带走，导入时按同一算法重建文件名写回去，bili 下次
+// 请求这个会话就能接着用已经压好的块，而不是把整包历史重发一遍。
+// 兼容口径：bili 没装、schema 不是 3、本机那份比包里新，一律不动——宁可不恢复，
+// 也不能把一份认不出来的状态塞进别人的库。
+const BILI_PLUGIN = 'billion-context';
+const BILI_SCHEMA = 3;
+const BILI_ENTRY = 'bili/session.json';
+
+export function biliSessionsRoot() {
+  const configured = process.env.BILI_SESSIONS_DIR;
+  if (typeof configured === 'string' && configured !== '') return configured;
+  return path.join(os.homedir(), '.local', 'share', 'billion-context', 'sessions');
+}
+
+function biliIdHash(sessionId) {
+  return cryptoHash(Buffer.from(String(sessionId), 'utf8')).slice(0, 24);
+}
+
+// 这两个值来自包内容，会被拼进文件路径。它们必须是"一个目录名 / 一段文件名"，
+// 不含分隔符也不含 ..，否则一份构造过的包能把状态写到会话目录之外。
+const BILI_PROTOCOL_RE = /^[a-z0-9][a-z0-9._-]{0,31}$/i;
+// host 只收裸主机名。带端口的 origin（`api.example.com:8443`）会解析出带冒号的 host，
+// 而冒号在 Windows 文件名里非法（实测 rename 直接 EINVAL）——原样写进去必然失败，
+// 换成别的字符又会写进 bili 永远找不到的槽位。所以带端口一律按 bad-host 拒绝，
+// 由调用方如实报告，不再静默落到 api.deepseek.com 的槽位。
+const BILI_HOST_RE = /^[a-z0-9][a-z0-9.-]{0,253}$/i;
+
+function biliProtocolOf(state) {
+  const protocol = state?.meta?.protocol;
+  return typeof protocol === 'string' && BILI_PROTOCOL_RE.test(protocol) === true ? protocol : 'anthropic';
+}
+
+function biliHostOf(state) {
+  const origin = typeof state?.meta?.upstreamOrigin === 'string' ? state.meta.upstreamOrigin : '';
+  // 没有 origin 才是「用默认上游」；给了 origin 但解析不出来是错，不能默默当成默认值——
+  // 那样状态会写进 api.deepseek.com 的槽位，bili 下次按真实 host 找永远找不到，而返回体还报 ok。
+  if (origin === '') return 'api.deepseek.com';
+  let bare = origin.trim();
+  try {
+    const parsed = new URL(bare);
+    bare = parsed.host;
+  } catch {
+    bare = bare.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  }
+  return BILI_HOST_RE.test(bare) === true ? bare : undefined;
+}
+
+// 文件名要 host，host 又只存在于文件内容里，所以按「后缀是 id 的哈希」扫目录。
+export function findBiliState(sessionId) {
+  const suffix = `_${biliIdHash(sessionId)}.json`;
+  const root = biliSessionsRoot();
+  let dirs;
+  try {
+    dirs = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return undefined;
+  }
+  for (const dir of dirs) {
+    if (dir.isDirectory() !== true) continue;
+    const sub = path.join(root, dir.name);
+    let files;
+    try {
+      files = fs.readdirSync(sub);
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      if (file.endsWith(suffix) !== true) continue;
+      try {
+        const absolute = path.join(sub, file);
+        const state = JSON.parse(fs.readFileSync(absolute, 'utf8'));
+        if (String(state?.id ?? '') !== String(sessionId)) continue;
+        return { state, file, absolute };
+      } catch {
+        continue;
+      }
+    }
+  }
+  return undefined;
+}
+
+function collectBili(sessionId) {
+  const found = findBiliState(sessionId);
+  if (found === undefined) return { entry: undefined, info: { present: false } };
+  const wrapper = {
+    plugin: BILI_PLUGIN,
+    schema: BILI_SCHEMA,
+    sessionId: String(sessionId),
+    protocol: biliProtocolOf(found.state),
+    host: biliHostOf(found.state) ?? 'api.deepseek.com',
+    savedAt: Number(found.state?.savedAt) || null,
+    state: found.state,
+  };
+  const data = Buffer.from(JSON.stringify(wrapper), 'utf8');
+  return {
+    entry: { name: BILI_ENTRY, data, store: true },
+    info: { present: true, schema: BILI_SCHEMA, savedAt: wrapper.savedAt, bytes: data.length },
+  };
+}
+
+function restoreBili(entries, expectedSessionId, backupWanted = true) {
+  const raw = entries instanceof Map ? entries.get(BILI_ENTRY) : undefined;
+  if (raw === undefined) return { written: 0, skipped: 0, rejected: 0, reason: 'absent' };
+  let wrapper;
+  try {
+    wrapper = JSON.parse(Buffer.from(raw).toString('utf8'));
+  } catch {
+    return { written: 0, skipped: 0, rejected: 1, reason: 'bad-json' };
+  }
+  if (wrapper?.plugin !== BILI_PLUGIN) return { written: 0, skipped: 0, rejected: 1, reason: 'foreign' };
+  if (Number(wrapper?.schema) !== BILI_SCHEMA) {
+    return { written: 0, skipped: 0, rejected: 0, reason: 'schema-mismatch', schema: wrapper?.schema ?? null };
+  }
+  const state = wrapper?.state;
+  const sessionId = String(wrapper?.sessionId ?? state?.id ?? '');
+  if (sessionId === '' || state === null || typeof state !== 'object') {
+    return { written: 0, skipped: 0, rejected: 1, reason: 'no-state' };
+  }
+  // 只恢复本会话：块里的 sessionId 必须就是这次导入的那个会话。
+  // 少了这一步，一份构造过的包可以带别人的 id，把状态写进另一个会话的槽位。
+  if (expectedSessionId !== undefined && String(expectedSessionId) !== sessionId) {
+    return { written: 0, skipped: 0, rejected: 1, reason: 'session-mismatch' };
+  }
+  if (String(state?.id ?? '') !== sessionId) {
+    return { written: 0, skipped: 0, rejected: 1, reason: 'session-mismatch' };
+  }
+  // payload 是压缩块本体。空壳（payload 为 null/undefined/空对象）说明导出那一刻
+  // bili 手里根本没有可折叠的内容 —— 写进去等于把本机一份好状态换成一张白纸，
+  // 而返回体还会报 ok。宁可什么都不做，让本机那份继续用。
+  const statePayload = state?.payload;
+  const payloadEmpty =
+    statePayload === null ||
+    statePayload === undefined ||
+    (typeof statePayload === 'object' && Object.keys(statePayload).length === 0);
+  if (payloadEmpty === true) {
+    return { written: 0, skipped: 1, rejected: 0, reason: 'empty-payload' };
+  }
+  const root = biliSessionsRoot();
+  try {
+    fs.accessSync(root);
+  } catch {
+    // bili 没装：不是错误，只是这一份状态没人接
+    return { written: 0, skipped: 1, rejected: 0, reason: 'not-installed' };
+  }
+  const host = biliHostOf(state);
+  if (host === undefined) {
+    // 包里的 upstreamOrigin 解析不出合法 host：不许静默落到 api.deepseek.com 槽位——
+    // 写进去 bili 下次按真实 host 找永远找不到，而返回体还会报 ok。
+    return { written: 0, skipped: 0, rejected: 1, reason: 'bad-host' };
+  }
+  const dir = path.join(root, biliProtocolOf(state));
+  const dest = path.join(dir, `${host}_${biliIdHash(sessionId)}.json`);
+  // 兜底：白名单挡不住所有写法，落点必须真的在会话目录里
+  if (isInside(root, dest) !== true) {
+    return { written: 0, skipped: 0, rejected: 1, reason: 'bad-target' };
+  }
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    if (fs.existsSync(dest)) {
+      let localAt = 0;
+      try {
+        localAt = Number(JSON.parse(fs.readFileSync(dest, 'utf8'))?.savedAt) || 0;
+      } catch {
+        localAt = 0;
+      }
+      const packAt = Number(state?.savedAt) || 0;
+      // 本机这份更晚：它带着包导出之后的对话，覆盖等于把进度退回去
+      if (localAt > packAt) return { written: 0, skipped: 1, rejected: 0, reason: 'newer-local' };
+      // bili 每轮都会重写这份状态。刚被改过说明它正在这个会话上干活，
+      // 这时覆盖进去会被它下一次写盖掉，甚至让它读到一份它没预期的状态。
+      // 等一次再判；仍然新鲜就让开，交给用户稍后重开。
+      if (Date.now() - fs.statSync(dest).mtimeMs < 2000) {
+        // 以前在这里 `Atomics.wait` 睡 120 ms 再判一次：那是同步阻塞事件循环，导入一次卡一次。
+        // importPackage 整条链是同步的，改异步会传染到路由；这里直接让开更简单也更快——
+        // bili 刚写过就说明它正在这个会话上干活，本来就不该覆盖。
+        return { written: 0, skipped: 1, rejected: 0, reason: 'busy' };
+      }
+      if (backupWanted === true) {
+        try {
+          fs.copyFileSync(dest, `${dest}.bak-${Date.now()}`);
+        } catch {
+          // 备份失败不挡写盘：目标本来就是可重建的派生状态
+        }
+      }
+    }
+    const stateBytes = Buffer.from(JSON.stringify(state), 'utf8');
+    writeAtomic(dest, stateBytes);
+    // 写成功不等于写对：同步盘/杀软偶尔会短暂挡住 rename 后的读，
+    // 这里回读一次，确认落下去的确实是我们这份（长度 + 首尾字节）。
+    const back = fs.readFileSync(dest);
+    if (back.length !== stateBytes.length || back.equals(stateBytes) !== true) {
+      // 回读到的不是我们写的那份。以前只记 rejected 就返回，文件却留在盘上 ——
+      // 返回体说「没写」，磁盘上却多了一份没人验证过的 bili 状态。
+      // 它是可重建的派生缓存（bili 下次会重写），删掉才能让「没写」是真的。
+      let removed = false;
+      try {
+        fs.rmSync(dest, { force: true });
+        removed = fs.existsSync(dest) !== true;
+      } catch {
+        removed = false;
+      }
+      return { written: 0, skipped: 0, rejected: 1, reason: 'verify-failed', removed };
+    }
+    return { written: 1, skipped: 0, rejected: 0, reason: 'ok' };
+  } catch (error) {
+    return { written: 0, skipped: 0, rejected: 1, reason: 'write-failed', message: String(error?.message ?? error) };
+  }
+}
+
 function restoreAttachments(entries) {
   let written = 0;
   let skipped = 0;
@@ -561,10 +836,36 @@ function restoreAttachments(entries) {
   return { written, skipped, rejected };
 }
 
-/** dest 是否严格落在 root 之内（root 自身不算）。用 relative 判前缀，别用字符串 startsWith。 */
-function isInside(root, dest) {
-  const rootAbs = path.resolve(root);
-  const rel = path.relative(rootAbs, path.resolve(dest));
+/** 把一段路径解析成真实落点：从最深的已存在祖先开始 realpath，再把剩下的段拼回去。 */
+function realTarget(target) {
+  const abs = path.resolve(target);
+  const rest = [];
+  let head = abs;
+  for (;;) {
+    try {
+      const real = typeof fs.realpathSync.native === 'function' ? fs.realpathSync.native(head) : fs.realpathSync(head);
+      return rest.length === 0 ? real : path.join(real, ...rest.reverse());
+    } catch {
+      const up = path.dirname(head);
+      // 一路走到根还解析不出来（盘符不存在、没有权限）：退回字面路径。
+      // 宁可少判一层链接，也不能把一条合法路径判成越界 —— 工作区与插件本身
+      // 在本机就是 junction，误判等于打不开自己的东西。
+      if (up === head) return abs;
+      rest.push(path.basename(head));
+      head = up;
+    }
+  }
+}
+
+/**
+ * dest 是否严格落在 root 之内（root 自身不算）。
+ *
+ * 必须比解析后的路径：落点可能是 junction / symlink，字面路径在 root 里、真实写入
+ * 却落在别处。两端都走 realTarget，于是「root 自己是链接」「dest 是链接」
+ * 「dest 经链接逃出 root」三种情形都对。判前缀仍用 path.relative，不用字符串 startsWith。
+ */
+export function isInside(root, dest) {
+  const rel = path.relative(realTarget(root), realTarget(dest));
   return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
@@ -708,10 +1009,250 @@ function repairPartNode(node, report, options, depth = 0) {
  * 引用了不存在的附件对象（换成文字占位）。拿不准的一律原样保留——导入是迁移，不是编辑。
  * 帧结构保持不变：没改动的帧直接沿用原字节，改过的帧才重压。
  */
-export function repairSession(buffer, options = {}) {
+// ── 上下文预算 ─────────────────────────────────────────────────────────────
+// billion-context 这类插件在 wire 层做增量压缩：它把自己见过的消息折叠掉，只发新的。
+// 但它按会话 id 记状态，第一次见到一个从外面搬进来的会话时手里没有历史，只能整包发上游。
+// 本机实测一条 19.8 MB 的日志解压后 86 MB、约两千七百万 token，这种请求上游窗口接不住，
+// 插件自己的预算也会在本地把它拒掉。
+// 所以导入时按预算从尾部保留完整的 turn，砍掉的部分用一句话交代：
+// 日志原件还在 .dsproj 里，用户没丢东西，只是这次不带进来。
+const CONTEXT_BUDGET_TOKENS = 150000;
+const BYTES_PER_TOKEN = 3.2;
+
+/**
+ * 全解路径的累计字节上限（estimateContext / trimSession）。
+ *
+ * 为什么单帧上限不够：MAX_FRAME_BYTES 只管一帧，几百帧各自几十 MB 加起来仍是几十 GB，
+ * 逐帧解压、逐帧累加，内存一路涨到进程被系统杀掉。这里与 decodeLogText / repairSession
+ * 同口径取 MAX_TOTAL_BYTES —— 那两条也是「所有帧都解开」的路径，数字对齐才不会出现
+ * 「打包能过、估算先死」。
+ * 为什么不会误杀正常的大包：附件额度是 128 MB，且附件本身已压缩（合法包接近 1:1），
+ * 一个合规的包里会话日志解开后远到不了 512 MB。
+ */
+function logTooLargeError(maxBytes) {
+  const limit = Math.round(maxBytes / (1024 * 1024));
+  const error = new Error(
+    `会话日志解开后超过 ${limit} MB，已停止读取：这个工程包太大，不是文件损坏。` +
+      '请先导出更短的会话区间，或把包分卷后再打开。',
+  );
+  error.code = 'E_LOG_TOO_LARGE';
+  return error;
+}
+
+/** 上限取值：调用方可以显式给一个更小的额度，否则用整包口径。 */
+function readLimit(value) {
+  return Number.isFinite(value) && value > 0 ? value : MAX_TOTAL_BYTES;
+}
+
+/** 累计已解出的字节数；越过上限就停在这里，不再解下一帧。 */
+function countScanned(scanned, length, maxBytes) {
+  const total = scanned + length;
+  if (total > maxBytes) throw logTooLargeError(maxBytes);
+  return total;
+}
+
+export function estimateContext(buffer, options = {}) {
+  const maxBytes = readLimit(options.maxBytes);
   const frames = scanZstdFrames(buffer);
+  let bytes = 0;
+  let lines = 0;
+  let scanned = 0;
+  for (const frame of frames) {
+    let text;
+    try {
+      text = decompressFrame(buffer.subarray(frame.start, frame.end)).toString('utf8');
+    } catch (error) {
+      if (error?.code === 'ERR_BUFFER_TOO_LARGE') throw error;
+      continue;
+    }
+    scanned = countScanned(scanned, text.length, maxBytes);
+    for (const line of text.split('\n')) {
+      if (line === '') continue;
+      bytes += Buffer.byteLength(line, 'utf8');
+      lines += 1;
+    }
+  }
+  return { bytes, lines, frames: frames.length, tokens: Math.ceil(bytes / BYTES_PER_TOKEN) };
+}
+
+export function trimSession(buffer, options = {}) {
+  const budget = Number.isFinite(options.budget) && options.budget > 0 ? options.budget : CONTEXT_BUDGET_TOKENS;
+  const budgetBytes = Math.floor(budget * BYTES_PER_TOKEN);
+  const maxBytes = readLimit(options.maxBytes);
+  const rows = [];
+  let scanned = 0;
+  for (const frame of scanZstdFrames(buffer)) {
+    let text;
+    try {
+      text = decompressFrame(buffer.subarray(frame.start, frame.end)).toString('utf8');
+    } catch (error) {
+      if (error?.code === 'ERR_BUFFER_TOO_LARGE') throw error;
+      continue;
+    }
+    // 与 estimateContext 同一个累计口径：这条路径同样会把每一帧都解开。
+    scanned = countScanned(scanned, text.length, maxBytes);
+    for (const line of text.split('\n')) if (line !== '') rows.push(line);
+  }
+  const typeOf = (line) => {
+    try {
+      return JSON.parse(line).type ?? '';
+    } catch {
+      return '';
+    }
+  };
+  // 第一个 turn/start 之前的东西（header、权限预设、沙箱模式…）是会话的立身之本，整段保留。
+  const head = [];
+  const turns = [];
+  let current;
+  let seenTurn = false;
+  for (const line of rows) {
+    const type = typeOf(line);
+    if (type === 'turn/start') {
+      seenTurn = true;
+      current = { lines: [line] };
+      turns.push(current);
+      continue;
+    }
+    if (seenTurn !== true) {
+      // 只有「第一轮之前」的行才算头部（header、权限预设、沙箱模式）。
+      head.push(line);
+      continue;
+    }
+    if (current === undefined) {
+      // 两轮之间的行（session/title、session/updated、agent/inbox/spliced…）跟着前一轮走。
+      // 按 `current === undefined` 判头会把它们一路提到文件最前面：语义上等于给一份没有
+      // 前文的日志安上中途的状态，标题会先于裁剪提示生效。
+      const last = turns[turns.length - 1];
+      if (last !== undefined) last.lines.push(line);
+      else head.push(line);
+      continue;
+    }
+    current.lines.push(line);
+    if (type === 'turn/end') current = undefined;
+  }
+  // 从最后一轮往前收。保留的必须都是完整 turn：从中间切会让 tool/call 与 tool/result 配不上对。
+  const kept = [];
+  let used = 0;
+  let oversizeTurn = false;
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    const size = turns[i].lines.reduce((n, line) => n + Buffer.byteLength(line, 'utf8'), 0);
+    if (used + size > budgetBytes) {
+      // 最后一轮自己就超预算（一次超长工具输出、一次大文件读取的 tool/result）：
+      // 以前 `kept.length > 0` 让它无条件保留，预算一点没生效，report 还报 trimmed:true。
+      // 现在按行从尾部切，切点只会落在行边界上。
+      if (kept.length === 0) {
+        const lines = turns[i].lines;
+        // turn/start 必须留着：没有它这一轮就不成轮，日志里的轮次账目也对不上。
+        const tail = lines.slice(0, 1);
+        let acc = Buffer.byteLength(lines[0], 'utf8');
+        for (let k = lines.length - 1; k >= 1; k -= 1) {
+          const len = Buffer.byteLength(lines[k], 'utf8');
+          if (tail.length > 1 && acc + len > budgetBytes) break;
+          tail.unshift(lines[k]);
+          acc += len;
+        }
+        if (tail.length > 0) {
+          // 只有真被切掉行时才算 partial：单行就超过预算时 tail 仍是整轮
+          // （一行 200 KB 的 JSON 切不动），那时一个字节都没丢，不能报 trimmed。
+          kept.unshift({ lines: tail, partial: tail.length < lines.length });
+          used += acc;
+          oversizeTurn = true;
+        }
+      }
+      break;
+    }
+    kept.unshift(turns[i]);
+    used += size;
+  }
+  const droppedTurns = turns.length - kept.length;
+  const partialTurn = kept.some((turn) => turn.partial === true);
+  const beforeBytes = rows.reduce((n, line) => n + Buffer.byteLength(line, 'utf8'), 0);
+  if (droppedTurns <= 0 && partialTurn !== true) {
+    return {
+      buffer,
+      report: {
+        trimmed: false,
+        budget,
+        turns: turns.length,
+        keptTurns: kept.length,
+        droppedTurns: 0,
+        oversizeTurn,
+        stillOverBudget: Math.ceil(beforeBytes / BYTES_PER_TOKEN) > budget,
+        tokensBefore: Math.ceil(beforeBytes / BYTES_PER_TOKEN),
+        tokensAfter: Math.ceil(beforeBytes / BYTES_PER_TOKEN),
+      },
+    };
+  }
+  let firstSeq = 0;
+  try {
+    const value = JSON.parse(kept[0].lines[0]).seq;
+    if (Number.isFinite(value)) firstSeq = value;
+  } catch {
+    firstSeq = 0;
+  }
+  const out = [...head];
+  out.push(
+    JSON.stringify({
+      type: 'user/message',
+      seq: firstSeq - 1,
+      time: Date.now(),
+      data: {
+        content: [
+          {
+            type: 'text',
+            text:
+              '这条会话是从工程包导入的，更早的 ' +
+              String(droppedTurns) +
+              ' 轮对话没有带进上下文（完整日志仍在那个 .dsproj 包里）。需要的细节可以直接打开包里的 session.v4.jsonl.zstd 取。',
+          },
+        ],
+        role: 'user',
+        id: 'trimmed-' + String(Date.now()),
+      },
+      surfaceOp: 'append',
+    }),
+  );
+  // turn 号重新从 1 排：跳号会让界面显示成「第 87 轮」，用户以为少看了什么。重排不改语义。
+  let nextTurn = 1;
+  for (const turn of kept) {
+    for (const line of turn.lines) {
+      let obj;
+      try {
+        obj = JSON.parse(line);
+      } catch {
+        out.push(line);
+        continue;
+      }
+      if (obj.data !== undefined && obj.data !== null && typeof obj.data.turn === 'number') obj.data.turn = nextTurn;
+      out.push(JSON.stringify(obj));
+    }
+    nextTurn += 1;
+  }
+  const payload = Buffer.from(out.join('\n') + '\n', 'utf8');
+  return {
+    buffer: zlib.zstdCompressSync(payload, CHECKSUM_OPTIONS),
+    report: {
+      trimmed: true,
+      budget,
+      turns: turns.length,
+      keptTurns: kept.length,
+      droppedTurns,
+      // 最后一轮自己超预算、被按行切开：界面要说「这一轮太大」，不能只说「已裁剪」。
+      oversizeTurn,
+      stillOverBudget: Math.ceil(payload.length / BYTES_PER_TOKEN) > budget,
+      tokensBefore: Math.ceil(beforeBytes / BYTES_PER_TOKEN),
+      tokensAfter: Math.ceil(payload.length / BYTES_PER_TOKEN),
+    },
+  };
+}
+
+export function repairSession(buffer, options = {}) {
+  // 截断标记要如实带出去：末帧没写完时帧数比文件短一截，
+  // 只说「共 N 帧」会让人以为日志是完整的。
+  const scan = scanZstdFramesDetailed(buffer);
+  const frames = scan.frames;
   const report = {
-    frames: { total: frames.length, broken: 0 },
+    frames: { total: frames.length, broken: 0, truncated: scan.truncated },
     lines: { total: 0, dropped: 0 },
     parts: { total: 0, missing: 0, patched: 0, dropped: 0 },
     changed: false,
@@ -789,7 +1330,18 @@ function repairInPlace(file, options = {}) {
     throw error;
   }
   const repaired = repairSession(buf, options);
-  if (repaired.report.changed === true) writeAtomic(file, repaired.buffer);
+  if (repaired.report.changed === true) {
+    // 就地改会话文件是不可逆的：断链图会被换成占位文字、坏行会被丢掉。
+    // 与其它覆盖点用同一个开关，默认留一份 `.bak-<时间>`。
+    if (options.backup !== false) {
+      try {
+        fs.copyFileSync(file, `${file}.bak-${Date.now()}`);
+      } catch {
+        /* 备份失败不挡体检：文件已经读进来了，改写本身是确定的 */
+      }
+    }
+    writeAtomic(file, repaired.buffer);
+  }
   return repaired.report;
 }
 
@@ -803,6 +1355,23 @@ function isInsideAny(dest, roots) {
  * 拒绝空段、`.`、`..`、盘符、UNC 前缀与控制字符。
  * 只要有一段不合法就抛错——不允许「尽量洗干净再写」。
  */
+/**
+ * 给文件名加后缀，但别让它超过 255 个 UTF-16 码元。
+ * copy 模式会在原名后追加 `.from-dsproj-<日期>`：84 个汉字的名字本来恰好合规，
+ * 加完后缀就过线了 —— 同一份记忆 restore 能写、copy 写不了，属于自造的可用性缺口。
+ */
+function withSuffix(rel, suffix) {
+  const base = String(rel);
+  if (base.length + suffix.length <= 255) return base + suffix;
+  const cut = base.lastIndexOf('/');
+  const dir = cut === -1 ? '' : base.slice(0, cut + 1);
+  const name = cut === -1 ? base : base.slice(cut + 1);
+  const dot = name.lastIndexOf('.');
+  const ext = dot > 0 ? name.slice(dot) : '';
+  const keep = Math.max(1, 255 - dir.length - suffix.length - ext.length);
+  return dir + name.slice(0, keep) + suffix + ext;
+}
+
 function safeSegments(raw) {
   const text = String(raw ?? '');
   if (text === '') throw new Error('包内路径为空');
@@ -810,13 +1379,40 @@ function safeSegments(raw) {
   if (/^[A-Za-z]:/.test(text)) throw new Error(`包内路径带盘符：${text}`);
   if (/[\u0000-\u001f\u007f]/.test(text)) throw new Error('包内路径含控制字符');
   const segments = [];
-  for (const part of text.split(/[\\/]+/)) {
-    if (part === '') continue;
+  for (const raw of text.split(/[\\/]+/)) {
+    if (raw === '') continue;
+    // macOS（HFS+/APFS）导出的是 NFD，`e\u0301tude.md` 在那边是合法文件名。
+    // 硬拒等于把「macOS 打包、Windows 打开」这个主场景整包打死；归一化到 NFC 再落盘，
+    // 安全性一点没少——下面那些判定在归一化后的串上照样跑。
+    const part = raw.normalize('NFC');
     if (part === '.' || part === '..') throw new Error(`包内路径含越界段「${part}」：${text}`);
+    // 这一段的名字会直接变成磁盘上的文件名。只挡绝对路径和 `..` 不够：
+    // `:` 在 Windows 上是 ADS 分隔符（MEMORY.md:evil 能往已有文件后面挂数据流），
+    // 尾点/尾空格会被 Win32 静默削掉，CON/NUL 这类设备名会写进设备而不是文件。
+    if (/[:<>"|?*]/.test(part)) throw new Error(`包内路径段含非法字符：${part}`);
+    if (/[. ]$/.test(part)) throw new Error(`包内路径段以点或空格结尾：${part}`);
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(part)) throw new Error(`包内路径段是设备名：${part}`);
+    // Win32 的段名上限是 255 个 UTF-16 码元，不是 255 字节：86 个汉字 = 258 字节但只有 86 个
+    // 字符，Windows 完全建得出来。按字节判会把合法包整包拒在 zipRead 阶段。
+    if (part.length > 255) throw new Error(`包内路径段过长：${part.slice(0, 40)}…`);
     segments.push(part);
   }
   if (segments.length === 0) throw new Error(`包内路径为空：${text}`);
   return segments;
+}
+
+/**
+ * HTTP 传来的落盘文件名同样不可信（`?path=` 直接来自请求）。
+ * 只判最后一段：`:` 在 Windows 上是 ADS 分隔符，`writeFileSync('ads:stream')` 会先建出
+ * 裸文件 `ads`、rename 再 EINVAL，目录里留下 0 字节垃圾；尾点/尾空格会被 Win32 静默削掉。
+ * 目录部分走 isInsideAny 的 roots 校验，不在这里重复判。
+ */
+function assertWritableName(target) {
+  const base = String(target).split(/[\\/]/).pop() ?? '';
+  safeSegments(base);
+  // 只判最后一段：safeSegments 已挡住 `:` `<` `>` `"` `|` `?` `*`、尾点、尾空格与 CON/NUL。
+  // 整条绝对路径不能这样判——`C:` 的冒号会把自己误伤。
+  return base;
 }
 
 /**
@@ -920,6 +1516,19 @@ export function writeAtomic(target, bytes, options = {}) {
     } catch {
       /* 临时文件删不掉就留着 */
     }
+    // Windows 的 `:` 是数据流分隔符：`writeFileSync('a:b')` 先建出裸文件 `a`，rename 才 EINVAL。
+    // 只删 tmp 会把那个 0 字节的 `a` 永远留在用户的目录里（实测 tspath/ads 就是这么来的）。
+    // 盘符那个冒号要先跳过：tmp 恒为绝对路径，第一个冒号在 index 1，
+    // 「从盘符之后找冒号」才找得到文件名里那个（否则整段清理是死代码）。
+    const drive = /^[A-Za-z]:[\\/]/.test(tmp) ? 2 : 0;
+    const colon = tmp.indexOf(':', drive);
+    if (colon > drive) {
+      try {
+        fs.unlinkSync(tmp.slice(0, colon));
+      } catch {
+        /* 没有这个裸文件是常态 */
+      }
+    }
     throw error;
   }
 }
@@ -928,9 +1537,31 @@ export function writeAtomic(target, bytes, options = {}) {
  * 状态文件也必须原子写：自动保存与手动保存会并发读改写它，半截 JSON 会让
  * readState 整体回落成空状态 —— 表现就是「记住的保存路径全丢了」。
  */
-function writeState(state) {
+function writeState(state, options = {}) {
   try {
-    writeAtomic(stateFile(), Buffer.from(JSON.stringify(state, null, 2), 'utf8'));
+    let out = state;
+    // 给了 scoped 就只覆盖这几个会话的键：读-改-写这段中间隔着对话框等待，
+    // 期间自动保存可能已经写了别的会话，整体覆盖会把那条改动抹掉。
+    if (Array.isArray(options.scoped) === true) {
+      const fresh = readState();
+      out = {
+        ...fresh,
+        lastDir: state.lastDir ?? fresh.lastDir,
+        paths: { ...fresh.paths },
+        autosave: { ...fresh.autosave },
+        stamps: { ...fresh.stamps },
+        stale: { ...fresh.stale },
+        missing: { ...fresh.missing },
+      };
+      for (const id of options.scoped) {
+        for (const key of ['paths', 'autosave', 'stamps', 'stale', 'missing']) {
+          const bucket = state[key];
+          if (bucket !== undefined && bucket !== null && bucket[id] !== undefined) out[key][id] = bucket[id];
+          else delete out[key][id];
+        }
+      }
+    }
+    writeAtomic(stateFile(), Buffer.from(JSON.stringify(out, null, 2), 'utf8'));
   } catch {
     /* 状态写不进去不影响本次保存 */
   }
@@ -950,6 +1581,23 @@ function rememberSource(state, id, sourcePath) {
   delete state.stale[id];
   if (state.missing !== undefined && typeof state.missing === 'object') delete state.missing[id];
   return state;
+}
+
+/**
+ * 成功导入的最后一件事：记住「本机这份会话来自哪个包」。
+ *
+ * 为什么排在返回体成型之后：状态文件是用户看得见的「这个包我打开过」，返回体是
+ * 「这次到底成没成」。先落状态再拼返回体，任何一步在两者之间抛错（readStats 的
+ * 超限重抛、返回体里新加的字段解析）都会留下「说没打开、状态里却有」的记录。
+ * 只覆盖本次会话的键 —— 读-改-写之间可能隔着对话框，整表覆盖会抹掉别的会话。
+ */
+function commitSource(result, id, sourcePath) {
+  try {
+    writeState(rememberSource(readState(), id, sourcePath), { scoped: [id] });
+  } catch {
+    // 状态写不进去不影响这次打开；下次保存会重新问一遍路径。
+  }
+  return result;
 }
 
 
@@ -1045,10 +1693,24 @@ export function lockBlocks(lock) {
     return undefined;
   }
   const at = Date.parse(String(lock.at ?? ''));
-  if (Number.isFinite(at) && Date.now() - at < LOCK_STALE_MS) {
+  // 取绝对值：时钟回拨、跨机同步、手动改系统时间都会让 at 落在未来，差值变负数。
+  // 只写 `now - at < TTL` 时未来时间戳永远为真，锁等于永不过期，保存会一直卡在「正在使用」。
+  if (Number.isFinite(at) && Math.abs(Date.now() - at) < LOCK_STALE_MS) {
     return `这个文件正被 ${lock.host} 上的 DSH 使用（${lock.at}），可能还没存完`;
   }
   return undefined;
+}
+
+/**
+ * 读侧车锁的当前内容：只用于把冲突原因原样回给界面（谁、什么时候、哪个 pid）。
+ * 读不到就不带 —— 锁定判定本身不依赖它，它在判定之后可能已经被对面删掉。
+ */
+function readSidecarLock(target) {
+  try {
+    return JSON.parse(fs.readFileSync(`${target}.lock`, 'utf8'));
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -1058,7 +1720,7 @@ export function lockBlocks(lock) {
  * 锁文件里带一个随机 token：收尾时只在内容仍是这把锁时删除。
  * 以前无条件 unlink，判定稍微误一次就会把另一个进程正在用的锁删掉，两边同时写。
  */
-function withSidecarLock(target, run) {
+function withSidecarLock(target, run, options = {}) {
   const sidecar = `${target}.lock`;
   const token = randomUUID();
   const payload = JSON.stringify({
@@ -1070,7 +1732,9 @@ function withSidecarLock(target, run) {
   let fd;
   let owned = false;
   try {
-    fs.mkdirSync(path.dirname(sidecar), { recursive: true });
+    // 不在这里建目录：侧车锁要是顺手把父目录建出来，
+    // writeAtomic({ createDir: false }) 那道「目录必须已经存在」的闸就白设了，
+    // 一次 ?path=OUT/a/b/c/x.dsproj 就能造出用户找不到的孤儿包。
     fd = fs.openSync(sidecar, 'wx');
     fs.writeSync(fd, payload);
     owned = true;
@@ -1082,8 +1746,16 @@ function withSidecarLock(target, run) {
     } catch {
       holder = undefined;
     }
-    const reason = lockBlocks({ ...holder, format: LOCK_FORMAT });
-    if (reason !== undefined) throw new Error(`${reason}；稍后重试或删掉 ${sidecar}`);
+    // ignoreLock：用户在界面上明确点了「仍然保存」。侧车锁只防并发覆盖，不防内容丢失，
+    // 所以这一条允许被显式跳过（stale / confirm-overwrite / not-dsproj 那几条不允许）。
+    const reason =
+      options.ignoreLock === true ? undefined : lockBlocks({ ...holder, format: LOCK_FORMAT });
+    if (reason !== undefined) {
+      const blocked = new Error(`${reason}；稍后重试或删掉 ${sidecar}`);
+      blocked.code = 'DSH_LOCKED';
+      blocked.sidecar = sidecar;
+      throw blocked;
+    }
     try {
       fs.writeFileSync(sidecar, payload);
       owned = true;
@@ -1230,6 +1902,12 @@ function buildPackage(
     }
   }
 
+  const bili = collectBili(header?.id);
+  if (bili.entry !== undefined) {
+    entries.push(bili.entry);
+    parts[BILI_ENTRY] = { sha256: cryptoHash(bili.entry.data), bytes: bili.entry.data.length };
+  }
+
   const manifest = {
     format: FORMAT,
     // 写这个包的是哪个版本。读的一方凭它认出「包比我新」——比猜测条目前缀可靠。
@@ -1251,6 +1929,7 @@ function buildPackage(
     memoryFiles,
     workspaceFiles: [],
     attachments: { objects: attachmentObjects, files: attachmentFiles, missing: missingAttachments },
+    bili: bili.info,
     lock,
     parts,
   };
@@ -1339,9 +2018,17 @@ function memoryDirFor(cwd) {
  * @param buf - whole session log
  * @param patch - header fields to replace
  */
-function rewriteHeader(buf, patch) {
+export function rewriteHeader(buf, patch) {
   const frames = scanZstdFrames(buf);
   if (frames.length === 0) throw new Error('会话日志里没有完整的 zstd 帧');
+  // 覆盖率闸：认出来的帧必须覆盖整个文件。扫描中断时 frames 会提前结束，
+  // 这时 `buf.subarray(frames[1].start)` 看着像「正文」，其实是把认不出的部分整段丢掉——
+  // 实测三帧 396 B 会被重写成 161 B 单帧，正文全没了还回 200。
+  if (frames[frames.length - 1].end !== buf.length) {
+    throw new Error(
+      `会话日志的帧扫描不完整（覆盖到 ${frames[frames.length - 1].end}/${buf.length} 字节，末帧可能被截断），拒绝重写`,
+    );
+  }
   const head = decompressFrame(buf.subarray(frames[0].start, frames[0].end)).toString('utf8');
   const nl = head.indexOf('\n');
   const before = JSON.parse(nl === -1 ? head : head.slice(0, nl));
@@ -1393,7 +2080,8 @@ function readTitle(buf) {
     let text;
     try {
       text = decompressFrame(buf.subarray(frame.start, frame.end)).toString('utf8');
-    } catch {
+    } catch (error) {
+      if (error?.code === 'ERR_BUFFER_TOO_LARGE') throw error;
       continue;
     }
     let found;
@@ -1422,6 +2110,7 @@ const ENTRY_ALLOW = [
   /^session\/[^/]+\.jsonl(\.zstd)?$/,
   /^memory\/workspaces\/[^/]+\/.+$/,
   /^attachments\/(objects|files)\/[0-9a-f]{2}\/[0-9a-f]{64}$/,
+  /^bili\/session\.json$/,
 ];
 
 /**
@@ -1429,7 +2118,7 @@ const ENTRY_ALLOW = [
  * `parts` 只登记这两类（元数据条目 manifest/LOCK/SUMMARY 不登记），
  * 所以「必须在 parts 里声明过」这条只能对它们提要求。
  */
-const CONTENT_ENTRY = /^(session\/|memory\/workspaces\/|attachments\/)/;
+const CONTENT_ENTRY = /^(session\/|memory\/workspaces\/|attachments\/|bili\/)/;
 
 /**
  * 「这类条目是从哪个版本开始被认识的」。
@@ -1437,7 +2126,13 @@ const CONTENT_ENTRY = /^(session\/|memory\/workspaces\/|attachments\/)/;
  * 才能把「包里夹带了怪东西」和「你该升级插件了」分开说。
  * 新增一类顶层条目时，记得在这里加一行。
  */
-const ENTRY_SINCE = [[/^attachments\//, '0.3.0']];
+const ENTRY_SINCE = [
+  [/^attachments\//, '0.3.0'],
+  // `bili/` 在当前版本（0.4.2）的 ENTRY_ALLOW 里就已经认识。标成还没发布的 0.4.3 会让提示
+  // 自相矛盾：同一句话里既写「写它的是 0.4.2」，又让人「先升级插件」。新增顶层条目时，
+  // 这里的版本必须是它真正首发的版本，且不得大于 PLUGIN_VERSION（test/audit-r3 有断言）。
+  [/^bili\//, '0.4.2'],
+];
 
 /**
  * 白名单外的条目该怎么说。
@@ -1580,7 +2275,15 @@ function packageBrokenReport(sourcePath, error, names) {
  * @param options - { cwd?, memory?, onConflict? }
  */
 function importPackage(sourcePath, options = {}) {
-  let entries = zipRead(fs.readFileSync(sourcePath));
+  let entries;
+  try {
+    entries = zipRead(fs.readFileSync(sourcePath));
+  } catch (readError) {
+    // 解包阶段抛的错（不是 ZIP / 中央目录或条目越界 / 单条或整包超限）都是「包坏了」，
+    // 不是服务端内部故障。以前它冒到 handleOpen 的兜底 catch，变成 500 + 一句通用文案，
+    // 用户拿不到 package-broken 里那段能整段贴给 AI 的修包说明，界面上的修复面板也不会弹。
+    return packageBrokenReport(sourcePath, readError, []);
+  }
   const manifestEntry = entries.get('manifest.json');
   let manifest;
   if (manifestEntry !== undefined) {
@@ -1648,11 +2351,15 @@ function importPackage(sourcePath, options = {}) {
   if (sessionName === undefined) throw new Error('包里没有会话日志（session/…）');
   const buf = entries.get(sessionName);
   const original = readHeader(buf);
-  if (typeof original?.id !== 'string' || original.id === '') throw new Error('会话日志缺少 header');
+  // id 会成为 state.paths 的键、目录名的一部分。`__proto__` 这类键会被 setter 吞掉，
+  // 非 uuid 形态则可能撞上别的东西——只判「非空字符串」不够。
+  if (!isSessionId(original?.id)) throw new Error(`会话日志的 header.id 不是合法会话 id：${String(original?.id)}`);
 
   const explicitCwd = typeof options.cwd === 'string' && options.cwd !== '' ? options.cwd : undefined;
   const dirFor = (sessionId, targetCwd) => path.join(sessionsRoot(), projectKey(targetCwd), encodeSegment(sessionId));
   const mode = ['ask', 'reuse', 'overwrite', 'copy'].includes(options.onConflict) ? options.onConflict : 'ask';
+  // 覆盖前要不要留一份原文件，由界面上的勾选框决定；默认留（宁可多一个 .bak，也不少一条退路）。
+  const backupWanted = options.backup !== false;
   const packageLock = lockOfPackage(entries, manifest);
 
   /** The session dir for this id anywhere under DSH_HOME (id must stay unique). */
@@ -1805,10 +2512,9 @@ function importPackage(sourcePath, options = {}) {
       // 它不能替用户决定「别覆盖」——否则点了覆盖看到的还是旧内容（2026-11-02 报的 bug）
       // 直接打开本机这份，也照样回填附件：用户很可能就是拿这个包来补上次没带过来的图
       const attachRestore = restoreAttachments(entries);
-      const repairReport = repairInPlace(existing.file);
-      const state = rememberSource(readState(), id, sourcePath);
-      writeState(state);
-      return {
+      const biliRestore = restoreBili(entries, id, backupWanted);
+      const repairReport = repairInPlace(existing.file, { backup: backupWanted });
+      const result = {
         sessionId: id,
         cwd,
         target: existing.file,
@@ -1823,11 +2529,13 @@ function importPackage(sourcePath, options = {}) {
         attachmentsWritten: attachRestore.written,
         attachmentsSkipped: attachRestore.skipped,
         attachmentsRejected: attachRestore.rejected,
+        bili: biliRestore,
         repair: repairReport,
         packageRepair,
         sourcePath,
         packageLock,
       };
+      return commitSource(result, id, sourcePath);
     }
 
     if (sameSession && !(sameCwd && mode === 'overwrite')) {
@@ -1868,10 +2576,9 @@ function importPackage(sourcePath, options = {}) {
     if (mode === 'reuse') {
       // 直接打开本机这份，也照样回填附件：用户很可能就是拿这个包来补上次没带过来的图
       const attachRestore = restoreAttachments(entries);
-      const repairReport = repairInPlace(existing.file);
-      const state = rememberSource(readState(), id, sourcePath);
-      writeState(state);
-      return {
+      const biliRestore = restoreBili(entries, id, backupWanted);
+      const repairReport = repairInPlace(existing.file, { backup: backupWanted });
+      const result = {
         sessionId: id,
         cwd: existing.header?.cwd ?? cwd,
         target: existing.file,
@@ -1887,11 +2594,13 @@ function importPackage(sourcePath, options = {}) {
         attachmentsWritten: attachRestore.written,
         attachmentsSkipped: attachRestore.skipped,
         attachmentsRejected: attachRestore.rejected,
+        bili: biliRestore,
         repair: repairReport,
         packageRepair,
         sourcePath,
         packageLock,
       };
+      return commitSource(result, id, sourcePath);
     }
 
     if (mode === 'overwrite') {
@@ -1900,7 +2609,9 @@ function importPackage(sourcePath, options = {}) {
       targetDir = existing.dir;
       target = existing.file;
       try {
-        fs.copyFileSync(existing.file, `${existing.file}.bak-${Date.now()}`);
+        if (backupWanted === true) {
+          fs.copyFileSync(existing.file, `${existing.file}.bak-${Date.now()}`);
+        }
       } catch {
         /* 备份失败不阻断覆盖 */
       }
@@ -1940,6 +2651,8 @@ function importPackage(sourcePath, options = {}) {
   }
   // 最后一道闸：无论 fileName 来自哪里，落点必须在 sessions 根之下
   if (!isInside(sessionsRoot(), target)) throw new Error('会话落点越界，拒绝写入');
+  // 记下「这个目录原来在不在」：失败收尾时只删自己建的那个，restore 已存在的目录不能动。
+  const dirExisted = fs.existsSync(targetDir);
   fs.mkdirSync(targetDir, { recursive: true });
   // 只有「覆盖本机这份」这条明确选择的路径可以写已存在的文件。
   // 判据用 `wx` 一次成型，不用 existsSync：查到「不存在」到真正写下去之间有一段空档，
@@ -1958,16 +2671,46 @@ function importPackage(sourcePath, options = {}) {
   }
   // 先回填附件对象，再体检：体检要判「引用的对象在不在本机」，对象库得先就位，
   // 否则包里自带的图会被自己判成缺失、白白换成占位文字。失败不抛错（包可能天生就缺）。
-  const attached = restoreAttachments(entries);
+  // claim 一旦成功，从这里到写盘完成之间的任何一步抛错都会留下一个 0 字节的
+  // `session.v4.jsonl.zstd`：重试被 wx 判成「已存在」→ 409 假冲突，用户以为打不开。
+  // 所以整段包进 try，catch 里把空壳收掉。
+  let attached;
+  let biliAttached;
+  let repaired;
+  let contextReport;
+  try {
+    attached = restoreAttachments(entries);
+    // 只回填本来那个会话的状态：relocate / copy 换过 id 之后，写进新槽位等于
+    // 把原会话的折叠进度复制一份过去，而写回原槽位又会覆盖别人的东西。
+    biliAttached =
+      String(id) === String(original.id)
+        ? restoreBili(entries, id, backupWanted)
+        : { written: 0, skipped: 1, rejected: 0, reason: 'renamed' };
 
   // 打开前体检：坏行、断链的图会让 DSH 一打开就报错，能确定坏的就地修掉再落盘。
   // 导入是一次性迁移，这一刀不修，用户下次还得手动来一遍。
-  const repaired = repairSession(finalBuf);
+  repaired = repairSession(finalBuf);
   finalBuf = repaired.buffer;
+
+  // 上下文预算：一条 86 MB 的会话换算下来是两千多万 token，整段带进上下文等于把模型堵死。
+  // 但这里只报告「这份日志整段装进去要多少」，**不拿裁剪结果覆盖落盘文件**。
+  // 存档是用户的东西：导入的语义是「把会话原样搬到这台机器」，文件一旦被削，
+  // 削掉的那些 turn 就只剩 .dsproj 里那一份，而用户往往导完就把包删了。
+  // 真正该管「带多少进上下文」的是运行期（billion-context 的折叠 / DSH 自己的装载），
+  // 不是一次性的导入动作。预算算出来的数字进 context 报告，供界面提示用。
+  const contextBefore = estimateContext(finalBuf);
+  const budgetRaw =
+    options.contextBudget === undefined ? CONTEXT_BUDGET_TOKENS : Number.parseInt(String(options.contextBudget), 10);
+  let contextTrim;
+  if (Number.isFinite(budgetRaw) && budgetRaw > 0 && contextBefore.tokens > budgetRaw) {
+    // 只算不写：trimSession 是纯函数，拿到报告即可，buffer 丢掉。
+    const preview = trimSession(finalBuf, { budget: budgetRaw });
+    contextTrim = { ...preview.report, applied: false };
+  }
+  contextReport = { before: contextBefore, trim: contextTrim };
 
   // 原子写：先写同目录的临时文件再 rename。直接用 writeFileSync 的话，写到一半崩了
   // 就在 sessions/ 下留半个会话文件，DSH 下次读到它只会报一句莫名其妙的解析错。
-  try {
     writeAtomic(target, finalBuf, { createDir: true });
   } catch (error) {
     // 上面刚用 wx 建过一个空壳，写失败就把它收掉；只删自己建的那个（claimed 且确实是空文件）
@@ -1976,6 +2719,15 @@ function importPackage(sourcePath, options = {}) {
         if (fs.statSync(target).size === 0) fs.rmSync(target, { force: true });
       } catch {
         /* ignore */
+      }
+    }
+    // 目录是这次建的就一并收掉：留着会被 findExisting 当成「本机已有这个会话」，
+    // 后续走 reuse 分支拿着一个不存在的文件继续。
+    if (dirExisted !== true) {
+      try {
+        fs.rmdirSync(targetDir);
+      } catch {
+        /* 非空（别人的会话在里面）或已被删，都不该强删 */
       }
     }
     throw error;
@@ -2003,9 +2755,23 @@ function importPackage(sourcePath, options = {}) {
   const prefix = 'memory/workspaces/';
   const memoryKeys = [...entries.keys()].filter((name) => name.startsWith(prefix));
   let memoryDir;
+  // 包内的记忆属于「打包方那个工作区」：条目名第一段就是它的 slug。与本次落点的 slug
+  // 不同时，restore 写进的是另一个工区的记忆目录 —— 界面必须说出来，否则「合并记忆」
+  // 看起来像写进眼前这个项目，实际落在别人的项目笔记里。
+  let memoryForeign = false;
+  let memoryForeignSlug;
   if (memoryKeys.length > 0 && memoryMode !== undefined) {
     const memory = memoryDirFor(cwd);
     memoryDir = memory.dir;
+    const packageSlugs = new Set(
+      memoryKeys.map((key) => key.slice(prefix.length).split(/[\\/]+/).filter((part) => part !== '')[0] ?? ''),
+    );
+    for (const slug of packageSlugs) {
+      if (slug !== memory.slug) {
+        memoryForeign = true;
+        memoryForeignSlug = memoryForeignSlug ?? slug;
+      }
+    }
     const stamp = new Date().toISOString().slice(0, 10);
     // 先把所有落点算完再写：任意一条越界都整包拒绝，不给「写了一半」留机会
     const planned = [];
@@ -2027,7 +2793,7 @@ function importPackage(sourcePath, options = {}) {
         dest:
           memoryMode === 'restore' || memoryMode === 'new'
             ? native
-            : safeJoin(memory.dir, `${rel}.from-dsproj-${stamp}`),
+            : safeJoin(memory.dir, withSuffix(rel, `.from-dsproj-${stamp}`)),
         data: entries.get(key),
       });
     }
@@ -2064,13 +2830,15 @@ function importPackage(sourcePath, options = {}) {
             continue;
           }
           // 备份名是拼出来的路径，同样过 safeJoin；撞名就换序号重试。
-          const backupDest = safeJoin(memory.dir, `${rel}.bak-${Date.now()}-${attempt}`);
+          // 勾掉「覆盖前先备份」时不建备份，直接覆盖原文件。
+          const backupDest =
+            backupWanted === true ? safeJoin(memory.dir, `${rel}.bak-${Date.now()}-${attempt}`) : undefined;
           // 备份文件和被覆盖的文件都在记忆目录里，父目录必须先存在（放在备份之前，
           // 否则 copyFileSync 会以 ENOENT 失败，被下面的 catch 记成「写不进去」）。
-          fs.mkdirSync(path.dirname(backupDest), { recursive: true });
+          if (backupDest !== undefined) fs.mkdirSync(path.dirname(backupDest), { recursive: true });
           fs.mkdirSync(path.dirname(target), { recursive: true });
           try {
-            fs.copyFileSync(target, backupDest, fs.constants.COPYFILE_EXCL);
+            if (backupDest !== undefined) fs.copyFileSync(target, backupDest, fs.constants.COPYFILE_EXCL);
             fs.writeFileSync(target, data);
             backup = backupDest;
             wrote = true;
@@ -2124,10 +2892,7 @@ function importPackage(sourcePath, options = {}) {
     }
   }
 
-  const state = rememberSource(readState(), id, sourcePath);
-  writeState(state);
-
-  return {
+  return commitSource({
     sessionId: id,
     cwd,
     target,
@@ -2142,14 +2907,20 @@ function importPackage(sourcePath, options = {}) {
     attachmentsWritten: attached.written,
     attachmentsSkipped: attached.skipped,
     attachmentsRejected: attached.rejected,
+    bili: biliAttached,
     // 打开前的体检结论：改了什么、还剩什么。changed=false 说明这个包本身是干净的。
     repair: repaired.report,
+    context: contextReport,
     packageRepair,
     memoryConflicts,
     // 「本机没有、这次没写」的那批。界面据此提醒「有东西没写」，和 memoryConflicts 分开用。
     memoryCreated,
     // 执行前的清单：[{ rel, exists }]。copy 模式也返回，界面靠它渲染「将覆盖 / 将新建」。
     memoryPlanned,
+    // 这次写的是不是另一个工区的记忆：true 时界面必须直说，别让「合并记忆」
+    // 看起来像写进当前打开的工作区。
+    memoryForeign,
+    memoryForeignSlug,
     // 记忆落点目录（服务端按 cwd 解析出来的，不是请求里带来的路径），前端「打开记忆目录」用。
     memoryDir,
     memoryMode: memoryMode ?? 'none',
@@ -2157,7 +2928,7 @@ function importPackage(sourcePath, options = {}) {
     cloud: cloudMarkOf(sourcePath),
     packageLock,
     packageLockBlocked: lockBlocks(packageLock),
-  };
+  }, id, sourcePath);
 }
 
 /* ───────────────────────── 自动保存 ───────────────────────── */
@@ -2343,7 +3114,17 @@ function requestGate(request) {
   }
   const host = String(rawHost ?? '').toLowerCase() || urlHost.toLowerCase();
   if (host === '') return '请求缺少 Host';
-  const hostName = host.replace(/:\d+$/, '');
+  // `::1` 这种裸 IPv6 里全是冒号：`replace(/:\d+$/, '')` 会把它切成 `:`，
+  // 于是「只接受回环」的判据把合法请求也挡了。先按 [v6]:port 的形态剥，再按 host:port 剥。
+  const hostName = (() => {
+    if (host.startsWith('[')) {
+      const close = host.indexOf(']');
+      return close === -1 ? host : host.slice(1, close);
+    }
+    const colon = host.lastIndexOf(':');
+    if (colon !== -1 && host.indexOf(':') === colon) return host.slice(0, colon);
+    return host;
+  })();
   const loopback = (value) =>
     value === '127.0.0.1' || value === 'localhost' || value === '::1' || value === '[::1]';
   if (!loopback(hostName)) return '只接受本机回环地址的请求';
@@ -2377,21 +3158,45 @@ function saveRootsOf(state) {
 
 /** 这个文件是不是本插件写出的工程包（覆盖已有文件前必须成立）。 */
 function isDsprojFile(file) {
-  let buf;
+  // 只看文件尾部：EOCD → 中央目录 → 条目名。以前把 fs.readFileSync 整个文件读进来再判大小，
+  // 带附件的大包（配额上限 128 MB）会被 `stat.size > MAX_ENTRY_BYTES` 直接判成「不是工程包」，
+  // 于是「覆盖」这条路径对着自己的大包报 not-dsproj。
+  let fd;
   try {
     const stat = fs.statSync(file);
-    if (!stat.isFile() || stat.size < 22 || stat.size > MAX_ENTRY_BYTES) return false;
-    buf = fs.readFileSync(file);
+    if (!stat.isFile() || stat.size < 22) return false;
+    fd = fs.openSync(file, 'r');
+    const tailLen = Math.min(stat.size, 66 * 1024);
+    const tail = Buffer.alloc(tailLen);
+    fs.readSync(fd, tail, 0, tailLen, stat.size - tailLen);
+    const eocd = tail.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+    if (eocd === -1 || eocd + 22 > tail.length) return false;
+    const cdSize = tail.readUInt32LE(eocd + 12);
+    const cdOffset = tail.readUInt32LE(eocd + 16);
+    if (cdSize === 0 || cdOffset + cdSize > stat.size || cdSize > 16 * 1024 * 1024) return false;
+    const cd = Buffer.alloc(cdSize);
+    fs.readSync(fd, cd, 0, cdSize, cdOffset);
+    let p = 0;
+    while (p + 46 <= cd.length && cd.readUInt32LE(p) === 0x02014b50) {
+      const nameLen = cd.readUInt16LE(p + 28);
+      const extraLen = cd.readUInt16LE(p + 30);
+      const commentLen = cd.readUInt16LE(p + 32);
+      const name = cd.toString('utf8', p + 46, p + 46 + nameLen);
+      if (name === 'manifest.json') return true;
+      if (/^session\/.+\.jsonl(\.zstd)?$/.test(name)) return true;
+      p += 46 + nameLen + extraLen + commentLen;
+    }
+    return false;
   } catch {
     return false;
-  }
-  if (buf.readUInt32LE(0) !== 0x04034b50) return false;
-  try {
-    const entries = zipRead(buf);
-    if (entries.has('manifest.json')) return true;
-    return [...entries.keys()].some((entry) => /^session\/.+\.jsonl(\.zstd)?$/.test(entry));
-  } catch {
-    return false;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* 关不掉就算了，进程退出会回收 */
+      }
+    }
   }
 }
 
@@ -2437,6 +3242,8 @@ async function handleSave(request) {
   const roots = saveRootsOf(state);
   const forceAsk = query.ask === '1' || query.mode === 'dialog';
   const force = query.force === '1' || query.force === 'true';
+  // 覆盖前要不要留一份原文件；默认留。与导入侧同名同义。
+  const backupWanted = query.backup !== '0' && query.backup !== 'false';
   // ignoreLock 只跳过「别的窗口正在写」这一条，stale / confirm-overwrite / not-dsproj
   // 三条照旧——那些防的是内容丢失，不是并发。
   const ignoreLock = query.ignoreLock === '1' || query.ignoreLock === 'true';
@@ -2482,6 +3289,23 @@ async function handleSave(request) {
     if (!path.isAbsolute(target)) target = path.join(dir, target);
     if (!isInsideAny(target, roots)) {
       return jsonResponse({ status: 'error', message: '不允许写入这个位置' }, 400);
+    }
+  }
+
+  // 落盘前先判文件名（必须在补扩展名之前：`x.dsproj.` 补完会变成 `x.dsproj..dsproj`，
+  // 把「尾点」这个错误藏进一个更难看的名字里）。来自另存为窗口的路径是用户自己选的，跳过。
+  if (!fromDialog) {
+    try {
+      assertWritableName(target);
+    } catch (nameError) {
+      return jsonResponse(
+        {
+          status: 'bad-name',
+          name: path.basename(target),
+          message: `这个文件名不能用：${nameError?.message ?? nameError}`,
+        },
+        400,
+      );
     }
   }
 
@@ -2531,7 +3355,8 @@ async function handleSave(request) {
 
   // 覆盖一个「不是本会话记住的那个文件」：必须是明确的 force，而且它得是本插件的工程包。
   // 否则一次请求就能把用户桌面上的任意 .dsproj（或其他同名文件）换成我们的内容。
-  if (fs.existsSync(target) && target !== rememberedAbs && !fromDialog) {
+  const overwritingForeign = fs.existsSync(target) && target !== rememberedAbs && !fromDialog;
+  if (overwritingForeign === true) {
     if (!force) {
       return jsonResponse(
         {
@@ -2550,20 +3375,23 @@ async function handleSave(request) {
     }
   }
 
-  if (!force) {
-    const stale = staleOf(state, sessionId, target);
-    if (stale !== undefined) {
-      return jsonResponse(
-        {
-          status: 'stale',
-          path: target,
-          stale,
-          cloud: cloudMarkOf(target),
-          message: '磁盘内容与本机上次写入的版本不一致（可能来自另一台机器或同步盘）。',
-        },
-        409,
-      );
-    }
+  // 磁盘内容是不是已经不是我们上次写的那份。这个判断有两个用处，别只留一个：
+  //   ① 没带 force → 拦下来问（409）；
+  //   ② 带了 force（界面上「覆盖磁盘文件」）→ 覆盖前要不要留 .bak。
+  // 早先只在 ① 里算它，② 那处只看 overwritingForeign，结果「勾了备份、点了覆盖磁盘文件」
+  // 一个 .bak 都不留——勾选框对这条路径等于摆设，别处同步过来的内容被直接抹掉。
+  const stale = staleOf(state, sessionId, target);
+  if (!force && stale !== undefined) {
+    return jsonResponse(
+      {
+        status: 'stale',
+        path: target,
+        stale,
+        cloud: cloudMarkOf(target),
+        message: '磁盘内容与本机上次写入的版本不一致（可能来自另一台机器或同步盘）。',
+      },
+      409,
+    );
   }
 
   const lock = makeLock(sessionId, existingLock);
@@ -2577,9 +3405,34 @@ async function handleSave(request) {
 
   try {
     withSidecarLock(target, () => {
+      // 覆盖「不是我们上次写的那份」之前先留一份：陌生文件（手滑点了覆盖）与
+      // 磁盘内容已被别处改过（同步盘/另一台机器）都算，两条都由同一个 backup 开关控制。
+      const overwrittenElsewhere = overwritingForeign === true || stale !== undefined;
+      if (backupWanted === true && overwrittenElsewhere === true && fs.existsSync(target)) {
+        try {
+          fs.copyFileSync(target, `${target}.bak-${Date.now()}`);
+        } catch {
+          // 备份失败不挡写盘：写不进去比少一个备份更糟。
+        }
+      }
       writeAtomic(target, out.zip, { createDir: false });
-    });
+    }, { ignoreLock });
   } catch (error) {
+    // 侧车锁冲突以前直接冒到兜底 catch，变成 500 + 一句「写入失败」：用户既拿不到
+    // canIgnoreLock 这个出口，也分不清是锁还是磁盘问题。现在统一成 409 locked。
+    if (error?.code === 'DSH_LOCKED') {
+      return jsonResponse(
+        {
+          status: 'locked',
+          path: target,
+          name: path.basename(target),
+          lock: readSidecarLock(target),
+          canIgnoreLock: true,
+          message: error?.message ?? '这个文件正被另一个 DSH 写入',
+        },
+        409,
+      );
+    }
     // 目录在检查之后、写入之前消失了（U 盘拔出、网络盘掉线、父目录被删）。
     // 这时 writeAtomic 不会替我们建目录，报 ENOENT —— 同样不能含糊成一句「写入失败」。
     if (error?.code === 'ENOENT') {
@@ -2744,17 +3597,16 @@ async function handleOpen(request) {
     // repairPackage=1：包校验不过时先摘掉坏条目再试一次，而不是直接判死。
     const replaceFile = query.replaceFile === '1' || query.replaceFile === 'true';
     const repairPackage = query.repairPackage === '1' || query.repairPackage === 'true';
-    const result = importPackage(source, { cwd, onConflict, memory: memoryMode, createCwd, replaceFile, repairPackage });
+    const backupWanted = query.backup !== '0' && query.backup !== 'false';
+    const result = importPackage(source, { cwd, onConflict, memory: memoryMode, createCwd, replaceFile, repairPackage, backup: backupWanted, contextBudget: query.contextBudget });
     if (result.status === 'need-workspace') return jsonResponse(result);
     // 落点不合格：明确拒绝，不落到 process.cwd()。400 而不是 500——包没坏，是位置不对。
     if (result.status === 'bad-workspace') return jsonResponse(result, 400);
     // 包校验没过 / 包比插件新：都不是 200。沿用原来的 500，客户端按 status 字段决定弹哪个窗。
     if (result.status === 'package-broken' || result.status === 'newer-package') return jsonResponse(result, 500);
     if (result.conflict === true) return jsonResponse({ status: 'conflict', ...result }, 409);
-    // 打开时就把该文件此刻的内容指纹记下来；顺带把「别处正在写 / 在同步盘里」这两件
-    // 需要用户知道的事随结果带回去，界面上提示一句，但都不阻止打开。
-    const state = rememberSource(readState(), result.sessionId, source);
-    writeState(state);
+    // 来源指纹已经在 importPackage 的成功路径末尾（commitSource）记过一次，这里不再写第二遍：
+    // 这一步用的是打开之前读到的 state 快照，整表写回会把导入期间别的会话的键抹掉。
     return jsonResponse({
       status: 'opened',
       ...result,
@@ -2766,6 +3618,11 @@ async function handleOpen(request) {
     // 否则用户只看到一句通用文案，分不清是包坏了、还是被哪条安全校验挡了。
     console.warn('[dsh-session-save] 打开失败', source, error);
     const raw = String(error?.message ?? '');
+    // 累计解压超限：包没坏，只是太大。别再让它混进「不是有效的工程包」那句里 ——
+    // 那句话会让用户去翻备份重存一份，而这份包一个字节都没坏。
+    if (error?.code === 'E_LOG_TOO_LARGE') {
+      return jsonResponse({ status: 'too-large', message: raw }, 413);
+    }
     const leaksPath = raw === '' || raw.includes(source) || raw.includes(os.homedir()) || /[A-Za-z]:[\\/]/.test(raw);
     return jsonResponse(
       {

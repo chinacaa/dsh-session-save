@@ -66,7 +66,7 @@ interface ConnectionFetchRoute {
 
 `fetch` 收到的是标准 `Request`，返回标准 `Response`（`jsonResponse()`，`index.js:2185`）。四条都自己做了 `requestGate()` 来源校验（`index.js:2105`：回环 Host + 同源 Origin + 拒 cross-site），**不依赖 connection 的鉴权**——所以若 DSH 改变了 Host 头/Origin 的注入方式，这里会先拦住请求。
 
-`/api/session.open` 的出参比 DSH 给的会话对象多一项 **`repair`**（插件自产的体检报告，不是 DSH 契约）：`{ frames:{total,broken}, lines:{total,dropped}, parts:{total,missing,patched,dropped}, changed, notes }`。它由 `repairSession()`（`index.js:710`）在落盘前生成：逐帧 `zstdDecompressSync`（解不开的帧原样保留字节）、逐行 `JSON.parse`（坏行丢弃）、`repairPartNode()`（`index.js:637`）遍历 image part，本机没有的对象换成文字占位、缺尺寸的用 `imageInfoOf()`（`index.js:578`）按文件头补齐。**这条是 DSH 契约的探针**：DSH 一旦改了会话日志的帧结构或 part 形状（`attachment` 对象 vs 扁平 `attachmentId`），`repair.parts.total` 会先掉到 0——测试 `test/repair.mjs` 与 `test/open-repair.mjs` 盯着它。
+`/api/session.open` 的出参比 DSH 给的会话对象多一项 **`repair`**（插件自产的体检报告，不是 DSH 契约）：`{ frames:{total,broken,truncated}, lines:{total,dropped}, parts:{total,missing,patched,dropped}, changed, notes }`。它由 `repairSession()`（`index.js:710`）在落盘前生成：逐帧 `zstdDecompressSync`（解不开的帧原样保留字节）、逐行 `JSON.parse`（坏行丢弃）、`repairPartNode()`（`index.js:637`）遍历 image part，本机没有的对象换成文字占位、缺尺寸的用 `imageInfoOf()`（`index.js:578`）按文件头补齐。**这条是 DSH 契约的探针**：DSH 一旦改了会话日志的帧结构或 part 形状（`attachment` 对象 vs 扁平 `attachmentId`），`repair.parts.total` 会先掉到 0——测试 `test/repair.mjs` 与 `test/open-repair.mjs` 盯着它。
 
 四条路由的 409 语义（客户端按 `status` 字段分流，不是按 HTTP 码）：
 
@@ -299,7 +299,7 @@ fetch(`${ROUTE}?${search.toString()}`, { method: 'GET', headers: { accept: 'appl
 3. **插槽还在不在**：`cordis_inspect_query` → `client/Slots.listSubTree` 传 `conversation.session.header.utilities`，看 5 个 occupant 是否全 `active`。
 4. **事件名没变**：`cordis_inspect_query` → `host/Event.listEvents` 传 `session/event`，确认签名仍是 `(session, event)`；再确认 `event.type` 仍可能是 `step/end` / `turn/end`。
 5. **会话文件还能读**：`node test/smoke.mjs`（打包 + 回读）与 `node test/open.mjs`（40 条，导入与冲突）。十一套测试全部通过 `test/fixture.mjs` 自建临时 `DSH_HOME`，不读真实 `~/.dsh`。
-6. **跑满回归**：`for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales; do node test/$f.mjs || exit 1; done`，应共 **404** 条 ✅（详见 `docs/TEST-MATRIX.md`）。其中 `pathkey.mjs` 是 rc.4 适配时新增的目录名派生回归。
+6. **跑满回归**：`for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait dsh-list; do node test/$f.mjs || exit 1; done`，应共 **682** 条 ✅（详见 `docs/TEST-MATRIX.md`）。其中 `pathkey.mjs` 是 rc.4 适配时新增的目录名派生回归。
 7. **客户端能调 Host 吗**：`node test/client.mjs` 里已断言 `inject` 含 `remote` 与 `remote.session`、且源码不含 `uiWorkspace.openPath`。「打开记忆目录」失效是**静默**的（按钮点了没反应、不报错），只能靠这条断言兜住。
 
 ---
@@ -350,7 +350,7 @@ node test/pathkey.mjs    # 目录名派生没漂
 node test/client.mjs     # 插槽 / inject / 前端接线没断
 ```
 
-其余五套（`dialog` `smoke` `open` `conflict` `security`）覆盖的是插件自己的落盘与安全逻辑，与 DSH 版本弱相关，但**改动后必须全跑**（合计 286 条）；`attach` / `repair` / `open-repair` 三套覆盖附件打包回填与打开前体检（26 条）。以上 308 + 46（`pathkey` 35 + `client` 11）+ 26 = 380 条，再加 `version` 7 条与 `locales` 5 条 = 全部 404 条。`locales` 覆盖语言包形状、客户端兜底、路由回落与跨站拦截。
+其余五套（`dialog` `smoke` `open` `conflict` `security`）覆盖的是插件自己的落盘与安全逻辑，与 DSH 版本弱相关，但**改动后必须全跑**（合计 286 条）；`attach` / `repair` / `open-repair` 三套覆盖附件打包回填与打开前体检（26 条）。以上 308 + 46（`pathkey` 35 + `client` 11）+ 26 = 380 条，再加 `version` 7 条、`locales` 5 条、`context` 8 条、`bili` 13 条，以及往返 `roundtrip` 89 条与弹窗/文案 `backup-ui` 36 条 = 全部 553 条。`locales` 覆盖语言包形状、客户端兜底、路由回落与跨站拦截。
 
 ### 6.2 rc.2 → rc.4（2026-10 那轮的对照；本机现在跑 0.2.2-alpha.2）
 
@@ -402,7 +402,7 @@ npm 上 `@deepseek-ai/dsh` 的 `dist-tags`：`latest = 0.2.1-rc.2`（`alpha = 0.
 
 `engines.dsh = ">=0.2.1-rc.1 <0.3.0-0"` 对 `0.2.2-alpha.2` 判 **ALLOW**（预发布版落在范围内，靠 `includePrerelease: true`），对 `0.3.0-alpha.1` 与 `0.3.0` 仍是 **BLOCK**：上界没有因为这次升级被顺手放宽。
 
-十二套 **404 条全绿**，与发版前一致，零回退。
+二十套 **637 条全绿**，与发版前一致，零回退。
 
 ## 7. `engines.dsh` 的接口倒推依据
 

@@ -156,6 +156,24 @@ Opening applies the same rule in reverse: an object that already exists is skipp
 
 Code files are not included — a `.dsproj` holds the conversation, its memory and its attachments. Use `dshproj export --files` to carry the workspace too.
 
+### The compression block travels too
+
+If billion-context (bili) is installed, it remembers per session which messages it has already folded into summaries. That state lives in bili's own directory, not in the DSH session file. So a session packaged on its own arrives at bili as a session it has never seen: with no fold history, the first turn has to resend the whole thing, and the longer the session the more likely that blows the context window. bili turns DSH's native compaction off, so nothing else covers this.
+
+The package now carries `bili/session.json`, and import writes it back under the same naming rule:
+
+| Situation | What happens |
+| --- | --- |
+| The package has no such entry (old package, or bili was not installed when exported) | Opens normally, `bili.reason` is `absent` |
+| bili is not installed here | Opens normally, reason `not-installed` |
+| The block's `schema` is not one this version knows | Nothing is written, reason `schema-mismatch` — better to skip than to push an unreadable state into someone else's store |
+| The local copy is newer than the packaged one | Left alone, reason `newer-local` — the local copy holds turns from after the export |
+| The block names a different session than the one being imported | Nothing is written, reason `session-mismatch` — only this session is restored, nothing else is touched |
+| bili wrote that file within the last 2 seconds | Waits once, then backs off, reason `busy` — it is working on this session and would overwrite the restore |
+| Normal restore | Written back (existing file kept as `.bak-<time>`), read back and verified, reason `ok` |
+
+```
+
 ## Security and data health check
 
 Opening someone else's `.dsproj` is accepting a compressed archive from a stranger, so the plugin treats every package as potentially hostile:
@@ -188,6 +206,18 @@ Two steps now:
 2. **If even that fails, hand over a brief** (`package-broken`). A read-only text box shows a paragraph you can copy as-is: where the package is, its size, the plugin version, the verifier's exact error, the first 60 entries, the package format contract, and the five-step fix (recompute sha256 → repair `manifest.parts` → delete the bad entries → repack → list what changed). Paste it into any AI and it can do the repair — you never have to read a zip structure yourself.
 
 Two limits: if `session/` is the broken entry, there is nothing left to rescue and you get the brief instead of an import; and "this package came from a newer version" is a different case (next section), never treated as corruption.
+
+### A large session gets trimmed to a budget first
+
+A few hundred turns add up to hundreds of thousands — or tens of millions — of tokens. Open one of those and the first request fills the context; an incremental compressor like `billion-context` cannot save it either, because it tracks which messages it has already folded per session, and a session that arrives from elsewhere has no history on this machine. The first request ships the whole thing.
+
+So the import measures the session first (decompressed bytes divided by 3.2). Above **150000 tokens** the report says how much the whole conversation would cost and how many trailing turns a budget would keep — but **the file written to disk is still the complete session**. Trimming is advice for this one load, not an edit to your archive; what actually bounds the context is the runtime (billion-context folding, DSH loading).
+
+- Only whole turns are dropped: a tool call never gets separated from its result.
+- The file written to disk is the trimmed copy. The `.dsproj` is untouched — unpack it and read `session/*.jsonl.zstd` for anything that was left out.
+- Turn the report off with `?contextBudget=0`, or pick another budget with `?contextBudget=300000`.
+- The UI says "N earlier turns kept out of the context"; this never happens silently.
+
 
 ### Version awareness and upgrade notice
 
@@ -244,6 +274,10 @@ Do not just add an `- id/name` row to the profile's `cordis.patch.yml` — that 
 **Is autosave expensive?** Each write re-packs the whole package (the log itself is append-only), debounced to at most one write per 1.5 s per step. For very large sessions prefer manual saves.
 
 **Linux / macOS?** Yes. The host side is platform-neutral and the Save As / Open dialogs are picked per platform: WinForms panels through `powershell.exe` on Windows, Finder panels through `osascript` (`choose file name` / `choose file`) on macOS, and the GTK or KDE panel of the first tool found among zenity → kdialog → qarma → matedialog on Linux and the BSDs. With none of them the UI falls back to an in-page path field.
+
+**Can it keep a copy of the old file when overwriting?**
+
+Yes, and it does by default. The conflict panel, the "this file changed on disk" prompt and the memory merge dialog all carry a "Back up the original before overwriting" checkbox; leave it ticked and it writes a `.bak-<time>` copy, clear it and nothing is kept. The same applies when saving over an unrelated file that happens to have the same name.
 
 **I deleted the file — what happens if I hit 💾 now?** It stops and asks instead of silently creating a new one. The panel offers **create it here** (start a fresh package at the old path), **save somewhere else** (leave the old path alone), or **cancel** (write nothing). If autosave was on, it turns itself off and says so.
 

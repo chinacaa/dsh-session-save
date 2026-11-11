@@ -19,7 +19,37 @@ window.__ModuleLoader__.load({
     const AUTOSAVE_ROUTE = 'api/session.autosave';
     const WORKSPACES_ROUTE = 'api/session.workspaces';
 
-    const ZH = {
+    // 跳到一个刚导入的会话。DSH 的 sessions 服务只提供 refresh() / retain()，
+// 没有「这个 id 在不在」的查询方法（sessions.get 不存在），所以不能先问再跳：
+// 直接试一次，retain() 不认识它就抛 `sessions.retain: unknown session`，
+// 这时刷新一次索引、稍等一下再试。其它错误不重试，原样交回。
+async function jumpWhenReady(host, sessionId, options = {}) {
+  const ui = host?.uiWorkspace;
+  if (ui === undefined || ui === null || typeof ui.openSession !== 'function') {
+    return { jumped: false, error: new Error('uiWorkspace.openSession 不可用') };
+  }
+  const attempts = Number.isFinite(options.attempts) ? options.attempts : 12;
+  const delay = Number.isFinite(options.delay) ? options.delay : 150;
+  const wait = typeof options.wait === 'function'
+    ? options.wait
+    : (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+  let lastUnknown = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      ui.openSession(sessionId);
+      return { jumped: true };
+    } catch (error) {
+      const text = String(error && error.message ? error.message : error);
+      if (!/unknown session/i.test(text)) return { jumped: false, error };
+      lastUnknown = error;
+    }
+    try { await host?.sessions?.refresh?.(); } catch { /* 刷新失败就再等一轮 */ }
+    await wait(delay);
+  }
+  return { jumped: false, unknown: lastUnknown };
+}
+
+const ZH = {
       button: '保存会话',
       buttonHint: '保存',
       saving: '正在保存…',
@@ -36,6 +66,7 @@ window.__ModuleLoader__.load({
       opening: '正在打开…',
       opened: '已打开',
       openFailed: '打开失败',
+      listRefreshHint: '，会话索引还没跟上，稍等片刻它就会出现在左侧列表里',
       openPath: '打开会话工程',
       openPathHint: '输入 .dsproj 的完整路径',
       openConfirm: '打开',
@@ -104,8 +135,10 @@ window.__ModuleLoader__.load({
       missingTargetHint: '该位置原有一份工程包，当前无法读取（已被删除、移动，或所在磁盘未挂载）。继续保存将在该位置新建同名文件，原文件内容将丢失。',
       missingTargetRecreate: '在该位置新建',
       missingTargetSaveAs: '另存到其他位置',
+      backupKeep: '覆盖前先备份原文件',
       missingAutoOff: '自动保存已停用：目标文件不存在',
       repairHint: '打开前检查：',
+      contextTrimmed: '{n} 轮更早的对话没有进入上下文（完整日志仍在工程包里）',
       repairMissing: '{n} 张图片的原始数据不在本机，已替换为文字占位',
       repairPatched: '{n} 张图片缺少尺寸信息，已按文件头补全',
       repairLines: '{n} 行日志无法解析，已跳过',
@@ -122,6 +155,7 @@ window.__ModuleLoader__.load({
       memoryOpenDir: '打开记忆目录',
       memoryDirLabel: '记忆目录',
       memoryMergeTarget: '记忆将写入上方显示的记忆目录，而非当前打开的工作区',
+      memoryForeignNote: '这个包记录的是另一个工作区（{slug}）的记忆：下面列出的文件会写进那个工作区的记忆目录，不是当前打开的工作区。',
       memoryMerge: '合并记忆',
       memoryMergeTitle: '将包内记忆合并到本机',
       memoryMergeHint: '合并仅覆盖本机已有的同名文件，覆盖前每个文件将备份为 .bak-<时间>。若该包并非本人导出，请取消：包内记忆会被 DSH 当作项目笔记读入上下文。',
@@ -608,7 +642,7 @@ window.__ModuleLoader__.load({
             key: 'stale',
             payload: stale,
             busy,
-            onOverwrite: () => save({ force: '1' }),
+            onOverwrite: (keep) => save({ force: '1', backup: keep === false ? '0' : '1' }),
             onSaveAs: () => save({ ask: '1' }),
             onCancel: () => {
               setStale(null);
@@ -798,6 +832,12 @@ window.__ModuleLoader__.load({
         }
         const repairText =
           repairNotes.length > 0 ? ` · ${L.repairHint}${repairNotes.join('，')}` : '';
+        // 按上下文预算裁过就得说：不说清，用户会以为聊天记录被吃了。
+        const contextTrim = payload.context?.trim;
+        const contextText =
+          contextTrim !== undefined && contextTrim !== null && contextTrim.trimmed === true
+            ? ` · ${String(L.contextTrimmed).replace('{n}', Number(contextTrim.droppedTurns) || 0)}`
+            : '';
         // 被配额拦下的附件必须说出来：附件对象库没有 GC，不说等于悄悄吞掉用户包里的图。
         // 但「回填了 N 张」是正常路径，天天往 toast 里塞会变成噪音，所以只报被拦的那部分。
         const attachRejected = Number(payload.attachmentsRejected) || 0;
@@ -808,21 +848,27 @@ window.__ModuleLoader__.load({
         setNotice(!created && (written > 0 || pendingCreated > 0) ? payload : null);
         setToast({
           tone:
-            warning !== '' || cloud !== '' || repairNotes.length > 0 || attachRejected > 0 || (!created && (written > 0 || pendingCreated > 0))
+            warning !== '' || cloud !== '' || repairNotes.length > 0 || attachRejected > 0 || contextText !== '' || (!created && (written > 0 || pendingCreated > 0))
               ? 'info'
               : 'ok',
-          text: `${L.opened} · ${label}${warning}${cloud}${memory}${createdText}${clashText}${repairText}${attachText}`,
+          text: `${L.opened} · ${label}${warning}${cloud}${memory}${createdText}${clashText}${repairText}${attachText}${contextText}`,
         });
         try {
           await host?.sessions?.refresh?.();
         } catch {
           /* 索引刷新失败不阻断打开 */
         }
-        try {
-          host?.uiWorkspace?.openSession?.(payload.sessionId);
-        } catch (error) {
-          setToast({ tone: 'error', text: `${L.openFailed} · ${String(error && error.message ? error.message : error)}` });
+        // refresh() 只是把 session.list 发起一次，索引落进 sessions/summaries 要晚一拍。
+        // 立刻 openSession 会撞上 DSH 的 `sessions.retain: unknown session`，文件其实已经导好了。
+        // sessions 服务没有 get(id) 这种查询方法，所以只能真跳一次、跳不动再刷新重试。
+        const outcome = await jumpWhenReady(host, payload.sessionId);
+        if (outcome.jumped === true) return;
+        if (outcome.error !== undefined) {
+          setToast({ tone: 'error', text: `${L.openFailed} · ${String(outcome.error && outcome.error.message ? outcome.error.message : outcome.error)}` });
+          return;
         }
+        // 一直卡在「索引不认识」：包已经落盘了，只是这一跳跳不过去。
+        setToast({ tone: 'info', text: `${L.opened} · ${label}${L.listRefreshHint}` });
       }, []);
 
       const open = useCallback(
@@ -919,7 +965,8 @@ window.__ModuleLoader__.load({
             key: 'conflict',
             conflict: flow.conflict,
             busy: flow.busy,
-            onChoose: (mode) => flow.open({ path: flow.conflict.sourcePath, onConflict: mode }),
+            onChoose: (mode, keep) =>
+              flow.open({ path: flow.conflict.sourcePath, onConflict: mode, backup: keep === false ? '0' : '1' }),
             onCancel: () => {
               flow.setConflict(null);
               flow.setToast({ tone: 'info', text: L.cancelled });
@@ -987,10 +1034,10 @@ window.__ModuleLoader__.load({
             key: 'merge',
             payload: flow.merge,
             busy: flow.busy,
-            onConfirm: () => {
+            onConfirm: (keep) => {
               const source = flow.merge.sourcePath;
               flow.setMerge(null);
-              flow.open({ path: source, memory: 'restore' });
+              flow.open({ path: source, memory: 'restore', backup: keep === false ? '0' : '1' });
             },
             // 「合并并新建」是这一轮新增的第二个按钮：本机没有的文件默认不写，
             // 用户看到「将新建」段之后才有机会明确放行。
@@ -1032,6 +1079,8 @@ window.__ModuleLoader__.load({
 
     /** 同 id 不同会话时问用户怎么办。 */
     function ConflictModal({ conflict, busy, onChoose, onCancel }) {
+      // 覆盖前要不要留一份原文件，默认留。取消勾选时才真的什么都不留。
+      const [keepBackup, setKeepBackup] = React.useState(true);
       const local = conflict.existing || {};
       const incoming = conflict.incoming || {};
       const when = (ms) => {
@@ -1044,7 +1093,7 @@ window.__ModuleLoader__.load({
           {
             type: 'button',
             disabled: busy,
-            onClick: () => onChoose(mode),
+            onClick: () => onChoose(mode, keepBackup),
             style: {
               padding: '6px 12px',
               fontSize: 12.5,
@@ -1126,6 +1175,26 @@ window.__ModuleLoader__.load({
             ),
           ),
           React.createElement('div', { style: { fontSize: 11.5, color: COLORS.secondary, lineHeight: 1.5 } }, L.conflictId),
+          React.createElement(
+            'label',
+            {
+              style: {
+                display: 'flex',
+                gap: 6,
+                alignItems: 'center',
+                fontSize: 12,
+                color: COLORS.secondary,
+                cursor: busy ? 'default' : 'pointer',
+              },
+            },
+            React.createElement('input', {
+              type: 'checkbox',
+              checked: keepBackup,
+              disabled: busy,
+              onChange: (event) => setKeepBackup(event.target.checked),
+            }),
+            L.backupKeep,
+          ),
           React.createElement(
             'div',
             { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' } },
@@ -1232,6 +1301,8 @@ window.__ModuleLoader__.load({
 
     /** 合并前把要覆盖的文件列出来，避免用户不知道自己在覆盖什么。 */
     function MemoryMergeModal({ payload, busy, onConfirm, onNew, onCancel }) {
+      // 覆盖本机记忆文件前要不要先备份，默认备份。
+      const [keepBackup, setKeepBackup] = React.useState(true);
       // 清单来自 memoryPlanned（copy 模式也返回），不是 memoryConflicts。后者只记「覆盖了
       // 哪些」，本机没有的文件压根不在里面——上一轮「弹窗列表为空、点确认却落了原名」
       // 就是拿它当清单用出来的。exists 由服务端用 safeJoin 落点判，前端只负责分两段显示。
@@ -1320,6 +1391,15 @@ window.__ModuleLoader__.load({
                   L.memoryMergeTarget,
                 ),
               ),
+          // 跨工作区必须直说。slug 不同就是另一个项目的记忆目录：用户以为自己只把
+          // 包里的笔记并进眼前这个项目，实际写的是别处 —— 这一句是他唯一能察觉的机会。
+          payload?.memoryForeign === true
+            ? React.createElement(
+                'div',
+                { style: { fontSize: 11.5, color: COLORS.danger, lineHeight: 1.5 } },
+                String(L.memoryForeignNote).replace('{slug}', String(payload?.memoryForeignSlug ?? '')),
+              )
+            : null,
           // 两段分开列：「将覆盖」是本机已有、点确认就换成本机版本的；「将新建」是本机没有的，
           // 默认一个都不写。用户看到第二段才知道包里还有东西没落地，才有机会决定要不要放行。
           React.createElement(
@@ -1398,13 +1478,33 @@ window.__ModuleLoader__.load({
                 ),
               ),
           React.createElement(
+            'label',
+            {
+              style: {
+                display: 'flex',
+                gap: 6,
+                alignItems: 'center',
+                fontSize: 12,
+                color: COLORS.secondary,
+                cursor: busy ? 'default' : 'pointer',
+              },
+            },
+            React.createElement('input', {
+              type: 'checkbox',
+              checked: keepBackup,
+              disabled: busy,
+              onChange: (event) => setKeepBackup(event.target.checked),
+            }),
+            L.backupKeep,
+          ),
+          React.createElement(
             'div',
             { style: { display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 2 } },
             button(L.wsCancel, onCancel, false),
             // 两个按钮都给：只给「合并已有」的话，用户根本没法在全新机器上恢复记忆；
             // 只给「合并并新建」的话，等于把默认不放行的那一步做成了一键。
             button(L.memoryMergeWithNew, onNew, false, create.length === 0),
-            button(L.memoryMergeConfirm, onConfirm, true, overwrite.length === 0),
+            button(L.memoryMergeConfirm, () => onConfirm(keepBackup), true, overwrite.length === 0),
           ),
         ),
       );
@@ -1774,6 +1874,8 @@ window.__ModuleLoader__.load({
     }
 
     function StaleModal({ payload, busy, onOverwrite, onSaveAs, onCancel }) {
+      // 覆盖磁盘上那份之前要不要先备份，默认备份。
+      const [keepBackup, setKeepBackup] = React.useState(true);
       const since = payload?.stale?.since;
       const when = typeof since === 'string' && since !== '' ? new Date(since).toLocaleString() : '未知';
       const bytes = Number(payload?.stale?.bytes) || 0;
@@ -1853,11 +1955,31 @@ window.__ModuleLoader__.load({
             React.createElement(MiniStat, { label: L.conflictCwd, value: String(payload?.path || '-') }),
           ),
           React.createElement(
+            'label',
+            {
+              style: {
+                display: 'flex',
+                gap: 6,
+                alignItems: 'center',
+                fontSize: 12,
+                color: COLORS.secondary,
+                cursor: busy ? 'default' : 'pointer',
+              },
+            },
+            React.createElement('input', {
+              type: 'checkbox',
+              checked: keepBackup,
+              disabled: busy,
+              onChange: (event) => setKeepBackup(event.target.checked),
+            }),
+            L.backupKeep,
+          ),
+          React.createElement(
             'div',
             { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' } },
             button(L.cancel, onCancel, false, false),
             button(L.staleSaveAs, onSaveAs, true, false),
-            button(L.staleOverwrite, onOverwrite, false, true),
+            button(L.staleOverwrite, () => onOverwrite(keepBackup), false, true),
           ),
         ),
       );

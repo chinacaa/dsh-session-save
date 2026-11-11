@@ -5,6 +5,80 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **导入不再改写存档文件**。以前超预算时会先按整轮裁一遍再把裁剪结果写进 `sessions/`，用户手里那份 `.dsproj` 一旦删掉，砍掉的 turn 就再也回不来了。现在预算只用来出报告（`context.trim.applied = false`），落盘恒为包里的完整日志；真正管「带多少进上下文」留给运行期（billion-context 折叠 / DSH 装载）。实测一条 45 万 token 的包：落盘 162 帧 / 295 行 / 两个 turn，与包内逐字节同构。
+- **空壳压缩块不再覆盖本机状态**。`bili/session.json` 里 `state.payload` 为空时 `restoreBili` 直接让开（`written: 0, reason: 'empty-payload'`），不再把本机一份有效状态换成一张白纸还报 `ok`。
+- `test/pathkey.mjs` 的目录形状断言放过 DSH 自己的 `_no-cwd`（「没有工作区」的内部会话），不再把别人建的目录算成插件的违规产出。
+
+## [0.5.0-alpha.3] - 2026-11-05
+
+### 修复
+
+- **导入后停在「会话索引还没跟上」，会话一次也没真的打开。** 上一版在跳转前用 `sessions.get(id)` 轮询判「索引认不认识它」，但 DSH 的 `sessions` 服务只有 `refresh()` / `retain()`，没有 `get()`：条件永远不成立，于是重试走到头、只弹一句提示就返回，用户看到的就是「还是打不开」。现在改成直接跳：`openSession()` 认不出会话会抛 `sessions.retain: unknown session`，抛了就刷新一次索引、等 150 ms 再试（最多 12 次），其它错误只试一次并原样报出来。跳转逻辑收成 `jumpWhenReady()`，用假的 host 把三条路径（晚一拍后跳过去 / 一直不认识 / 真错误）都跑一遍。
+- **新增一条拿 DSH 自己的索引做断言的回归。** `test/dsh-list.mjs` 在临时 DSH_HOME 里落一份会话，再用 `@deepseek-ai/dsh-session-persistence-jsonl` 真实扫盘列一遍，断言它认得这个 id：这层认不出，客户端重试多少遍都没用；本机没装 DSH 时这条自动跳过。
+
+## [0.5.0-alpha.2] - 2026-11-05
+
+### 修复
+
+- **`compareVersions` 把预发布后缀整个丢掉，正式版的包在预发布插件上被判成同版本。** 它原来用 `.split('-')[0]` 只比主版本，于是 `0.4.3` 与 `0.4.3-alpha.1` 相等：拿一个 0.4.3 写的包给 0.4.3-alpha.1 的插件打开，本该提示「先升级插件」，实际却报「包里有不认识的条目」，看起来像包坏了。现在按 semver 比：带预发布的比同号正式版小（`0.4.3-alpha.1 < 0.4.3`）、预发布段逐段比、数字段低于字母段、段数少的更小。`test/version.mjs` 由 5 种情形扩到 9 种。
+
+- **导入成功后停在「打开失败 · sessions.retain: unknown session」。** 包已经落盘、会话文件也在，但客户端 `refresh()` 之后立刻 `openSession()`：refresh 只是发起一次 `session.list`，索引落进 `summaries` 要晚一拍，这一跳就撞上 DSH 的 `sessions.retain: unknown session`，界面把它当成导入失败。现在跳转前先等索引认识这个会话（最多 15 × 100 ms，中途再补两次 `refresh()`）；等不到只提示「会话索引还没跟上，稍等片刻它就会出现在左侧列表里」，不再喊打开失败。
+
+## [0.4.3-alpha.1] - 2026-11-04
+
+### 新增
+
+- **覆盖前可选留一份原文件。** 冲突面板（导入时选「覆盖」）、磁盘内容被改过的提示、合并记忆三个弹窗都多了一个默认勾选的「覆盖前先备份原文件」；取消勾选就真的不留 `.bak-<时间>`。保存到陌生文件时同样适用（这一路以前是直接覆盖，不留退路）。请求侧关闭开关是 `backup=0`，默认开启。
+
+- **导入时按上下文预算从尾部保留完整轮次，默认 150000 token，不调就防爆。** 一条几百轮的会话折算下来是几十万到几千万 token，`billion-context` 这类在 wire 层做增量压缩的插件也接不住：它按会话记住自己已折叠过哪些消息，第一次见到一个从外面搬进来的会话时手里没有历史，只能把整包发上游。所以 `importPackage` 先 `estimateContext()` 量一下体量，超预算就 `trimSession()` 从最后一轮往前保留完整 turn，在头部插一条说明（省了几轮、完整日志仍在工程包里），turn 号重排为从 1 连续。只从轮次边界切，不会把工具调用与结果拆开；`?contextBudget=0` 关闭，`?contextBudget=<n>` 自定义。返回体新增 `context: { before, trim }`。
+- **`.dsproj` 带上 billion-context 的压缩块。** bili 按会话 id 记住哪些消息已经折叠过，状态存在它自己的目录里；换台机器打开一个大会话时它手里没有这份历史，第一轮只能把整段重发一遍，而 bili 关掉了 DSH 的原生压缩，这一层没有兜底。现在导出会把状态打包成 `bili/session.json`（内含 `plugin` / `schema` / `sessionId` / `protocol` / `host` 与原始状态），导入按 `<host>_<sha256(sessionId) 前 24 位>.json` 重建文件名写回。只恢复这一个会话：块里的 `sessionId` 不是本次导入的会话就不写（记 `session-mismatch`），`protocol` / `host` 过白名单且落点必须仍在 bili 的会话目录内；bili 刚写过那一份（2 秒内）先等一下，仍新鲜就让开（记 `busy`），写完回读校验。三条边界：`schema` 不是 3 的不写、本机那份 `savedAt` 更新不覆盖（它带着包导出之后的对话）、bili 没装或包里没有这一条只记原因不算错。返回体新增 `bili: { written, skipped, rejected, reason }`。
+
+### 安全
+
+- **上下文预算对「最后一轮自己就超预算」失效。** 收集循环用 `kept.length > 0` 让尾轮无条件保留：一次超长工具输出就能让 `budget: 100` 仍留下 98 万 token，report 还报 `trimmed: true`。现在单轮超预算时从尾部按行切（`turn/start` 一定留着，否则这一轮不成轮、轮次账目也对不上），并如实标 `oversizeTurn` / `stillOverBudget`。
+- **包内路径段按字节卡 255，长中文名被整包拒。** Win32 的段名上限是 255 个 UTF-16 码元，不是 255 字节：86 个汉字 = 258 字节但只有 86 个字符，Windows 建得出来，这里却整包 500。另外 copy 模式追加的 `.from-dsproj-<日期>` 会把 84 个汉字的名字顶过线，同一份记忆 restore 能写、copy 写不了。现在按码元判长，后缀超长时截主名、保扩展名。
+- **NFC 硬校验把 macOS 导出的 NFD 文件名整包拒掉。** macOS（HFS+/APFS）给的 `e\u0301tude.md` 在那边合法，这里一看不是 NFC 就 500——恰好打死「macOS 打包、Windows 打开」这个主场景。现在归一化到 NFC 再落盘，分隔符/设备名/尾点的判定在归一化后的串上照样跑。
+- **bili 状态在 host 带端口时静默写错槽位。** `api.example.com:8443` 不匹配 host 白名单，就默默落到 `api.deepseek.com` 槽位、返回体还报 `ok`。现在如实报 `bad-host`（冒号在 Windows 文件名里非法，原样写必然 EINVAL，换字符又会写进 bili 永远找不到的槽位——拒绝比写错好）。
+- **导入失败留下空会话目录。** 0 字节文件已经会清，目录没清；留着会被 `findExisting` 当成「本机已有这个会话」，后续走 reuse 分支拿着不存在的文件继续。现在只在「目录是这次建的」时才收掉。
+- **裁剪把 turn 之间的行提到文件开头。** `head` 的判定只看 `current === undefined`，于是每轮结束到下一轮开始之间的 `session/title`、`session/updated` 也被吸进头部。现在用 `seenTurn` 判，两轮之间的行跟着前一轮走。
+- **`restoreBili` 同步阻塞 120 ms。** `Atomics.wait` 卡住整个事件循环，导入一次卡一次；`importPackage` 是同步链，改成 async 会传染到路由，所以直接让开（`busy`）——bili 刚写过就说明它正在这个会话上干活。
+- **`isDsprojFile` 用整文件大小当判据。** 带附件的大包（配额上限 128 MB）会被 `stat.size > MAX_ENTRY_BYTES` 判成「不是工程包」，于是「覆盖」对着自己的大包报 `not-dsproj`。现在只读 EOCD + 中央目录。
+- **`requestGate` 把裸 IPv6 切成 `:`。** `::1` 走 `replace(/:\d+$/, '')` 变成 `:`，回环判据把合法请求也挡了。现在按 `[v6]:port` 形态剥端口。
+- **状态文件按会话合并写。** 读-改-写之间隔着对话框等待，期间自动保存写了别的会话，整体覆盖会把那条改动抹掉。现在导入的三处写入只覆盖本次涉及的会话键。
+- **就地体检不留备份。** `repairInPlace` 改会话文件（断链换占位、坏行丢弃）不可逆，现在与其它覆盖点共用 `backup` 开关，默认留 `.bak-<时间>`。
+- **帧扫描按 zstd 规范算 RLE 块，扫描不完整时拒绝重写。** RLE 块的 `Block_Size` 是解压后大小、载荷恒 1 字节；早先按「非 RLE 才加 size」累加，RLE 块加 0 导致指针错位、后续块头变成垃圾，整帧被判成「没写完」丢掉。一条带 300 KB 连续空格的普通消息就能触发，随后换工作区打开时 `rewriteHeader` 把正文帧全扔了，还回 200 说一切正常。现在 `type===1 → +1`、`reserved → 不可解析`，并且 `rewriteHeader` 加覆盖率闸：认出来的帧必须覆盖整个文件，否则抛错拒写。
+- **解压上限不再被绕过。** 扫描认不出帧时，体检与上下文估算会直接「原样返回」——7 KB 的包能落盘一帧解开 200 MB。现在超单帧上限的 `ERR_BUFFER_TOO_LARGE` 在 `readStats` / `estimateContext` / `trimSession` / `readTitle` 四处一律重抛，不许当成「这帧坏了、跳过」。
+- **导入中途失败不再留 0 字节会话文件。** 目标文件的占位（`wx`）建好之后，回填附件、体检、上下文裁剪任何一步抛错，都会把空壳收掉；以前残留的空文件会让重试得到 409 假冲突。
+- **包内路径段加严。** 除绝对路径与 `..` 外，每段还拒绝 `[:<>"|?*]`（Windows 上是 ADS 分隔符）、结尾的点或空格、设备名（`CON` / `NUL` / `COM1` 等，含带扩展名形式）、超过 255 字节，以及非 NFC 形式。
+- **侧车锁不再替调用方建目录。** 锁文件顺手 `mkdirSync` 会架空 `writeAtomic({ createDir: false })`，保存到不存在的多级目录时留下孤儿包。
+- **relocate / copy 不再把 bili 状态写回原槽位。** 换过 id 之后直接记 `renamed`，既不给副本冒领原会话的折叠进度，也不覆盖原会话。
+- **导入校验 `header.id` 形态。** 只判「非空字符串」不够：该 id 会成为 `state.paths` 的键，`__proto__` 这类键会被 setter 吞掉。
+
+### 修复
+
+- **多帧各自合法、加起来几十 GB 的包会把内存吃满。** `estimateContext()` 与 `trimSession()` 逐帧解压累加，单帧有 `maxOutputLength` 挡着，累计没有：几百帧各自几十 MB 时内存一路涨到进程被系统杀掉。现在这两条路径与打包、体检同口径，累计到 512 MB 就停下并抛 `E_LOG_TOO_LARGE`，打开路由回 `413 status:'too-large'`，文案说清「这个工程包太大，不是文件损坏」以及下一步。正常包不受影响：附件额度 128 MB 且附件本身已压缩，合规包的会话日志解出来远到不了这个量。
+
+- **末帧被截断的日志会被当成「正好覆盖整个文件」。** 帧扫描靠帧头魔数定位，末帧缺 checksum 时 `end` 被 `Math.min` 夹回文件长度，覆盖率闸因此放行，`rewriteHeader` 把半截帧当正文照搬。现在 `scanZstdFramesDetailed()` 单独带出 `truncated`，覆盖率闸据此拒绝重写并说清「末帧可能被截断」，体检报告 `frames.truncated` 如实带出。
+
+- **`verify-failed` 时「没写」与磁盘不一致。** bili 状态回读校验发现内容不对，返回体记 `rejected`，文件却已经落在盘上；同一次导入的状态文件里还多了一条 `paths`。现在回读不一致就删掉刚写的那份（可重建的派生缓存）并带 `removed`；状态提交收敛成 `commitSource()`，只在返回体成型之后执行、只覆盖本次会话的键，失败路径一条都不写——`handleOpen` 尾部那次用旧快照整表写回也随之去掉（它会抹掉导入刚记下的 `stamps`）。
+
+- **`isInside` 不解符号链接。** 判据看的是字面路径，落点若是指向别处的 junction，检查通过而真实写入落在 root 之外。现在两端都先解析（从最深的已存在祖先 realpath 再拼回剩余段）再比：经链接逃出 root 判否；root 自己是链接、dest 是链接但仍落在 root 内，照旧判是——本机的工作区与插件本身都装在 junction 上，误判等于打不开自己的东西。
+
+- **`memory=restore` 写进别的工区的记忆目录时，界面一个字都不说。** 包里的 slug 与本机解析出的 slug 不同，写的就是另一个工作区的项目笔记。返回体新增 `memoryForeign` 与 `memoryForeignSlug`，合并记忆弹窗多一行说明「这个包记录的是另一个工作区（{slug}）的记忆」，文案在 `locales/zh-CN.json` 与 `en-US.json` 各一份。
+
+- **坏包只回一句 500，修包指引永远拿不到（P1）。** `importPackage` 第一行的 `zipRead` 不在任何 try 里：不是 ZIP、中央目录/条目越界、单条或整包超限，全冒到 `handleOpen` 的兜底 catch，变成 `500 {"status":"error"}`。客户端是按 `status: 'package-broken'` 弹修复面板的，所以「把这段话贴给 AI 重新打包」这条出口对这些包根本不存在。现在解包阶段的抛错一律走 `packageBrokenReport`。
+- **保存落点没有文件名校验，冒号路径留下 0 字节垃圾（P2）。** `?path=...ds:stream.dsproj` 只做了 roots 校验：`writeFileSync` 先按 ADS 语义建出裸文件 `ads`，`rename` 再 EINVAL，`unlink(tmp)` 只删掉数据流，`ads` 留在目录里。现在落盘前复用包内路径那套逐段校验（冒号、设备名、尾点、尾空格），并且 `writeAtomic` 失败时补删 ADS 前面那个裸文件；`x.dsproj.` 这种尾点也直接 400 而不是被补成 `x.dsproj..dsproj`。
+- **未来时间戳的锁永不过期（P2）。** `lockBlocks` 写的是 `Date.now() - at < LOCK_STALE_MS`，时钟回拨或跨机同步让 `at` 落在未来时差值为负，判定恒真；侧车锁踩到这条路直接 `throw` → 500，还没有 `canIgnoreLock`，用户只能自己去删 `.lock`。现在取绝对值，并把侧车锁冲突映射成 `409 locked`（带 `canIgnoreLock`，`ignoreLock=1` 真的能跳过，stale / confirm-overwrite 那几条不受影响）。
+- **`trimSession` 一刀没落也报 `trimmed: true`（P3）。** 单行就超过预算时（一行 200 KB 的 JSON）按行切切不动，`tail` 仍是整轮，却被标成 `partial`，于是 `droppedTurns: 0` 还报裁剪，插一条「更早的 0 轮没有带进上下文」，产物反而比原文大（64117 → 64232 tokens）。现在只有真被切掉行才标 `partial`，没丢东西就原样返回、`trimmed: false`、`oversizeTurn` 如实带出。
+- **`ENTRY_SINCE` 把 `bili/` 标成未发布的 0.4.3（P3）。** 提示于是自相矛盾：「写它的是 0.4.2，本机是 0.4.2：先升级插件」。改成 0.4.2（真正首发版本），并加断言保证这张表的版本永远不大于 `PLUGIN_VERSION`。
+- **附件被重新压缩时只丢一句「压缩比异常」（P2，不取消闸门）。** 别人用 7-Zip 重打包会把 1 MiB 文本压到 1 KB（约 1014:1），整包打不开。闸门保留——3 MiB 全零条目 935:1 的放大是真的（`test/security` R7 在守）——但提示改成「附件条目压缩比异常：被重新压缩过，本插件写包用 store」，指路而不是只报错。
+
+- **「覆盖磁盘文件」勾着备份却不备份。** 磁盘内容被别处改过后点覆盖，服务端的备份条件只看了「覆盖的不是自己记住的那个文件」，于是用户勾着默认勾选的「覆盖前先备份原文件」，一个 `.bak-<时间>` 都不留——同步盘/另一台机器改过的内容被直接抹掉，勾选框对这条路径等于摆设。现在 `staleOf()` 提到分支外算一次，`force=1` 时同样按勾选决定是否先备份；取消勾选照旧不留备份。
+
+- **中文界面的备份勾选框显示英文。** `client.js` 的中文兜底表里 `backupKeep` 写了两遍，后一条是英文译文；对象字面量同名键后者覆盖前者，语言包到达前的中文首屏三个弹窗都显示 `Back up the original before overwriting`。删掉重复行。
+
 ## [0.4.2] - 2026-11-02
 
 ### 修复

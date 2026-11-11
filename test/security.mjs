@@ -1412,6 +1412,23 @@ const exists = (file) => {
   check(text.includes('SECOND'), `${STAMP} 换成了包里的那份（不是原来那份）`);
   const baks = fs.readdirSync(path.dirname(target)).filter((name) => name.includes('.bak-'));
   check(baks.length >= 1, `${STAMP} 覆盖前留了备份`, String(baks.length));
+
+  // ② 勾掉「覆盖前先备份」：用户明确说不要备份，就不能偷偷留一份。
+  const dirOf = path.dirname(target);
+  const countBaks = () => fs.readdirSync(dirOf).filter((name) => name.includes('.bak-')).length;
+  const beforeCount = countBaks();
+  const third = path.join(OUT, 'r12-third.dsproj');
+  write(third, packFor('THIRD'));
+  const noBackup = await call(open, '/api/session.open', {
+    path: third,
+    cwd: OUT,
+    onConflict: 'overwrite',
+    backup: '0',
+  });
+  check(noBackup.status === 200, `${STAMP} 关掉备份后覆盖仍然成功`, `HTTP ${noBackup.status}`);
+  check(countBaks() === beforeCount, `${STAMP} 关掉备份后没多出 .bak`, `${beforeCount} -> ${countBaks()}`);
+  const thirdText = zlib.zstdDecompressSync(fs.readFileSync(target)).toString('utf8');
+  check(thirdText.includes('THIRD'), `${STAMP} 不备份时内容照样换成包里的`);
 }
 
 /* ── 收拾 ──────────────────────────────────────────────────────── */
