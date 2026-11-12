@@ -9,7 +9,7 @@
 - 语言/运行时：纯 ESM（`"type": "module"`），零运行时依赖，只用 `node:` 内置模块；客户端只 `require('react')`。
 - 宿主：DSH `>=0.2.1-rc.1 <0.3.0-0`（`engines.dsh`），Cordis `^4.0.1`（peer）。
 - 平台：Windows 优先（原生对话框走 `powershell.exe` + WinForms）；macOS 走 `osascript` 的 Finder 面板；Linux/BSD 探 zenity / kdialog / qarma / matedialog。三者都没有时退回网页里的路径输入框。平台相关代码全部隔离在 `dialog/` 下（`index.mjs` 选实现、`shared.mjs` 共用工具、`windows.mjs` / `macos.mjs` / `linux.mjs` 各平台实现），`index.js` 只 import `dialog/index.mjs`，不认识具体实现。
-- 规模：`index.js` ≈3730 行、`client.js` ≈2570 行、二十二套测试共 682 条 ✅（`smoke.mjs` 另有 12 处 throw 检查，只打一行汇总）。逐条覆盖见 `docs/TEST-MATRIX.md`。
+- 规模：`index.js` ≈3810 行、`client.js` ≈2710 行、二十三套测试共 708 条 ✅（`smoke.mjs` 另有 12 处 throw 检查，只打一行汇总）。逐条覆盖见 `docs/TEST-MATRIX.md`。
 
 ## 红线（改之前先看，违反会静默坏掉）
 
@@ -24,6 +24,8 @@
 9. **不要主动 commit / push**，除非用户明说。
 10. **不要把安全校验删掉或放宽**。包是「可能来自敌人」：条目名必须过 `safeSegments`（`\` 也算分隔符）、落点必须过 `isInside`、`inflateRawSync` 必须带 `maxOutputLength`、四条 `/api` 路由必须过 `requestGate`（拿不到 `headers` 时默认拒绝，别为单测放开）、`manifest.parts` 必须复核。另外 **`manifest.parts` 必须覆盖所有内容条目**（`session/`、`memory/workspaces/`）：只复核「声明过的」等于给未声明条目开后门，可以夹带 `MEMORY.md` 投毒项目笔记；包里带记忆条目但整个 `parts` 缺失的同样拒绝。**还有一层：默认的 copy 模式下落盘永不用原名**，一律 `xxx.from-dsproj-<日期>`——`parts` 的 sha256 是打包方自算的，自洽的包照样能过前面所有检查，所以「会不会被 DSH 当记忆读」只能靠改名来断（`restore` / `new` 是用户显式选的例外，见本行后半段）。`test/security.mjs` 会盯这些，改坏了立刻红。**`memory=restore`（界面上的「合并记忆」）只改落点，不放宽任何校验**：它照样过 `safeSegments` / `safeJoin` / `ENTRY_ALLOW` / `manifest.parts`，覆盖前先备份成 `xxx.bak-<时间>`；restore 只能由用户显式触发，**绝不许用包里的 `exportedBy`、hostname、`parts` 自洽之类字段判断「这个包可信」**——那些都是打包方自己写的。**`memory=restore` 只许覆盖本机已存在的文件，本机没有的一律不写**（计入 `memoryCreated`，不是 `memoryConflicts`）；用户显式选「合并并新建」才走 `memory=new`。理由：restore 若连新文件也建，一份投毒包在「本机没有该文件」时就能零确认地把 `MEMORY.md` 落到记忆目录，而 `MEMORY.md`、最近两天的日期日志、`handoff/*.md` 全在 DSH 的记忆读取面内——等于绕过 R4 的改名防护。本机没有的一律不写、也不建目录（计入 `memoryCreated` 交给界面）；`xxx.from-dsproj-<日期>` 副本只出现在 **copy 模式**（默认打开方式），restore 与 `new` 都不产生副本。**附件回填同理**：`attachments/` 条目不许享受 `RATIO_FLOOR_BYTES` 那档豁免（那档只给非附件用——附件是已压缩二进制，合法包接近 1:1，给了豁免等于让 3 MiB 全零缓冲把配额撑满，实测 935× 放大），且一次导入受 `MAX_ATTACH_FILES` / `MAX_ATTACH_TOTAL_BYTES` 双配额约束，超出的计入 `attachmentsRejected` **并且必须显示给用户**——DSH 的附件对象库没有 GC，写进去就永远躺着。**帧解压同理**：六处 zstd 解压必须走 `decompressFrame`（带 `maxOutputLength`），直接调 `zlib.zstdDecompressSync` 会绕过单帧上限——zip 那层只管「DEFLATE 解出多少」，帧里再套一层就能绕（实测 29 KB 的包解出 900 MB、RSS +937 MB）。超限的 `ERR_BUFFER_TOO_LARGE` **不许**被 `catch` 成「这帧坏了、跳过」，那等于让炸弹包被静默当成空会话打开；打包（`decodeLogText`）、体检（`repairSession`）与上下文估算/裁剪（`estimateContext` / `trimSession`）这四条全解路径还要累计总量到 `MAX_TOTAL_BYTES`，超限抛 `E_LOG_TOO_LARGE`——那是「包太大」，不是「这帧坏了」。
 11. **默认不打包 `~/.dsh/memory`**（里面有用户的项目笔记、日志和白板）。要带必须显式 `?memory=1`（界面上是 <kbd>Alt</kbd> 点击）。
+
+12. **远程访问不是「关掉鉴权」**。Host 不是回环地址时，判据从「必须是回环」换成「必须同源」：有 Origin 就要求 `parsed.host === host`，没 Origin 只放行浏览器自己的同源导航（`sec-fetch-site` 为 `same-origin` / `none`），`cross-site` 一律拒。远程模式不落盘、不弹原生窗口，保存/打开都交给浏览器。别为了让内网能用来把 `requestGate` 整个短路掉。
 
 ## 目录
 
@@ -42,10 +44,10 @@ marketplace/        上架条目（提 PR 到 awesome-dsh-plugin 用）
 scripts/bump.mjs    改版本（package.json + CHANGELOG）
 scripts/release-notes.mjs 从 CHANGELOG 摘某版本正文当 Release 说明
 scripts/set-repo.mjs 把 OWNER 占位换成真实 GitHub 名字
-test/fixture.mjs    临时 DSH_HOME 夹具（二十二套测试共用）
-test/*.mjs          二十二套自检（见「测试」）
-locales/*.json      界面语言包（zh-CN 为源语言，118 键；新文案先加这里）
-docs/TEST-MATRIX.md 功能面 → 测试覆盖矩阵（84 条 F 编号）
+test/fixture.mjs    临时 DSH_HOME 夹具（二十三套测试共用）
+test/*.mjs          二十三套自检（见「测试」）
+locales/*.json      界面语言包（zh-CN 为源语言，120 键；新文案先加这里）
+docs/TEST-MATRIX.md 功能面 → 测试覆盖矩阵（85 条 F 编号）
 docs/DSH-API-SURFACE.md 用到的 DSH 接口清单（升级 DSH 时逐条核对）
 assets/             截图与方形图标（市场用）
 ```
@@ -69,6 +71,7 @@ node test/roundtrip.mjs   # 往返保真 + 附件回填 + 四个覆盖点的 bac
 node test/backup-ui.mjs   # 三个弹窗的备份勾选回调 + 文案完整性
 node test/audit-r1.mjs   # 审计第 1 轮：RLE 帧、覆盖率闸、0 字节残留、ADS/设备名、保存不建目录、relocate 的 bili
 node test/audit-r4.mjs   # 审计第 4 轮：累计解压上限、末帧截断、状态提交时机、isInside 解链接、跨工区记忆
+node test/remote.mjs     # 远程访问：非回环 Host 的同源判据、download 打包不落盘、upload 临时包与清理
 
 node --check index.js client.js            # 语法
 node scripts/bump.mjs patch --dry          # 版本号预演
@@ -169,7 +172,7 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
 
   **下限怎么定**：逐条列出插件真正用到的宿主接口（四个插槽座位名、`ctx.on('session/event')`、`ctx.get('connection')`、`ctx.effect`、四条 `/api/session.*` 路由依赖的 `connection` 形状、会话文件格式版本、附件对象库路径），对每个接口找到它**第一次存在**的 dsh 版本，取其中最晚的那个当下限。对照表在 `docs/DSH-API-SURFACE.md` §7；查不到的接口必须标 `UNKNOWN`，不许估一个看起来合理的版本号填上。
 
-  **改范围的前置条件**：在新范围声称支持的**每一个边界版本**上跑完二十二套（`for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait dsh-list; do node test/$f.mjs; done` 加 `DSH_TEST_LOCALE=en-US node test/client.mjs`），把「哪个版本、跑了什么、结果如何」写进 `docs/DSH-API-SURFACE.md` §6。**没跑过的版本不许进范围**，包括「应该没问题」的版本。
+  **改范围的前置条件**：在新范围声称支持的**每一个边界版本**上跑完二十三套（`for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait dsh-list remote; do node test/$f.mjs; done` 加 `DSH_TEST_LOCALE=en-US node test/client.mjs`），把「哪个版本、跑了什么、结果如何」写进 `docs/DSH-API-SURFACE.md` §6。**没跑过的版本不许进范围**，包括「应该没问题」的版本。
 
   **上限怎么处理**：`>=x` 这种开口写法，只在「下限之后每一个已发布的版本都实测过」时才成立。dsh 发新版后，新版**不在范围内是正常的**；把范围改到新版是那次实测的结论，不是发版当天的默认动作。新版改了你用的接口，正确做法是改代码适配，然后在新旧两版上都跑一遍，而不是把旧版从范围里删掉。
 
@@ -206,7 +209,7 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
 三条硬规矩：
 
 1. **别在文档里复述代码**。默认文件名规则的真源是 `index.js` 的 `suggestPath()`、上限常量在 `index.js` 顶部；文档只说结论和例子，不抄正则、不抄常量值。抄了就会在下次改代码时变成谎言。
-2. **数字必须当场能验**。文档里出现"11 条红线""682 条 ✅""F1–F84""≈3730 行"这类计数时，要能用一条命令复现（见「改完之后」）。改完顺手核一遍，别让读者去发现数字过期。
+2. **数字必须当场能验**。文档里出现"12 条红线""708 条 ✅""F1–F85""≈3810 行"这类计数时，要能用一条命令复现（见「改完之后」）。改完顺手核一遍，别让读者去发现数字过期。
 3. **中英必须同一次改完**。`README.md` 与 `README.en.md` 是同一份文档的两种语言：小标题顺序、表格列、示例文件名一一对应。只改一份等于给另一半读者发过期信息。
 
 还有两条不写在文档里的东西：进度和计划（放 issue / PR / 提交信息，不写进 README 的"路线图"）、本机路径与个人环境（`C:\Users\...`、profile 名、私有 registry）——后者写进文档等于把私有环境当契约。
@@ -279,7 +282,7 @@ grep -o '—' README.en.md | wc -l        # 英文 em dash，超过 45 同理
 ## 改完之后
 
 1. `node --check index.js client.js`（改过 .ps1 再加语法检查）。
-2. 跑**全部二十二套**测试，别只跑改到的那一个；改过客户端再补一轮 `DSH_TEST_LOCALE=en-US node test/client.mjs`。
+2. 跑**全部二十三套**测试，别只跑改到的那一个；改过客户端再补一轮 `DSH_TEST_LOCALE=en-US node test/client.mjs`。
 3. 改过行为 → `CHANGELOG.md` 的 `[Unreleased]` 加一条。
 4. 改过任何一个断言或功能点 → 同步 `docs/TEST-MATRIX.md` 的覆盖表（它按 F 编号列，条数对不上就是漏改）。
 5. 改过文档 → 按「文档怎么改」那张表核对：中英两份是否同改、有没有把代码细节抄进文档、文中的计数是否仍成立：
@@ -288,7 +291,7 @@ grep -o '—' README.en.md | wc -l        # 英文 em dash，超过 45 同理
    wc -l index.js client.js                                  # 对应 AGENTS.md「规模」
    awk '/^## 红线/,/^## 目录/' AGENTS.md | grep -c '^[0-9]\+\. \*\*'   # 红线条数（必须限在红线节内：本文别处也有编号列表）
    grep -oE 'F[0-9]+' docs/TEST-MATRIX.md | sort -u | wc -l  # 功能面条数
-   for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait dsh-list; do node test/$f.mjs | grep -c '✅' ; done   # 二十一行相加 = 682
+   for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait dsh-list remote; do node test/$f.mjs | grep -c '✅' ; done   # 二十三行相加 = 708
    ```
 
 6. 确认测试没有留下垃圾：跑完 `git status` 应为只有你改的源文件，`os.tmpdir()` 下不该残留 `dshss-fx-*` / `dshss-sec-*` 目录（`autoCleanup` 会删，残留说明收尾路径漏了信号处理）。

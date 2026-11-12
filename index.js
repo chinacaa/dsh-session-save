@@ -3127,7 +3127,10 @@ function requestGate(request) {
   })();
   const loopback = (value) =>
     value === '127.0.0.1' || value === 'localhost' || value === '::1' || value === '[::1]';
-  if (!loopback(hostName)) return '只接受本机回环地址的请求';
+  // DSH 监听在局域网地址、或者用户用内网 IP 打开网页时，Host 不是回环地址。
+  // 判据因此从「必须是回环」换成「必须同源」：这条同时挡住别的站点发来的请求
+  // （它们带的是自己的 Origin），不需要也不应该退回「不看来源一律放行」。
+  const remote = loopback(hostName) === false;
   const origin = rawOrigin;
   if (origin !== null && origin !== undefined && origin !== '') {
     let parsed;
@@ -3136,8 +3139,13 @@ function requestGate(request) {
     } catch {
       return 'Origin 无法解析';
     }
-    if (!loopback(parsed.hostname.toLowerCase())) return 'Origin 不是本机地址';
     if (parsed.host.toLowerCase() !== host) return 'Origin 与 Host 不一致';
+    if (remote === false && !loopback(parsed.hostname.toLowerCase())) return 'Origin 不是本机地址';
+  } else if (remote === true) {
+    // 非回环且没有 Origin：只有浏览器自己的同源导航（下载包、上传表单）才会这样。
+    // 其余一律按可疑处理，别让一个不带 Origin 的跨站请求混进来。
+    const site = String(rawSite ?? '');
+    if (site !== 'same-origin' && site !== 'none') return '远程访问缺少 Origin';
   }
   if (String(rawSite ?? '') === 'cross-site') return '拒绝跨站请求';
   return undefined;
@@ -3207,6 +3215,25 @@ function jsonResponse(body, status = 200) {
   });
 }
 
+/**
+ * 把一个工程包作为附件交给浏览器下载。
+ * 远程访问时服务端不落盘：文件存到哪、叫什么名字，由浏览器和用户决定。
+ * 文件名走 RFC 5987 的 filename*，否则中文标题会被浏览器按 latin-1 读成乱码。
+ */
+function zipDownloadResponse(bytes, fileName) {
+  const asciiName = String(fileName).replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  const encoded = encodeURIComponent(String(fileName));
+  return new Response(bytes, {
+    status: 200,
+    headers: {
+      'content-type': 'application/zip',
+      'content-length': String(bytes.length),
+      'content-disposition': `attachment; filename="${asciiName}"; filename*=UTF-8''${encoded}`,
+      'cache-control': 'no-store',
+    },
+  });
+}
+
 async function handleSave(request) {
   const gate = requestGate(request);
   if (gate !== undefined) return jsonResponse({ status: 'error', message: gate }, 403);
@@ -3254,6 +3281,19 @@ async function handleSave(request) {
   const remembered = state.paths[sessionId];
   const rememberedAbs = typeof remembered === 'string' && remembered !== '' ? path.resolve(remembered) : undefined;
   const suggested = () => suggestPath(sessionId, header, state, readTitle(buf));
+
+  // deliver=download：远程访问用的另存方式。服务端只打包、不碰文件系统，
+  // 也不弹原生窗口（远程的那台机器上没有窗口可以弹给用户看）。用户拿到的文件
+  // 在哪由浏览器决定，所以这条路径不写 stamps、不判锁、不留备份。
+  if (query.deliver === 'download') {
+    let out;
+    try {
+      out = buildPackage(sessionFile, buf, header, readStats(buf), makeLock(sessionId, undefined), { includeMemory });
+    } catch (error) {
+      return jsonResponse({ status: 'error', message: `打包失败：${error?.message ?? error}` }, 500);
+    }
+    return zipDownloadResponse(out.zip, path.basename(suggested()));
+  }
 
   let target = null;
   let fromDialog = false;
@@ -3561,6 +3601,44 @@ async function handleOpen(request) {
 
   const url = new URL(request.url);
   const query = Object.fromEntries(url.searchParams);
+
+  // upload=1：远程访问时浏览器端只有文件字节、没有服务端路径可给，所以把内容
+  // POST 过来，落成临时 .dsproj 再走同一套导入流程——校验、体检、冲突判定一条都不绕。
+  let uploadDir;
+  try {
+    if (query.upload === '1') {
+      let bytes;
+      try {
+        bytes = Buffer.from(await request.arrayBuffer());
+      } catch (error) {
+        return jsonResponse({ status: 'error', message: `读取上传内容失败：${error?.message ?? error}` }, 400);
+      }
+      if (bytes.length === 0) return jsonResponse({ status: 'error', message: '上传内容为空' }, 400);
+      if (bytes.length > MAX_TOTAL_BYTES) {
+        return jsonResponse({ status: 'too-large', message: '上传的工程包超过体积上限' }, 413);
+      }
+      try {
+        uploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-session-save-open-'));
+        const staged = path.join(uploadDir, 'uploaded.dsproj');
+        fs.writeFileSync(staged, bytes);
+        query.path = staged;
+      } catch (error) {
+        return jsonResponse({ status: 'error', message: `暂存上传内容失败：${error?.message ?? error}` }, 500);
+      }
+    }
+    return await openFromQuery(request, query);
+  } finally {
+    if (uploadDir !== undefined) {
+      try {
+        fs.rmSync(uploadDir, { recursive: true, force: true });
+      } catch {
+        /* 清不掉就留给系统 temp 目录，不挡这次导入 */
+      }
+    }
+  }
+}
+
+async function openFromQuery(request, query) {
   const explicit = typeof query.path === 'string' && query.path.trim() !== '' ? query.path.trim() : null;
   const state = readState();
 

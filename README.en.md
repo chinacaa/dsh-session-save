@@ -126,6 +126,18 @@ Writes are **atomic** (tmp file + rename) so a sync client never picks up half a
 
 > **In short**: if two machines really take turns on one file, keep **autosave on one of them only**; the other machine will be stopped by the content check.
 
+### Opening it from another machine
+
+When DSH is not served from a loopback address (LAN IP, hostname, reverse proxy), the plugin moves files through the browser:
+
+| Action | Behaviour |
+| --- | --- |
+| Save / Save as | The server only packages, and the browser receives the file. Nothing is written on the server disk and no native dialog opens on that machine. |
+| Open | The browser uploads the chosen file's bytes, the server stages them in a temp file, then runs the same verification, health check and conflict rules. The temp file is removed afterwards. |
+| Autosave | Not shown. That switch writes a file on the server machine, which the user cannot see or take away. |
+
+Origin checking is not relaxed: with a non-loopback Host the rule becomes same-origin — requests from other sites still get 403, and `cross-site` fetch metadata is rejected outright.
+
 ## Package format and offline tools
 
 A `dshproj/1` ZIP, byte-compatible with the `dshproj` CLI (same package format; the CLI itself lives elsewhere):

@@ -2,7 +2,7 @@
 
 本文从代码反推功能面（`index.js` 四条路由 + `client.js` 五个插槽项），逐条列出可观测行为、期望结果，以及由哪套测试覆盖。测试分两层：
 
-- **二十二套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共 682 条用例（`grep -c '✅'` 逐行相加的实测值）。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
+- **二十三套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共 708 条用例（`grep -c '✅'` 逐行相加的实测值）。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
 - **审计验收脚本**（未随仓库分发）：针对历史漏洞的复现/防回归，判据写在下表里，可照着重写。
 
 所有套件都通过 `test/fixture.mjs` 自建临时 `DSH_HOME`（`os.tmpdir()` 下），跑完自删——**不读也不改真实 `~/.dsh`**，所以在任何机器、任何数据状态下结果一致。功能面的 F 编号是本文与 `test/*.mjs` 注释共同引用的锚点，改动功能时两边一起改。
@@ -99,7 +99,7 @@
 
 ## 二、测试矩阵（用例 → 期望 → 覆盖）
 
-### 二十二套回归
+### 二十三套回归
 
 | 套件 | 条数 | 覆盖功能 | 关键期望 |
 | --- | --- | --- | --- |
@@ -114,6 +114,7 @@
 | `test/audit-r4.mjs` | 36 | F80–F84 | U1 累计超上限抛 `E_LOG_TOO_LARGE` 且文案说「包太大、不是损坏」，默认额度下多帧包照常；U2 末帧缺 checksum 时帧表少一帧、`truncated` 为真、体检报告带出、覆盖率闸拒写；U3 校验失败包不落 `paths`、成功包记下 `paths` 与 `stamps`、别的会话键原样保留；U4 root 是链接 / dest 是链接 / dest 经链接逃出 root 三种情形（前两者判是、逃出判否）；U5 别工区 slug → `memoryForeign:true` + `memoryForeignSlug` + 实际落点，同工区不误报 |
 | `test/audit-r1.mjs` | 17 | F62–F68 | A1 RLE 帧能被认出且覆盖到末尾；A2 三帧（中间 RLE）扫出三帧；A3 重写 header 后正文帧不丢；A4 扫描不完整时 `rewriteHeader` 抛错；A5 200 MB 炸弹包被拒；A6 失败后 sessions 里无 0 字节文件；A7–A9 ADS / 尾点 / 设备名的记忆条目被拒；A10 保存到不存在的多级目录被拒且不建目录；A11 relocate 后 bili 记 `renamed`；A12 `__proto__` 的 header.id 被拒 |
 | `test/security.mjs` | 198 | F22–F27、F38–F43、F50、F61 | V1 越界条目读包即拒；V2 恶意 `fileName` 被收敛；V3 200 MB / 1026:1 在解压前拒绝；V4 目录外 400 且不建树；V5 非 id 400；V6 不回显路径；V7 `parts` 不符 500；V8 跨站 403；R1 未声明条目拒绝；R4 默认永不落原名；R6 restore 只覆盖已有、`memory=new` 才新建；V12 记住的文件被删后再存必须 409 `missing-target` 且不重建、`recreate=1` 才落地、成功后清 `missing`；V12b 自动保存发现目标消失后自己关掉并带回原路径、不重建；R7 附件条目 64 KB 起就算压缩比（3 MiB 全零 → 500 且对象库零写入）、2001 个附件只写 2000、超 128 MB 截断、正常包不受影响、已存在的不占配额；R8 六处解压单帧 64 MB 上限（900 MB 炸弹抛 `ERR_BUFFER_TOO_LARGE` 而**不是**当成坏帧静默跳过）、打包与体检的全解路径另有 512 MB 累计预算；R9 cwd 是普通文件或不存在的目录 → 400 `bad-workspace` 且不建目录、拒绝时回显包内原路径 + `reason`（`not-directory` / `missing`）+ 本机可用工作区，`ws` 与 `ws\` 落到两个记忆目录且不覆盖原 `MEMORY.md`；R10 打开失败只回通用文案、会话日志用临时文件 + `rename` 原子落盘、`wx` 撞名重试、部分失败时目录不残留 |
+| `test/remote.mjs` | 26 | F85 | 非回环 Host + 同源 Origin 放行（200 / zip）；跨源 Origin 403；非回环无 Origin 且 `cross-site` 403、`same-origin` 放行；`deliver=download` 响应是 zip、带 `attachment` 与 `filename*=UTF-8''`、目录里没多出文件；`upload=1` 能打开且临时目录已清；空上传 400；客户端有 `isRemoteHost`、走 `deliver: 'download'`/`upload: '1'`、用 React 渲染的 file input、远程不注册 `session-autosave`、源码无 `document.` |
 
 | F52 | 打开前体检自愈 | 包可能来自别的机器、中间也可能有文件被删过，会话里就会留下打不开的东西。`repairSession(buffer, options)` 在导入落盘前扫一遍：①逐帧 `zstdDecompressSync`，解不开的帧**原样保留原字节**并计 `frames.broken`（不替用户丢帧）；②逐行 `JSON.parse`，失败计 `lines.dropped` 并丢弃该行，同帧其余事件照常保留；③`repairPartNode` 递归遍历，**两种 image 形状都认**——`node.attachment` 对象（含 `attachmentId`/`mediaType`/`bytes`/`width`/`height`/`name`）与扁平 `node.attachmentId`。对象在本机不存在（`hasAttachmentObject('objects', sha)` 为假）→ 换成 `{type:'text', text:'[图片已丢失：<name>]'}`，计 `parts.missing`/`parts.dropped`；`keepMissing: true` 时只计数不改字节。对象在但 `width`/`height`/`bytes` 缺失或非正数、或 `mediaType` 不在 `image/png\|jpeg\|webp\|gif` 白名单 → 用 `imageInfoOf(buf)` 按文件头（PNG/GIF/WebP/JPEG）补齐，计 `parts.patched`；扁平形状没有这些字段，对象在就原样返回（不凭猜补）。④只有真改过的帧用 `zstdCompressSync(payload, CHECKSUM_OPTIONS)` 重压，未改帧逐字节沿用，帧结构不变；⑤返回 `{ buffer, report }`，`report = { frames:{total,broken}, lines:{total,dropped}, parts:{total,missing,patched,dropped}, changed, notes }`。⑥`importPackage` 里顺序固定为「先 `restoreAttachments(entries)` 回填附件 → 再 `repairSession(finalBuf)` → 才 `fs.writeFileSync`」：反了就会把包里自带的图判成缺失换成占位。⑦「本机已经有这份会话」的两条早退分支（同 id 同 cwd 的 `reused`、`mode === 'reuse'`）也走 `repairInPlace(existing.file)`，只在 `changed` 为真时 `writeAtomic` 写回——用户在同一台机器上重开自己的包走的正是这条路。⑧导入返回值新增 `repair` 报告 |
 | `test/attach.mjs` | 11 | F51 | A1 日志里只有 `sha256:` 引用、对象库有字节时，包内出现 1 个 `attachments/objects/<前2>/<sha>` 且 manifest 记账正确；A2 同一张图被引用两次只带一份（内容寻址去重）；A3 本机缺对象时包照常出、`manifest.attachments.missing` 记下该哈希、`SUMMARY.md` 说明缺几个；A4 对象库里的字节被改坏（哈希对不上）时不带；A5 导入回填把对象写进新 DSH_HOME 的 `objects/`；A6 再导一次是 `skipped` 不是 `written`、文件 mtime 不变；A7 被篡改的包内条目（内容与名字不符）计 `rejected` 且不落盘；A8 分片目录与哈希前缀不符同样 `rejected`；A9 `objects` 与 `file-objects` 两个池分开落盘；A10 `includeAttachments: false` 时一个附件条目都不带；A11 包内附件条目必须在 `parts` 里声明，否则 `verifyPackage` 拒绝 |
@@ -160,7 +161,9 @@
 | F83 | `isInside` 解析符号链接 | 两端都走 `realTarget()`（从最深的已存在祖先 realpath 再拼回剩余段）后 `path.relative` 判前缀；root 自己是 junction、dest 是 junction 但仍在 root 内都判是，dest 经 junction 逃出 root 判否 |
 | F84 | 跨工区记忆如实提示 | 包内 slug（`memory/workspaces/<slug>/…` 第一段）与本机 `memoryDirFor(cwd)` 解析出的 slug 不同时，返回体带 `memoryForeign:true` + `memoryForeignSlug`（落点仍由 `memoryDir` 给出）；合并记忆弹窗显示 `memoryForeignNote`（中英各一份），同工区不误报 |
 
-合计 **682 条**。
+| F85 | 非回环地址的远程访问 | Host 不是 `127.0.0.1`/`localhost`/`::1` 时（内网 IP、域名、反代），`requestGate` 的判据从「必须是回环」换成「必须同源」：有 Origin 要求 `parsed.host.toLowerCase() === host`，没有 Origin 只放行浏览器自己的同源导航（`sec-fetch-site` 为 `same-origin` / `none`），`cross-site` 一律拒。三条路由因此在内网可用：①`/api/session.save?deliver=download` 只 `buildPackage` 后直接回 zip，不落盘、不判锁、不写 `stamps`、不留备份，响应带 `content-disposition: attachment` 与 RFC 5987 的 `filename*`（中文标题不乱码）；②`/api/session.open?upload=1` 把 POST 来的字节落成 `os.tmpdir()` 下的临时 `.dsproj`，再走同一套导入流程（校验、体检、冲突判定一条不绕），`finally` 删临时目录，空体 400、超 `MAX_TOTAL_BYTES` 413 `too-large`；③客户端 `isRemoteHost()` 为真时不注册 `session-autosave` 槽位（那个开关写的是服务端机器上的文件，用户既看不到也带不走），保存走 `window.open` 下载，打开用 React 渲染的隐藏 file input + `ref.click()` 上传——组件里仍然不许出现 `document.` |
+
+合计 **708 条**。
 
 ### 审计验收脚本（未随仓库分发）
 
@@ -200,8 +203,8 @@ node test/open.mjs
 node test/conflict.mjs
 node test/security.mjs
 node test/pathkey.mjs
-# 或一把梭：二十二套 682 条全绿
-for f in pathkey client dialog smoke open conflict security attach repair open-repair version context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait dsh-list; do node test/$f.mjs || exit 1; done
+# 或一把梭：二十三套 708 条全绿
+for f in pathkey client dialog smoke open conflict security attach repair open-repair version context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait dsh-list remote; do node test/$f.mjs || exit 1; done
 ```
 
 `pathkey.mjs` 只依赖 `index.js` 里的两个纯函数，不建夹具、不写盘，跑起来几十毫秒——**每次升级 DSH 后第一件事就是跑它**，比读官方源码快。

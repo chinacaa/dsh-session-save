@@ -60,6 +60,8 @@ const ZH = {
       saved: '已保存',
       savedMemory: '个记忆文件',
       cancelled: '已取消',
+      remoteDownload: '已交给浏览器下载',
+      remoteNoInput: '浏览器没有给出文件选择框，请刷新页面再试',
       failed: '保存失败',
       openButton: '打开会话',
       openButtonHint: '打开',
@@ -492,6 +494,19 @@ const ZH = {
 
       const save = useCallback(
         async (extra = {}, keepPanel = false) => {
+          if (isRemoteHost() === true) {
+            // 远程访问：服务端只打包、不落盘，文件由浏览器收下。
+            // 用 window.open 而不是 fetch——这条响应是二进制附件，不该进 JSON 解析。
+            const search = new URLSearchParams({
+              sessionId: String(sessionId),
+              mode: 'auto',
+              deliver: 'download',
+              ...extra,
+            });
+            window.open(`${ROUTE}?${search.toString()}`, '_blank');
+            setToast({ tone: 'info', text: L.remoteDownload });
+            return;
+          }
           setBusy(true);
           try {
             const payload = await call({ mode: 'auto', ...extra });
@@ -760,11 +775,30 @@ const ZH = {
     }
 
     /* ── 请求层 ── */
-    async function requestJson(route, params) {
+    /**
+     * 页面是不是从非回环地址打开的（内网 IP、域名、反向代理）。
+     * 这种情况服务端拿不到用户机器上的文件路径，原生另存为窗口也弹在服务端那台
+     * 机器上——所以保存改成浏览器下载，打开改成浏览器上传。
+     */
+    function isRemoteHost() {
+      try {
+        const name = String(window.location.hostname || '').toLowerCase();
+        if (name === '') return false;
+        if (name === 'localhost' || name === '::1' || name === '[::1]') return false;
+        if (name.indexOf('127.') === 0) return false;
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    async function requestJson(route, params, init = undefined) {
       const search = new URLSearchParams(params);
+      const extra = init === undefined ? {} : init;
       const response = await fetch(`${route}?${search.toString()}`, {
-        method: 'GET',
-        headers: { accept: 'application/json' },
+        method: extra.method === undefined ? 'GET' : extra.method,
+        headers: extra.headers === undefined ? { accept: 'application/json' } : extra.headers,
+        body: extra.body,
         credentials: 'same-origin',
       });
       const text = await response.text();
@@ -787,6 +821,10 @@ const ZH = {
       const [merge, setMerge] = useState(null); // 合并确认弹窗的载荷
       const [toast, setToast] = useState(null); // { tone, text }
       const mounted = useRef(true);
+      // 远程访问时选文件只能用 React 渲染出来的 input：组件里不许碰 document（红线 5）。
+      const fileRef = useRef(null);
+      // 选文件是异步的（用户可能挑很久），这中间弹窗那边的选择要沿用，所以先存着。
+      const pending = useRef({});
 
       useEffect(() => {
         mounted.current = true;
@@ -871,77 +909,174 @@ const ZH = {
         setToast({ tone: 'info', text: `${L.opened} · ${label}${L.listRefreshHint}` });
       }, []);
 
+      /** 把服务端结果分发到对应弹窗／提示。本地路径和远程上传两条入口共用。 */
+      const applyPayload = useCallback(
+        async (payload) => {
+          if (!mounted.current) return;
+
+          if (payload.status === 'opened') {
+            setAsk(null);
+            setConflict(null);
+            setWorkspace(null);
+            await jump(payload);
+            return;
+          }
+          if (payload.status === 'conflict') {
+            setWorkspace(null);
+            setConflict(payload);
+            return;
+          }
+          if (payload.status === 'need-workspace') {
+            setAsk(null);
+            setConflict(null);
+            setWorkspace(payload);
+            return;
+          }
+          if (payload.status === 'bad-workspace') {
+            // 原工作区在本机不可用（不存在，或是个文件）。只弹一行错误等于把路堵死：
+            // 用户既不知道是哪个路径，也没有任何下一步可点。这里复用「打开到哪个工作区」
+            // 那个弹窗，列出本机可用工作区，选一个就能继续，并先说明原路径为什么不能用。
+            setAsk(null);
+            setConflict(null);
+            setWorkspace(payload);
+            return;
+          }
+          if (payload.status === 'package-broken') {
+            // 包坏了不是「再试一次」能解决的：要么把说明交给 AI 修，要么按宽松模式
+            // 丢掉校验不过的条目先打开。两条路都得用户自己选，别替他决定丢数据。
+            setAsk(null);
+            setWorkspace(null);
+            setBroken(payload);
+            return;
+          }
+          if (payload.status === 'cancelled') {
+            setAsk(null);
+            setWorkspace(null);
+            setBroken(null);
+            setToast({ tone: 'info', text: L.cancelled });
+            return;
+          }
+          if (payload.status === 'need-path') {
+            setAsk({ suggested: payload.suggested || '' });
+            return;
+          }
+          if (payload.status === 'too-large') {
+            setToast({ tone: 'error', text: payload.message || L.openFailed });
+            return;
+          }
+          setToast({ tone: 'error', text: `${L.openFailed} · ${payload.message || 'unknown'}` });
+        },
+        [jump],
+      );
+
       const open = useCallback(
         async (extra = {}) => {
+          if (isRemoteHost() === true) {
+            // 远程访问：服务端没有用户机器上的路径可给，原生窗口也弹不到用户面前。
+            // 先把这次的参数记下来（选完工作区还要沿用），再点开隐藏的 file input。
+            pending.current = extra;
+            const input = fileRef.current;
+            if (input === null || input === undefined) {
+              setToast({ tone: 'error', text: L.remoteNoInput });
+              return;
+            }
+            input.value = '';
+            input.click();
+            return;
+          }
           setBusy(true);
           try {
             const payload = await requestJson(OPEN_ROUTE, { mode: 'auto', ...extra });
-            if (!mounted.current) return;
-
-            if (payload.status === 'opened') {
-              setAsk(null);
-              setConflict(null);
-              setWorkspace(null);
-              await jump(payload);
-              return;
-            }
-            if (payload.status === 'conflict') {
-              setWorkspace(null);
-              setConflict(payload);
-              return;
-            }
-            if (payload.status === 'need-workspace') {
-              setAsk(null);
-              setConflict(null);
-              setWorkspace(payload);
-              return;
-            }
-            if (payload.status === 'bad-workspace') {
-              // 原工作区在本机不可用（不存在，或是个文件）。只弹一行错误等于把路堵死：
-              // 用户既不知道是哪个路径，也没有任何下一步可点。这里复用「打开到哪个工作区」
-              // 那个弹窗，列出本机可用工作区，选一个就能继续，并先说明原路径为什么不能用。
-              setAsk(null);
-              setConflict(null);
-              setWorkspace(payload);
-              return;
-            }
-            if (payload.status === 'package-broken') {
-              // 包坏了不是「再试一次」能解决的：要么把说明交给 AI 修，要么按宽松模式
-              // 丢掉校验不过的条目先打开。两条路都得用户自己选，别替他决定丢数据。
-              setAsk(null);
-              setWorkspace(null);
-              setBroken(payload);
-              return;
-            }
-            if (payload.status === 'cancelled') {
-              setAsk(null);
-              setWorkspace(null);
-              setBroken(null);
-              setToast({ tone: 'info', text: L.cancelled });
-              return;
-            }
-            if (payload.status === 'need-path') {
-              setAsk({ suggested: payload.suggested || '' });
-              return;
-            }
-            setToast({ tone: 'error', text: `${L.openFailed} · ${payload.message || 'unknown'}` });
+            await applyPayload(payload);
           } catch (error) {
             if (mounted.current) {
-              setToast({ tone: 'error', text: `${L.openFailed} · ${String(error && error.message ? error.message : error)}` });
+              setToast({
+                tone: 'error',
+                text: `${L.openFailed} · ${String(error && error.message ? error.message : error)}`,
+              });
             }
           } finally {
             if (mounted.current) setBusy(false);
           }
         },
-        [jump],
+        [applyPayload],
       );
 
-      return { busy, ask, conflict, workspace, broken, notice, merge, toast, open, setAsk, setConflict, setWorkspace, setBroken, setNotice, setMerge, setToast, mounted };
+      /** 远程上传：把选中文件的字节 POST 给 Host，由它落成临时包再走同一套导入流程。 */
+      const onFileChange = useCallback(
+        async (event) => {
+          const input = event && event.target;
+          const file = input && input.files && input.files[0];
+          if (!file) return;
+          setBusy(true);
+          try {
+            const bytes = await file.arrayBuffer();
+            const payload = await requestJson(
+              OPEN_ROUTE,
+              { upload: '1', mode: 'auto', ...(pending.current || {}) },
+              {
+                method: 'POST',
+                headers: { accept: 'application/json', 'content-type': 'application/octet-stream' },
+                body: bytes,
+              },
+            );
+            await applyPayload(payload);
+          } catch (error) {
+            if (mounted.current) {
+              setToast({
+                tone: 'error',
+                text: `${L.openFailed} · ${String(error && error.message ? error.message : error)}`,
+              });
+            }
+          } finally {
+            pending.current = {};
+            if (input) input.value = '';
+            if (mounted.current) setBusy(false);
+          }
+        },
+        [applyPayload],
+      );
+
+      return {
+        busy,
+        ask,
+        conflict,
+        workspace,
+        broken,
+        notice,
+        merge,
+        toast,
+        open,
+        fileRef,
+        onFileChange,
+        setAsk,
+        setConflict,
+        setWorkspace,
+        setBroken,
+        setNotice,
+        setMerge,
+        setToast,
+        mounted,
+      };
     }
 
     /** AskPanel + 冲突弹窗 + toast，两个入口共用。 */
     function OpenPanels({ flow }) {
       const children = [];
+      // 远程访问时唯一的选文件手段：浏览器给的是 File 对象，服务端拿不到路径。
+      // 这个 input 必须由 React 渲染出来，组件里不许碰 document（红线 5）。
+      if (flow.fileRef !== undefined) {
+        children.push(
+          React.createElement('input', {
+            key: 'upload',
+            type: 'file',
+            accept: '.dsproj,application/zip',
+            ref: flow.fileRef,
+            style: { display: 'none' },
+            onChange: flow.onFileChange,
+          }),
+        );
+      }
       if (flow.ask !== null) {
         children.push(
           React.createElement(AskPanel, {
@@ -2530,16 +2665,20 @@ const ZH = {
           SaveButton,
         ),
       );
-      ctx.slots.inject(SLOT, () =>
-        ctx.slots.register(
-          {
-            name: SLOT,
-            id: 'session-autosave',
-            order: 41,
-          },
-          AutosaveButton,
-        ),
-      );
+      // 远程访问不显示自动保存：它写的是服务端那台机器上的文件，用户在自己的电脑上
+      // 既看不到那个文件，也没法把它带走。开着只会让人以为存好了。
+      if (isRemoteHost() === false) {
+        ctx.slots.inject(SLOT, () =>
+          ctx.slots.register(
+            {
+              name: SLOT,
+              id: 'session-autosave',
+              order: 41,
+            },
+            AutosaveButton,
+          ),
+        );
+      }
       ctx.slots.inject(SLOT, () =>
         ctx.slots.register(
           {
