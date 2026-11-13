@@ -829,6 +829,10 @@ const ZH = {
       const fileRef = useRef(null);
       // 选文件是异步的（用户可能挑很久），这中间弹窗那边的选择要沿用，所以先存着。
       const pending = useRef({});
+      // 远程模式下选中的那个 File。导入要分好几步（选工作区、选冲突策略、修包），
+      // 每一步都要「同一个文件的字节」，但服务端的临时包在上传结束时就删了，
+      // 路径不能复用——只能把 File 留在内存里，后续步骤重发字节，不再弹一次文件框。
+      const remoteFile = useRef(null);
 
       useEffect(() => {
         mounted.current = true;
@@ -976,19 +980,61 @@ const ZH = {
         [jump],
       );
 
+      /** 把一份字节上传给 Host，由它落成临时包再走同一套导入流程。 */
+      const uploadAndOpen = useCallback(
+        async (file, extra = {}) => {
+          const bytes = await file.arrayBuffer();
+          const payload = await requestJson(
+            OPEN_ROUTE,
+            { upload: '1', mode: 'auto', ...extra },
+            {
+              method: 'POST',
+              headers: { accept: 'application/json', 'content-type': 'application/octet-stream' },
+              body: bytes,
+            },
+          );
+          await applyPayload(payload);
+        },
+        [applyPayload],
+      );
+
       const open = useCallback(
         async (extra = {}) => {
           if (isRemoteHost() === true) {
             // 远程访问：服务端没有用户机器上的路径可给，原生窗口也弹不到用户面前。
-            // 先把这次的参数记下来（选完工作区还要沿用），再点开隐藏的 file input。
-            pending.current = extra;
-            const input = fileRef.current;
-            if (input === null || input === undefined) {
-              setToast({ tone: 'error', text: L.remoteNoInput });
+            // 分两种情况——首次点「打开」，必须让用户挑文件；之后的每一步
+            // （选落点、选冲突策略、修包）都是同一个包，重发内存里那份字节就行。
+            // 早先这里不分辨，每步都去点 input，于是选完工作区又弹一次文件框，
+            // 而且第二次拿到的路径是服务端早就删掉的临时包，必然失败。
+            const followUp = typeof extra.path === 'string' && remoteFile.current !== null;
+            if (followUp === false) {
+              remoteFile.current = null;
+              pending.current = extra;
+              const input = fileRef.current;
+              if (input === null || input === undefined) {
+                setToast({ tone: 'error', text: L.remoteNoInput });
+                return;
+              }
+              input.value = '';
+              input.click();
               return;
             }
-            input.value = '';
-            input.click();
+            // 服务端那个临时路径已经不存在了，别把它传下去；其余参数（cwd、
+            // onConflict、backup、createCwd、replaceFile、repairPackage）照传。
+            const { path: _discarded, ...rest } = extra;
+            setBusy(true);
+            try {
+              await uploadAndOpen(remoteFile.current, rest);
+            } catch (error) {
+              if (mounted.current) {
+                setToast({
+                  tone: 'error',
+                  text: `${L.openFailed} · ${String(error && error.message ? error.message : error)}`,
+                });
+              }
+            } finally {
+              if (mounted.current) setBusy(false);
+            }
             return;
           }
           setBusy(true);
@@ -1015,19 +1061,11 @@ const ZH = {
           const input = event && event.target;
           const file = input && input.files && input.files[0];
           if (!file) return;
+          // 留着这份 File：后续「选工作区 / 选冲突策略 / 修包」要重发同一份字节。
+          remoteFile.current = file;
           setBusy(true);
           try {
-            const bytes = await file.arrayBuffer();
-            const payload = await requestJson(
-              OPEN_ROUTE,
-              { upload: '1', mode: 'auto', ...(pending.current || {}) },
-              {
-                method: 'POST',
-                headers: { accept: 'application/json', 'content-type': 'application/octet-stream' },
-                body: bytes,
-              },
-            );
-            await applyPayload(payload);
+            await uploadAndOpen(file, pending.current || {});
           } catch (error) {
             if (mounted.current) {
               setToast({
@@ -1041,7 +1079,7 @@ const ZH = {
             if (mounted.current) setBusy(false);
           }
         },
-        [applyPayload],
+        [uploadAndOpen],
       );
 
       return {

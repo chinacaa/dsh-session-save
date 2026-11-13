@@ -233,6 +233,25 @@ check(
     client.includes("id: 'session-save-as'"),
   '远程不注册自动保存槽位',
 );
+// 后续步骤（选落点 / 选冲突策略 / 修包）不能再去点文件框：服务端的临时包在上传
+// 结束时就删了，第二次拿到的是不存在的路径；用户也会被连续两个文件框搞懵。
+check(
+  client.includes('const remoteFile = useRef(null)'),
+  '远程模式把选中的 File 留在内存里',
+);
+check(
+  client.includes('const followUp = typeof extra.path === \'string\' && remoteFile.current !== null'),
+  '后续步骤认得出「这是同一个包的下一步」',
+);
+check(
+  client.includes('const { path: _discarded, ...rest } = extra') &&
+    client.includes('await uploadAndOpen(remoteFile.current, rest)'),
+  '后续步骤重发字节、丢掉已失效的服务端路径',
+);
+check(
+  /if \(followUp === false\) \{[\s\S]{0,600}?input\.click\(\)/.test(client),
+  '只有首次点「打开」才弹文件框',
+);
 check(!/\bdocument\./.test(client), '没有引入 document（红线 5）');
 
 /* ── 收拾 ── */

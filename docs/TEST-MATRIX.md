@@ -2,7 +2,7 @@
 
 本文从代码反推功能面（`index.js` 四条路由 + `client.js` 五个插槽项），逐条列出可观测行为、期望结果，以及由哪套测试覆盖。测试分两层：
 
-- **二十四套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共 731 条用例（`grep -c '✅'` 逐行相加的实测值）。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
+- **二十四套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共 735 条用例（`grep -c '✅'` 逐行相加的实测值）。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
 - **审计验收脚本**（未随仓库分发）：针对历史漏洞的复现/防回归，判据写在下表里，可照着重写。
 
 所有套件都通过 `test/fixture.mjs` 自建临时 `DSH_HOME`（`os.tmpdir()` 下），跑完自删——**不读也不改真实 `~/.dsh`**，所以在任何机器、任何数据状态下结果一致。功能面的 F 编号是本文与 `test/*.mjs` 注释共同引用的锚点，改动功能时两边一起改。
@@ -114,7 +114,7 @@
 | `test/audit-r4.mjs` | 36 | F80–F84 | U1 累计超上限抛 `E_LOG_TOO_LARGE` 且文案说「包太大、不是损坏」，默认额度下多帧包照常；U2 末帧缺 checksum 时帧表少一帧、`truncated` 为真、体检报告带出、覆盖率闸拒写；U3 校验失败包不落 `paths`、成功包记下 `paths` 与 `stamps`、别的会话键原样保留；U4 root 是链接 / dest 是链接 / dest 经链接逃出 root 三种情形（前两者判是、逃出判否）；U5 别工区 slug → `memoryForeign:true` + `memoryForeignSlug` + 实际落点，同工区不误报 |
 | `test/audit-r1.mjs` | 17 | F62–F68 | A1 RLE 帧能被认出且覆盖到末尾；A2 三帧（中间 RLE）扫出三帧；A3 重写 header 后正文帧不丢；A4 扫描不完整时 `rewriteHeader` 抛错；A5 200 MB 炸弹包被拒；A6 失败后 sessions 里无 0 字节文件；A7–A9 ADS / 尾点 / 设备名的记忆条目被拒；A10 保存到不存在的多级目录被拒且不建目录；A11 relocate 后 bili 记 `renamed`；A12 `__proto__` 的 header.id 被拒 |
 | `test/security.mjs` | 199 | F22–F27、F38–F43、F50、F61 | V1 越界条目读包即拒；V2 恶意 `fileName` 被收敛；V3 200 MB / 1026:1 在解压前拒绝；V4 目录外 400 且不建树；V5 非 id 400；V6 不回显路径；V7 `parts` 不符 500；V8 跨源 Origin 与自报 `cross-site` 均 403（非回环地址不再一律拒绝，判据改成同源）；R1 未声明条目拒绝；R4 默认永不落原名；R6 restore 只覆盖已有、`memory=new` 才新建；V12 记住的文件被删后再存必须 409 `missing-target` 且不重建、`recreate=1` 才落地、成功后清 `missing`；V12b 自动保存发现目标消失后自己关掉并带回原路径、不重建；R7 附件条目 64 KB 起就算压缩比（3 MiB 全零 → 500 且对象库零写入）、2001 个附件只写 2000、超 128 MB 截断、正常包不受影响、已存在的不占配额；R8 六处解压单帧 64 MB 上限（900 MB 炸弹抛 `ERR_BUFFER_TOO_LARGE` 而**不是**当成坏帧静默跳过）、打包与体检的全解路径另有 512 MB 累计预算；R9 cwd 是普通文件或不存在的目录 → 400 `bad-workspace` 且不建目录、拒绝时回显包内原路径 + `reason`（`not-directory` / `missing`）+ 本机可用工作区，`ws` 与 `ws\` 落到两个记忆目录且不覆盖原 `MEMORY.md`；R10 打开失败只回通用文案、会话日志用临时文件 + `rename` 原子落盘、`wx` 撞名重试、部分失败时目录不残留 |
-| `test/remote.mjs` | 27 | F85 | 非回环 Host + 同源 Origin 放行（200 / zip）；跨源 Origin 403；非回环无 Origin 且 `cross-site` 403、`same-origin` 放行；`Origin` 与 `Sec-Fetch-Site` 都缺的下载按同源导航放行（浏览器本就不发这两个头）；`deliver=download` 响应是 zip、带 `attachment` 与 `filename*=UTF-8''`、目录里没多出文件；`upload=1` 能打开且临时目录已清；空上传 400；客户端有 `isRemoteHost`、走 `deliver: 'download'`/`upload: '1'`、用 React 渲染的 file input、远程不注册 `session-autosave`、源码无 `document.` |
+| `test/remote.mjs` | 31 | F85 | 非回环 Host + 同源 Origin 放行（200 / zip）；跨源 Origin 403；非回环无 Origin 且 `cross-site` 403、`same-origin` 放行；`Origin` 与 `Sec-Fetch-Site` 都缺的下载按同源导航放行（浏览器本就不发这两个头）；`deliver=download` 响应是 zip、带 `attachment` 与 `filename*=UTF-8''`、目录里没多出文件；`upload=1` 能打开且临时目录已清；空上传 400；客户端有 `isRemoteHost`、走 `deliver: 'download'`/`upload: '1'`、用 React 渲染的 file input、远程不注册 `session-autosave`、后续步骤重发内存里那份字节不再弹文件框、源码无 `document.` |
 | `test/archive.mjs` | 21 | F86 | 宿主没有 `workspaceRegistry` 时 `unarchiveInDsh` 只回 `{skipped:'no-service'}`、打开仍 200；没归档时调一次接口但 `unarchived=false`；在归档集合里时 `unarchived=true`、传的 id 正确、集合里已摘掉它、别的会话一个没动；写状态抛错只回 `error` 字段；路由层打开成功后返回体带 `archive`，再打开同一包变 `false`；客户端读 `payload.archive?.unarchived === true`、中文兜底与两份语言包都有 `archiveRestored` |
 
 | F52 | 打开前体检自愈 | 包可能来自别的机器、中间也可能有文件被删过，会话里就会留下打不开的东西。`repairSession(buffer, options)` 在导入落盘前扫一遍：①逐帧 `zstdDecompressSync`，解不开的帧**原样保留原字节**并计 `frames.broken`（不替用户丢帧）；②逐行 `JSON.parse`，失败计 `lines.dropped` 并丢弃该行，同帧其余事件照常保留；③`repairPartNode` 递归遍历，**两种 image 形状都认**——`node.attachment` 对象（含 `attachmentId`/`mediaType`/`bytes`/`width`/`height`/`name`）与扁平 `node.attachmentId`。对象在本机不存在（`hasAttachmentObject('objects', sha)` 为假）→ 换成 `{type:'text', text:'[图片已丢失：<name>]'}`，计 `parts.missing`/`parts.dropped`；`keepMissing: true` 时只计数不改字节。对象在但 `width`/`height`/`bytes` 缺失或非正数、或 `mediaType` 不在 `image/png\|jpeg\|webp\|gif` 白名单 → 用 `imageInfoOf(buf)` 按文件头（PNG/GIF/WebP/JPEG）补齐，计 `parts.patched`；扁平形状没有这些字段，对象在就原样返回（不凭猜补）。④只有真改过的帧用 `zstdCompressSync(payload, CHECKSUM_OPTIONS)` 重压，未改帧逐字节沿用，帧结构不变；⑤返回 `{ buffer, report }`，`report = { frames:{total,broken}, lines:{total,dropped}, parts:{total,missing,patched,dropped}, changed, notes }`。⑥`importPackage` 里顺序固定为「先 `restoreAttachments(entries)` 回填附件 → 再 `repairSession(finalBuf)` → 才 `fs.writeFileSync`」：反了就会把包里自带的图判成缺失换成占位。⑦「本机已经有这份会话」的两条早退分支（同 id 同 cwd 的 `reused`、`mode === 'reuse'`）也走 `repairInPlace(existing.file)`，只在 `changed` 为真时 `writeAtomic` 写回——用户在同一台机器上重开自己的包走的正是这条路。⑧导入返回值新增 `repair` 报告 |
@@ -165,7 +165,7 @@
 | F85 | 非回环地址的远程访问 | Host 不是 `127.0.0.1`/`localhost`/`::1` 时（内网 IP、域名、反代），`requestGate` 的判据从「必须是回环」换成「必须同源」：有 Origin 要求 `parsed.host.toLowerCase() === host`，没有 Origin 只放行浏览器自己的同源导航（`sec-fetch-site` 为 `same-origin` / `none`），`cross-site` 一律拒。三条路由因此在内网可用：①`/api/session.save?deliver=download` 只 `buildPackage` 后直接回 zip，不落盘、不判锁、不写 `stamps`、不留备份，响应带 `content-disposition: attachment` 与 RFC 5987 的 `filename*`（中文标题不乱码）；②`/api/session.open?upload=1` 把 POST 来的字节落成 `os.tmpdir()` 下的临时 `.dsproj`，再走同一套导入流程（校验、体检、冲突判定一条不绕），`finally` 删临时目录，空体 400、超 `MAX_TOTAL_BYTES` 413 `too-large`；③客户端 `isRemoteHost()` 为真时不注册 `session-autosave` 槽位（那个开关写的是服务端机器上的文件，用户既看不到也带不走），保存走 `window.open` 下载，打开用 React 渲染的隐藏 file input + `ref.click()` 上传——组件里仍然不许出现 `document.` |
 | F86 | 打开之后取消归档 | DSH 的归档集合（`workspaceRegistry.archivedSessionIds`）是 `agent/pre-step` gate 读的那一份：会话在里头时文件在、工作区也认，但唤醒会被挡下——用户看到的就是「点了打开没反应」。所以 `importPackage` 成功后调 `unarchiveInDsh(ctx, sessionId)` 把它摘出来，结果放进返回体 `archive`（`{unarchived}` / `{skipped:'no-service'}` / `{error}`）。三条边界：①不用 `inject: ['workspaceRegistry']`——那是必需依赖，宿主没装 workspace 插件时整条插件都起不来，少一个服务只该少一件顺手事；②`unarchiveSession` 本身幂等，没归档就什么都不写，所以不必先查再调，但报告里要把 `unarchived` 说准（没归档时是 `false`）；③取服务或写状态失败只回一个字段，导入本身照常成功——包已经落盘了，归档这件事用户还能手动补。界面在 `unarchived=true` 时于 toast 末尾补一句「已从归档里恢复」 |
 
-合计 **731 条**。
+合计 **735 条**。
 
 ### 审计验收脚本（未随仓库分发）
 
@@ -205,7 +205,7 @@ node test/open.mjs
 node test/conflict.mjs
 node test/security.mjs
 node test/pathkey.mjs
-# 或一把梭：二十四套 731 条全绿
+# 或一把梭：二十四套 735 条全绿
 for f in pathkey client dialog smoke open conflict security attach repair open-repair version context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait dsh-list remote; do node test/$f.mjs || exit 1; done
 ```
 
