@@ -216,7 +216,9 @@ check(client.includes("deliver: 'download'"), '保存走下载分支');
 check(client.includes("upload: '1'"), '打开走上传分支');
 check(client.includes("type: 'file'") && client.includes('accept: \'.dsproj'), '选文件用 React 渲染的 input（不碰 document）');
 check(
-  client.includes('if (isRemoteHost() === false) {') && client.includes("id: 'session-autosave'"),
+  client.includes('if (isRemoteHost() === false) {') &&
+    client.includes("id: 'session-autosave'") &&
+    client.includes("id: 'session-save-as'"),
   '远程不注册自动保存槽位',
 );
 check(!/\bdocument\./.test(client), '没有引入 document（红线 5）');

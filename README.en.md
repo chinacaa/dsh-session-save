@@ -138,9 +138,12 @@ When DSH is not served from a loopback address (LAN IP, hostname, reverse proxy)
 
 | Action | Behaviour |
 | --- | --- |
-| Save / Save as | The server only packages, and the browser receives the file. Nothing is written on the server disk and no native dialog opens on that machine. |
+| Save | The server only packages, and the browser receives the file. Nothing is written on the server disk and no native dialog opens on that machine. |
 | Open | The browser uploads the chosen file's bytes, the server stages them in a temp file, then runs the same verification, health check and conflict rules. The temp file is removed afterwards. |
+| Save as | Not shown. Save already downloads, and a second entry point only suggests the file lands somewhere else. |
 | Autosave | Not shown. That switch writes a file on the server machine, which the user cannot see or take away. |
+
+So a remote session shows exactly two icons: open and save.
 
 Origin checking is not relaxed: with a non-loopback Host the rule becomes same-origin: requests from other sites still get 403, and `cross-site` fetch metadata is rejected outright.
 
@@ -379,7 +382,7 @@ node test/pathkey.mjs             # path keys: byte-for-byte check against DSH's
 
 To check the English word list after touching the client: `DSH_TEST_LOCALE=en-US node test/client.mjs`.
 
-All eleven suites run against their own temporary `DSH_HOME` (a fixture directory under `os.tmpdir()` built by `test/fixture.mjs`) and delete it afterwards, so **your real `~/.dsh` is never touched** and no session has to "happen to exist".
+Most of the twenty-four suites run against their own temporary `DSH_HOME` (a fixture directory under `os.tmpdir()` built by `test/fixture.mjs`) and delete it afterwards, so **your real `~/.dsh` is never touched** and no session has to "happen to exist".
 
 Three exceptions: `test/client.mjs` is a pure in-memory wiring test with no fixture directory and no disk IO, and `test/pathkey.mjs` only calls two pure functions, so it writes nothing either. In `test/dialog.mjs` the selector checks, the AppleScript / zenity argument assembly and the script BOM checks are pure static verification and run anywhere, while only the few assertions that launch the real `powershell.exe` to verify CJK encoding are skipped off Windows (they print `⏭  跳过` — a skip is not a pass). The other eight are cross-platform.
 

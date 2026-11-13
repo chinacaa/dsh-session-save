@@ -62,6 +62,7 @@ const ZH = {
       cancelled: '已取消',
       remoteDownload: '已交给浏览器下载',
       remoteNoInput: '浏览器没有给出文件选择框，请刷新页面再试',
+      remoteSaveTitle: '下载这个会话到本机',
       failed: '保存失败',
       openButton: '打开会话',
       openButtonHint: '打开',
@@ -599,11 +600,13 @@ const ZH = {
             type: 'button',
             onClick,
             disabled: busy,
-            title: alwaysAsk
-              ? L.saveAsHint
-              : lastPath === ''
-                ? L.buttonHint
-                : `${L.button} → ${lastPath}`,
+            title: isRemoteHost() === true
+              ? L.remoteSaveTitle
+              : alwaysAsk
+                ? L.saveAsHint
+                : lastPath === ''
+                  ? L.buttonHint
+                  : `${L.button} → ${lastPath}`,
             'aria-label': alwaysAsk ? L.saveAs : L.button,
             style: {
               display: 'inline-flex',
@@ -2683,16 +2686,20 @@ const ZH = {
           ),
         );
       }
-      ctx.slots.inject(SLOT, () =>
-        ctx.slots.register(
-          {
-            name: SLOT,
-            id: 'session-save-as',
-            order: 42,
-          },
-          SaveAsButton,
-        ),
-      );
+      // 远程访问的「保存」本身就是浏览器下载，「另存为」再给一个入口只会让人以为
+      // 它能把文件写到别的地方——写到的是服务端那台机器，与用户无关。
+      if (isRemoteHost() === false) {
+        ctx.slots.inject(SLOT, () =>
+          ctx.slots.register(
+            {
+              name: SLOT,
+              id: 'session-save-as',
+              order: 42,
+            },
+            SaveAsButton,
+          ),
+        );
+      }
       ctx.slots.inject(SLOT_HERO, () =>
         ctx.slots.register(
           {

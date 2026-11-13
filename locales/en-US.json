@@ -119,5 +119,6 @@
   "backupKeep": "Back up the original before overwriting",
   "memoryForeignNote": "This package carries the memory of another workspace ({slug}): the files below go into that workspace's memory folder, not the workspace you have open.",
   "remoteDownload": "Handed to the browser to download",
-  "remoteNoInput": "The browser did not provide a file picker — reload the page and try again"
+  "remoteNoInput": "The browser did not provide a file picker — reload the page and try again",
+  "remoteSaveTitle": "Download this session to this machine"
 }
