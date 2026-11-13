@@ -177,6 +177,18 @@ const nav = await call(save, '/api/session.save', { sessionId, mode: 'auto', del
 });
 check(nav.status === 200, '浏览器自己发起的同源下载放行', `HTTP ${nav.status}`);
 
+/* ── 5b. 非回环 + Origin 与 Sec-Fetch-Site 都缺：按导航放行 ──
+   旧浏览器不发 Sec-Fetch-Site，反向代理也可能剥掉；要求必须有这个头会把
+   合法下载挡成「远程访问缺少 Origin」。这条以前就这么误伤过。 */
+const bare = await call(save, '/api/session.save', { sessionId, mode: 'auto', deliver: 'download' }, {
+  host: remoteHost,
+});
+check(
+  bare.status === 200 && bare.buffer.length > 0,
+  '两个头都缺的下载请求不被当成跨站',
+  `HTTP ${bare.status} ${bare.body?.message ?? ''}`,
+);
+
 /* ── 6. 回环仍按老判据：跨源 Origin 一样拒 ── */
 const loopCross = await call(save, '/api/session.save', { sessionId, mode: 'auto' }, {
   host: '127.0.0.1:3080',

@@ -3142,10 +3142,15 @@ function requestGate(request) {
     if (parsed.host.toLowerCase() !== host) return 'Origin 与 Host 不一致';
     if (remote === false && !loopback(parsed.hostname.toLowerCase())) return 'Origin 不是本机地址';
   } else if (remote === true) {
-    // 非回环且没有 Origin：只有浏览器自己的同源导航（下载包、上传表单）才会这样。
-    // 其余一律按可疑处理，别让一个不带 Origin 的跨站请求混进来。
+    // 非回环且没有 Origin。按 Fetch 规范，浏览器发起同源导航（点下载、地址栏打开）
+    // 时本来就不带 Origin；Sec-Fetch-Site 也不保证存在——旧浏览器不发，反向代理
+    // 和某些快照/预览环境会把它剥掉。要求「必须有这个头」等于把合法下载挡在门外，
+    // 之前就是这样误伤过（报「远程访问缺少 Origin」，但其实那是浏览器自己发起的）。
+    // 所以只在对方明确说「跨站」或「同站不同源」时才拒；缺头按导航处理。
+    // 安全性：这条分支只可能是 GET（写操作一律带 Origin，在上面就走完了同源校验），
+    // 而 GET 下载不写盘、跨站页面也读不到 zip 内容。
     const site = String(rawSite ?? '');
-    if (site !== 'same-origin' && site !== 'none') return '远程访问缺少 Origin';
+    if (site === 'cross-site' || site === 'same-site') return '远程访问缺少 Origin';
   }
   if (String(rawSite ?? '') === 'cross-site') return '拒绝跨站请求';
   return undefined;
