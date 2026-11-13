@@ -67,9 +67,9 @@ check(
 );
 
 /** 以「浏览器在回环地址上」的身份调路由。传 host 可以假装别的站点来。 */
-const call = async (handler, route, query, host = '127.0.0.1:3080') => {
+const call = async (handler, route, query, host = '127.0.0.1:3080', headers = undefined) => {
   const url = new URL(`http://${host}${route}?${new URLSearchParams(query).toString()}`);
-  const response = await handler(new Request(url));
+  const response = await handler(new Request(url, headers === undefined ? undefined : { headers }));
   let body;
   try {
     body = await response.json();
@@ -254,14 +254,24 @@ const exists = (file) => {
   const weird = await call(save, '/api/session.save', { sessionId: '../../etc/passwd' });
   check(weird.status === 400, 'V5 形态不对的 sessionId 被拒绝', `HTTP ${weird.status}`);
 
-  const crossSite = await call(save, '/api/session.save', { sessionId: `session-${randomUUID()}` }, 'evil.example');
-  check(crossSite.status === 403, 'V8 非回环 Host 被拒绝', `HTTP ${crossSite.status}`);
+  // 非回环地址不再等于「一律拒绝」：判据是「来源必须是同源」。
+  // 所以这里要真的伪造出跨站请求——带别人的 Origin，或者明确标了 cross-site。
+  const evil = { origin: 'http://evil.example' };
+  const crossSite = await call(save, '/api/session.save', {}, '192.168.1.20:3080', evil);
+  check(crossSite.status === 403, 'V8 非回环地址上跨源 Origin 被拒绝', `HTTP ${crossSite.status}`);
 
-  const crossSiteOpen = await call(open, '/api/session.open', {}, 'evil.example');
+  const crossSiteOpen = await call(open, '/api/session.open', {}, '192.168.1.20:3080', evil);
   check(crossSiteOpen.status === 403, 'V8 open 路由同样拒绝', `HTTP ${crossSiteOpen.status}`);
 
-  const crossSiteWs = await call(workspaces, '/api/session.workspaces', {}, 'evil.example');
+  const crossSiteWs = await call(workspaces, '/api/session.workspaces', {}, '192.168.1.20:3080', evil);
   check(crossSiteWs.status === 403, 'V8 workspaces 路由同样拒绝', `HTTP ${crossSiteWs.status}`);
+
+  // 没有 Origin 但浏览器明说了 cross-site：一样拒。这条与「两个头都缺按导航放行」
+  // 是两回事——缺头不等于自报跨站。
+  const markedCross = await call(save, '/api/session.save', {}, '192.168.1.20:3080', {
+    'sec-fetch-site': 'cross-site',
+  });
+  check(markedCross.status === 403, 'V8 自报 cross-site 的请求被拒绝', `HTTP ${markedCross.status}`);
 }
 
 /* ── V4：保存落点必须落在用过的目录里 ──────────────────────────── */

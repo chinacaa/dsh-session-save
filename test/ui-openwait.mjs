@@ -120,7 +120,10 @@ console.log('\u2705 \u7f3a\u5c11 uiWorkspace \u65f6\u4e0d\u4f2a\u9020\u6210\u529
 
 /* ── 4. 用户在界面上看到的说法 ── */
 assert.ok(source.includes('const outcome = await jumpWhenReady(host, payload.sessionId);'), '调用点要接上');
-assert.ok(source.includes("setToast({ tone: 'info', text: `${L.opened} \u00b7 ${label}${L.listRefreshHint}` })"), '只卡在索引时要说「已导入」');
+assert.ok(
+  source.includes("setToast({ tone: 'info', text: `${L.opened} \u00b7 ${label}${L.listRefreshHint}"),
+  '只卡在索引时要说「已导入」',
+);
 assert.equal(typeof zh.listRefreshHint, 'string');
 assert.equal(typeof en.listRefreshHint, 'string');
 assert.notEqual(zh.listRefreshHint, en.listRefreshHint);

@@ -3127,7 +3127,10 @@ function requestGate(request) {
   })();
   const loopback = (value) =>
     value === '127.0.0.1' || value === 'localhost' || value === '::1' || value === '[::1]';
-  if (!loopback(hostName)) return '只接受本机回环地址的请求';
+  // DSH 监听在局域网地址、或者用户用内网 IP 打开网页时，Host 不是回环地址。
+  // 判据因此从「必须是回环」换成「必须同源」：这条同时挡住别的站点发来的请求
+  // （它们带的是自己的 Origin），不需要也不应该退回「不看来源一律放行」。
+  const remote = loopback(hostName) === false;
   const origin = rawOrigin;
   if (origin !== null && origin !== undefined && origin !== '') {
     let parsed;
@@ -3136,8 +3139,18 @@ function requestGate(request) {
     } catch {
       return 'Origin 无法解析';
     }
-    if (!loopback(parsed.hostname.toLowerCase())) return 'Origin 不是本机地址';
     if (parsed.host.toLowerCase() !== host) return 'Origin 与 Host 不一致';
+    if (remote === false && !loopback(parsed.hostname.toLowerCase())) return 'Origin 不是本机地址';
+  } else if (remote === true) {
+    // 非回环且没有 Origin。按 Fetch 规范，浏览器发起同源导航（点下载、地址栏打开）
+    // 时本来就不带 Origin；Sec-Fetch-Site 也不保证存在——旧浏览器不发，反向代理
+    // 和某些快照/预览环境会把它剥掉。要求「必须有这个头」等于把合法下载挡在门外，
+    // 之前就是这样误伤过（报「远程访问缺少 Origin」，但其实那是浏览器自己发起的）。
+    // 所以只在对方明确说「跨站」或「同站不同源」时才拒；缺头按导航处理。
+    // 安全性：这条分支只可能是 GET（写操作一律带 Origin，在上面就走完了同源校验），
+    // 而 GET 下载不写盘、跨站页面也读不到 zip 内容。
+    const site = String(rawSite ?? '');
+    if (site === 'cross-site' || site === 'same-site') return '远程访问缺少 Origin';
   }
   if (String(rawSite ?? '') === 'cross-site') return '拒绝跨站请求';
   return undefined;
@@ -3207,6 +3220,25 @@ function jsonResponse(body, status = 200) {
   });
 }
 
+/**
+ * 把一个工程包作为附件交给浏览器下载。
+ * 远程访问时服务端不落盘：文件存到哪、叫什么名字，由浏览器和用户决定。
+ * 文件名走 RFC 5987 的 filename*，否则中文标题会被浏览器按 latin-1 读成乱码。
+ */
+function zipDownloadResponse(bytes, fileName) {
+  const asciiName = String(fileName).replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  const encoded = encodeURIComponent(String(fileName));
+  return new Response(bytes, {
+    status: 200,
+    headers: {
+      'content-type': 'application/zip',
+      'content-length': String(bytes.length),
+      'content-disposition': `attachment; filename="${asciiName}"; filename*=UTF-8''${encoded}`,
+      'cache-control': 'no-store',
+    },
+  });
+}
+
 async function handleSave(request) {
   const gate = requestGate(request);
   if (gate !== undefined) return jsonResponse({ status: 'error', message: gate }, 403);
@@ -3254,6 +3286,19 @@ async function handleSave(request) {
   const remembered = state.paths[sessionId];
   const rememberedAbs = typeof remembered === 'string' && remembered !== '' ? path.resolve(remembered) : undefined;
   const suggested = () => suggestPath(sessionId, header, state, readTitle(buf));
+
+  // deliver=download：远程访问用的另存方式。服务端只打包、不碰文件系统，
+  // 也不弹原生窗口（远程的那台机器上没有窗口可以弹给用户看）。用户拿到的文件
+  // 在哪由浏览器决定，所以这条路径不写 stamps、不判锁、不留备份。
+  if (query.deliver === 'download') {
+    let out;
+    try {
+      out = buildPackage(sessionFile, buf, header, readStats(buf), makeLock(sessionId, undefined), { includeMemory });
+    } catch (error) {
+      return jsonResponse({ status: 'error', message: `打包失败：${error?.message ?? error}` }, 500);
+    }
+    return zipDownloadResponse(out.zip, path.basename(suggested()));
+  }
 
   let target = null;
   let fromDialog = false;
@@ -3552,15 +3597,81 @@ function handleWorkspaces(request) {
 }
 
 /**
+ * 把会话从 DSH 的归档集合里摘出来。
+ *
+ * 归档集合是 `agent/pre-step` gate 读的那一份：会话在里头，文件在、工作区也认，
+ * 但唤醒会被挡下，用户看到的就是「点了打开没反应」。所以导入成功后顺手清掉。
+ *
+ * 三条刻意的取舍：
+ * - 不用 `inject: ['workspaceRegistry']`。那是必需依赖，宿主没装 workspace 插件时
+ *   整条插件都起不来；这里少一个服务只是少一件顺手事。
+ * - `unarchiveSession` 幂等：没归档就什么都不写，所以不必先查再调。
+ * - 失败只回一个字段，不影响导入——包已经落盘了，归档这件事用户可以手动补。
+ */
+export async function unarchiveInDsh(ctx, sessionId) {
+  try {
+    const registry = ctx?.get?.('workspaceRegistry');
+    if (registry === undefined || registry === null || typeof registry.unarchiveSession !== 'function') {
+      return { skipped: 'no-service' };
+    }
+    const archived = registry.archivedSessionIds;
+    const wasArchived = Array.isArray(archived) && archived.includes(sessionId);
+    await registry.unarchiveSession(sessionId);
+    return { unarchived: wasArchived === true };
+  } catch (error) {
+    return { error: String(error?.message ?? error) };
+  }
+}
+
+/**
  * `?path=<file>` 直接导入；没有 path 时弹原生打开窗口。
  * 返回 { status:'opened', sessionId, ... } 供客户端跳转。
+ * `hooks.unarchive` 由宿主注入，导入成功后用来取消归档。
  */
-async function handleOpen(request) {
+async function handleOpen(request, hooks = {}) {
   const gate = requestGate(request);
   if (gate !== undefined) return jsonResponse({ status: 'error', message: gate }, 403);
 
   const url = new URL(request.url);
   const query = Object.fromEntries(url.searchParams);
+
+  // upload=1：远程访问时浏览器端只有文件字节、没有服务端路径可给，所以把内容
+  // POST 过来，落成临时 .dsproj 再走同一套导入流程——校验、体检、冲突判定一条都不绕。
+  let uploadDir;
+  try {
+    if (query.upload === '1') {
+      let bytes;
+      try {
+        bytes = Buffer.from(await request.arrayBuffer());
+      } catch (error) {
+        return jsonResponse({ status: 'error', message: `读取上传内容失败：${error?.message ?? error}` }, 400);
+      }
+      if (bytes.length === 0) return jsonResponse({ status: 'error', message: '上传内容为空' }, 400);
+      if (bytes.length > MAX_TOTAL_BYTES) {
+        return jsonResponse({ status: 'too-large', message: '上传的工程包超过体积上限' }, 413);
+      }
+      try {
+        uploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-session-save-open-'));
+        const staged = path.join(uploadDir, 'uploaded.dsproj');
+        fs.writeFileSync(staged, bytes);
+        query.path = staged;
+      } catch (error) {
+        return jsonResponse({ status: 'error', message: `暂存上传内容失败：${error?.message ?? error}` }, 500);
+      }
+    }
+    return await openFromQuery(request, query, hooks);
+  } finally {
+    if (uploadDir !== undefined) {
+      try {
+        fs.rmSync(uploadDir, { recursive: true, force: true });
+      } catch {
+        /* 清不掉就留给系统 temp 目录，不挡这次导入 */
+      }
+    }
+  }
+}
+
+async function openFromQuery(request, query, hooks = {}) {
   const explicit = typeof query.path === 'string' && query.path.trim() !== '' ? query.path.trim() : null;
   const state = readState();
 
@@ -3599,6 +3710,12 @@ async function handleOpen(request) {
     const repairPackage = query.repairPackage === '1' || query.repairPackage === 'true';
     const backupWanted = query.backup !== '0' && query.backup !== 'false';
     const result = importPackage(source, { cwd, onConflict, memory: memoryMode, createCwd, replaceFile, repairPackage, backup: backupWanted, contextBudget: query.contextBudget });
+    // 取消归档放在这里、而不是客户端跳转之后：会话在归档集合里时，跳转会先撞上
+    // 「不能唤醒」，用户看到报错，而真正该做的是先把它从名单里摘掉。
+    let archive;
+    if (typeof hooks.unarchive === 'function' && typeof result.sessionId === 'string' && result.sessionId !== '') {
+      archive = await hooks.unarchive(result.sessionId);
+    }
     if (result.status === 'need-workspace') return jsonResponse(result);
     // 落点不合格：明确拒绝，不落到 process.cwd()。400 而不是 500——包没坏，是位置不对。
     if (result.status === 'bad-workspace') return jsonResponse(result, 400);
@@ -3610,6 +3727,7 @@ async function handleOpen(request) {
     return jsonResponse({
       status: 'opened',
       ...result,
+      archive,
       cloud: cloudMarkOf(source),
       warning: result.packageLockBlocked ?? undefined,
     });
@@ -3662,7 +3780,7 @@ export function apply(ctx) {
     requestBody: 'buffered',
     fetch: async (request) => {
       try {
-        return await handleOpen(request);
+        return await handleOpen(request, { unarchive: (sessionId) => unarchiveInDsh(ctx, sessionId) });
       } catch (error) {
         ctx.logger?.warn?.('[dsh-session-save] open route failed', error);
         return jsonResponse({ status: 'error', message: '内部错误，详见日志' }, 500);
