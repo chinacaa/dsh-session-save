@@ -3592,10 +3592,38 @@ function handleWorkspaces(request) {
 }
 
 /**
+ * 把会话从 DSH 的归档集合里摘出来。
+ *
+ * 归档集合是 `agent/pre-step` gate 读的那一份：会话在里头，文件在、工作区也认，
+ * 但唤醒会被挡下，用户看到的就是「点了打开没反应」。所以导入成功后顺手清掉。
+ *
+ * 三条刻意的取舍：
+ * - 不用 `inject: ['workspaceRegistry']`。那是必需依赖，宿主没装 workspace 插件时
+ *   整条插件都起不来；这里少一个服务只是少一件顺手事。
+ * - `unarchiveSession` 幂等：没归档就什么都不写，所以不必先查再调。
+ * - 失败只回一个字段，不影响导入——包已经落盘了，归档这件事用户可以手动补。
+ */
+export async function unarchiveInDsh(ctx, sessionId) {
+  try {
+    const registry = ctx?.get?.('workspaceRegistry');
+    if (registry === undefined || registry === null || typeof registry.unarchiveSession !== 'function') {
+      return { skipped: 'no-service' };
+    }
+    const archived = registry.archivedSessionIds;
+    const wasArchived = Array.isArray(archived) && archived.includes(sessionId);
+    await registry.unarchiveSession(sessionId);
+    return { unarchived: wasArchived === true };
+  } catch (error) {
+    return { error: String(error?.message ?? error) };
+  }
+}
+
+/**
  * `?path=<file>` 直接导入；没有 path 时弹原生打开窗口。
  * 返回 { status:'opened', sessionId, ... } 供客户端跳转。
+ * `hooks.unarchive` 由宿主注入，导入成功后用来取消归档。
  */
-async function handleOpen(request) {
+async function handleOpen(request, hooks = {}) {
   const gate = requestGate(request);
   if (gate !== undefined) return jsonResponse({ status: 'error', message: gate }, 403);
 
@@ -3626,7 +3654,7 @@ async function handleOpen(request) {
         return jsonResponse({ status: 'error', message: `暂存上传内容失败：${error?.message ?? error}` }, 500);
       }
     }
-    return await openFromQuery(request, query);
+    return await openFromQuery(request, query, hooks);
   } finally {
     if (uploadDir !== undefined) {
       try {
@@ -3638,7 +3666,7 @@ async function handleOpen(request) {
   }
 }
 
-async function openFromQuery(request, query) {
+async function openFromQuery(request, query, hooks = {}) {
   const explicit = typeof query.path === 'string' && query.path.trim() !== '' ? query.path.trim() : null;
   const state = readState();
 
@@ -3677,6 +3705,12 @@ async function openFromQuery(request, query) {
     const repairPackage = query.repairPackage === '1' || query.repairPackage === 'true';
     const backupWanted = query.backup !== '0' && query.backup !== 'false';
     const result = importPackage(source, { cwd, onConflict, memory: memoryMode, createCwd, replaceFile, repairPackage, backup: backupWanted, contextBudget: query.contextBudget });
+    // 取消归档放在这里、而不是客户端跳转之后：会话在归档集合里时，跳转会先撞上
+    // 「不能唤醒」，用户看到报错，而真正该做的是先把它从名单里摘掉。
+    let archive;
+    if (typeof hooks.unarchive === 'function' && typeof result.sessionId === 'string' && result.sessionId !== '') {
+      archive = await hooks.unarchive(result.sessionId);
+    }
     if (result.status === 'need-workspace') return jsonResponse(result);
     // 落点不合格：明确拒绝，不落到 process.cwd()。400 而不是 500——包没坏，是位置不对。
     if (result.status === 'bad-workspace') return jsonResponse(result, 400);
@@ -3688,6 +3722,7 @@ async function openFromQuery(request, query) {
     return jsonResponse({
       status: 'opened',
       ...result,
+      archive,
       cloud: cloudMarkOf(source),
       warning: result.packageLockBlocked ?? undefined,
     });
@@ -3740,7 +3775,7 @@ export function apply(ctx) {
     requestBody: 'buffered',
     fetch: async (request) => {
       try {
-        return await handleOpen(request);
+        return await handleOpen(request, { unarchive: (sessionId) => unarchiveInDsh(ctx, sessionId) });
       } catch (error) {
         ctx.logger?.warn?.('[dsh-session-save] open route failed', error);
         return jsonResponse({ status: 'error', message: '内部错误，详见日志' }, 500);

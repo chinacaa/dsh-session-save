@@ -16,6 +16,7 @@
   "opened": "Opened",
   "openFailed": "Open failed",
   "listRefreshHint": "; the session index has not caught up yet — it will appear in the list shortly",
+  "archiveRestored": "Restored from the archive",
   "openPath": "Open session project",
   "openPathHint": "Full path of a .dsproj file",
   "openConfirm": "Open",

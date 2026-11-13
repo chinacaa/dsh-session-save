@@ -69,6 +69,7 @@ const ZH = {
       opened: '已打开',
       openFailed: '打开失败',
       listRefreshHint: '，会话索引还没跟上，稍等片刻它就会出现在左侧列表里',
+      archiveRestored: '已从归档里恢复',
       openPath: '打开会话工程',
       openPathHint: '输入 .dsproj 的完整路径',
       openConfirm: '打开',
@@ -881,15 +882,18 @@ const ZH = {
         const attachRejected = Number(payload.attachmentsRejected) || 0;
         const attachText =
           attachRejected > 0 ? ` · ${String(L.attachRejected).replace('{n}', attachRejected)}` : '';
+        // 会话原先在归档集合里：那不是「打不开」，是被挡在唤醒名单外。说一句，用户才不会
+        // 以为这个包本身有问题。
+        const archiveText = payload.archive?.unarchived === true ? ` · ${L.archiveRestored}` : '';
         // 只要还有没生效的东西，就把面板留在界面上：copy 是「全是副本」，restore 是
         // 「有文件没写」。new 表示用户已经明确同意全写，不再提示。
         setNotice(!created && (written > 0 || pendingCreated > 0) ? payload : null);
         setToast({
           tone:
-            warning !== '' || cloud !== '' || repairNotes.length > 0 || attachRejected > 0 || contextText !== '' || (!created && (written > 0 || pendingCreated > 0))
+            warning !== '' || cloud !== '' || repairNotes.length > 0 || attachRejected > 0 || contextText !== '' || archiveText !== '' || (!created && (written > 0 || pendingCreated > 0))
               ? 'info'
               : 'ok',
-          text: `${L.opened} · ${label}${warning}${cloud}${memory}${createdText}${clashText}${repairText}${attachText}${contextText}`,
+          text: `${L.opened} · ${label}${warning}${cloud}${memory}${createdText}${clashText}${repairText}${attachText}${contextText}${archiveText}`,
         });
         try {
           await host?.sessions?.refresh?.();
@@ -906,7 +910,7 @@ const ZH = {
           return;
         }
         // 一直卡在「索引不认识」：包已经落盘了，只是这一跳跳不过去。
-        setToast({ tone: 'info', text: `${L.opened} · ${label}${L.listRefreshHint}` });
+        setToast({ tone: 'info', text: `${L.opened} · ${label}${L.listRefreshHint}${archiveText}` });
       }, []);
 
       /** 把服务端结果分发到对应弹窗／提示。本地路径和远程上传两条入口共用。 */

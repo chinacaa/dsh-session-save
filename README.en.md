@@ -126,6 +126,12 @@ Writes are **atomic** (tmp file + rename) so a sync client never picks up half a
 
 > **In short**: if two machines really take turns on one file, keep **autosave on one of them only**; the other machine will be stopped by the content check.
 
+### Opening it un-archives the session
+
+If DSH has this session archived, importing it also restores it. The archive list gates waking a session: the file is there and the workspace knows it, but clicking does nothing. The plugin clears that entry after a successful import and says so in the status line, so you do not have to hunt for it in the sidebar.
+
+When the workspace plugin is not installed this step is skipped and the import still completes.
+
 ### Opening it from another machine
 
 When DSH is not served from a loopback address (LAN IP, hostname, reverse proxy), the plugin moves files through the browser:
@@ -136,7 +142,7 @@ When DSH is not served from a loopback address (LAN IP, hostname, reverse proxy)
 | Open | The browser uploads the chosen file's bytes, the server stages them in a temp file, then runs the same verification, health check and conflict rules. The temp file is removed afterwards. |
 | Autosave | Not shown. That switch writes a file on the server machine, which the user cannot see or take away. |
 
-Origin checking is not relaxed: with a non-loopback Host the rule becomes same-origin — requests from other sites still get 403, and `cross-site` fetch metadata is rejected outright.
+Origin checking is not relaxed: with a non-loopback Host the rule becomes same-origin: requests from other sites still get 403, and `cross-site` fetch metadata is rejected outright.
 
 ## Package format and offline tools
 
@@ -178,10 +184,10 @@ The package now carries `bili/session.json`, and import writes it back under the
 | --- | --- |
 | The package has no such entry (old package, or bili was not installed when exported) | Opens normally, `bili.reason` is `absent` |
 | bili is not installed here | Opens normally, reason `not-installed` |
-| The block's `schema` is not one this version knows | Nothing is written, reason `schema-mismatch` — better to skip than to push an unreadable state into someone else's store |
-| The local copy is newer than the packaged one | Left alone, reason `newer-local` — the local copy holds turns from after the export |
-| The block names a different session than the one being imported | Nothing is written, reason `session-mismatch` — only this session is restored, nothing else is touched |
-| bili wrote that file within the last 2 seconds | Waits once, then backs off, reason `busy` — it is working on this session and would overwrite the restore |
+| The block's `schema` is not one this version knows | Nothing is written, reason `schema-mismatch`: better to skip than to push an unreadable state into someone else's store |
+| The local copy is newer than the packaged one | Left alone, reason `newer-local`: the local copy holds turns from after the export |
+| The block names a different session than the one being imported | Nothing is written, reason `session-mismatch`: only this session is restored, nothing else is touched |
+| bili wrote that file within the last 2 seconds | Waits once, then backs off, reason `busy`: it is working on this session and would overwrite the restore |
 | Normal restore | Written back (existing file kept as `.bak-<time>`), read back and verified, reason `ok` |
 
 ```
@@ -226,7 +232,7 @@ A few hundred turns add up to hundreds of thousands — or tens of millions — 
 So the import measures the session first (decompressed bytes divided by 3.2). Above **150000 tokens** the report says how much the whole conversation would cost and how many trailing turns a budget would keep — but **the file written to disk is still the complete session**. Trimming is advice for this one load, not an edit to your archive; what actually bounds the context is the runtime (billion-context folding, DSH loading).
 
 - Only whole turns are dropped: a tool call never gets separated from its result.
-- The file written to disk is the trimmed copy. The `.dsproj` is untouched — unpack it and read `session/*.jsonl.zstd` for anything that was left out.
+- The file written to disk is the complete session; the `.dsproj` stays byte-for-byte untouched. The keep-count in the report is a suggestion for that one load, and nothing is missing from the archive.
 - Turn the report off with `?contextBudget=0`, or pick another budget with `?contextBudget=300000`.
 - The UI says "N earlier turns kept out of the context"; this never happens silently.
 
@@ -342,7 +348,7 @@ UI text does not live in the code; it lives in `locales/`:
 
 ```
 locales/
-├── zh-CN.json   source language, 114 keys — add new strings here
+├── zh-CN.json   source language, 121 keys; add new strings here
 └── en-US.json
 ```
 
