@@ -2,7 +2,7 @@
 
 本文从代码反推功能面（`index.js` 四条路由 + `client.js` 五个插槽项），逐条列出可观测行为、期望结果，以及由哪套测试覆盖。测试分两层：
 
-- **二十四套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共 735 条用例（`grep -c '✅'` 逐行相加的实测值）。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
+- **二十四套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共 736 条用例（`grep -c '✅'` 逐行相加的实测值）。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
 - **审计验收脚本**（未随仓库分发）：针对历史漏洞的复现/防回归，判据写在下表里，可照着重写。
 
 所有套件都通过 `test/fixture.mjs` 自建临时 `DSH_HOME`（`os.tmpdir()` 下），跑完自删——**不读也不改真实 `~/.dsh`**，所以在任何机器、任何数据状态下结果一致。功能面的 F 编号是本文与 `test/*.mjs` 注释共同引用的锚点，改动功能时两边一起改。
@@ -105,7 +105,7 @@
 | --- | --- | --- | --- |
 | `test/pathkey.mjs` | 35 | F13（`findSessionFile` 的目录派生）、F21 | `projectKey`/`encodeSegment` 与官方 rc.4 逐字一致：16 档 cwd 与内置 oracle 全等（含尾部分隔符不剪 `-`、根路径 `--root--`、emoji 拆代理对 `~D83D~DE00`、`~` 自身转义、251 截断）；4 条钉死形态独立断言；空串退回 `_no-cwd` 且 oracle 确实抛错（证明是有意偏离）；8 档 session id；磁盘实例形状核对 |
 | `test/dialog.mjs` | 17 | F3、F46、F47、F48 | 三平台选择器各自按依赖存在性判定（win32 看 `powershell.exe`、darwin 看 `/usr/bin/osascript`、linux/BSD 找 zenity/kdialog/qarma/matedialog，都没有 → `null` 降级），并用注入的假探测函数在 Windows 上验 mac/linux 分支；实现缓存按平台隔离（先问无用平台不污染真实平台）；共用工具 `lookPath`/`ensureExtension`/`sanitizeForAppleScript`/`resultLine`；macOS 的 AppleScript 文本（`POSIX file` 包装、引号转义、冒号消毒）；Linux 的 zenity 与 kdialog 两套开关分别拼对（`--getsavefilename` 收完整建议路径 vs `--filename=`，kdialog 空目录回落 `.`）；zenity 优先级高于 kdialog；Windows 脚本带 BOM、`OutputEncoding`、`-ResultFile` 三件套齐；中文路径往返不乱码；取消 → `null`；脚本缺失 → `undefined`；乱码 stdout 不覆盖结果文件；R10 结果目录用 `mkdtemp` 每次独占、文件名不再由 pid + 时间戳拼（两者都能猜）、收尾连目录一起删、正常路径摘掉 exit 监听 |
-| `test/client.mjs` | 11 | F34、F35、F37、F49、F50 | 5 个插槽项 id/order/插槽名正确；另存为是独立图标且点击带 `ask=1`；hero 按钮点击打 `api/session.open`；源码不含 `document.`/`MutationObserver`；7 个记忆相关 i18n 键中英各一份；`inject` 含 `remote`/`remote.session` 且源码不含 `uiWorkspace.openPath`、含 `openWorkspacePath` 与 `action: 'reveal'`；5 个 missing 相关 i18n 键中英各一份、`MissingModal` 存在、`payload.status === 'missing-target'` 被接住、`recreate: '1'` 传给保存路由、自动保存自停时把原路径说出来；`attachRejected`/`badWorkspace`/`memoryMergeTarget` 中英各一份、`payload.attachmentsRejected` 与 `payload?.memoryDir` 被读、`bad-workspace` 被接住且回落 `L.badWorkspace` |
+| `test/client.mjs` | 12 | F34、F35、F37、F49、F50、F87 | 5 个插槽项 id/order/插槽名正确；另存为是独立图标且点击带 `ask=1`；hero 按钮点击打 `api/session.open`；源码不含 `document.`/`MutationObserver`；7 个记忆相关 i18n 键中英各一份；`inject` 含 `remote`/`remote.session` 且源码不含 `uiWorkspace.openPath`、含 `openWorkspacePath` 与 `action: 'reveal'`；5 个 missing 相关 i18n 键中英各一份、`MissingModal` 存在、`payload.status === 'missing-target'` 被接住、`recreate: '1'` 传给保存路由、自动保存自停时把原路径说出来；`attachRejected`/`badWorkspace`/`memoryMergeTarget` 中英各一份、`payload.attachmentsRejected` 与 `payload?.memoryDir` 被读、`bad-workspace` 被接住且回落 `L.badWorkspace`；`useViewport()` 存在且听 `resize`、两个断点常量在、9 个卡片都有 `maxHeight` 分支、遮罩 `padding` 分窄宽、没有残留 `maxWidth: vw` 写法、按钮行 `flexWrap` 齐全、hero 窄屏不渲文字 |
 | `test/smoke.mjs` | 1（12 处 throw 检查） | F1、F8、F10、F12 | 夹具会话 → 打包 → 回读 ZIP 首条目 zstd magic、必有 `manifest.json`/`SUMMARY.md`/`session/`；二次保存复用同一路径；默认文件名规则与非法字符替换；无标题兜底名 |
 | `test/open.mjs` | 40 | F13–F21、F23 | 复用不写盘；新 cwd 落地并改写 header；`need-workspace` 列工作区；选好工作区后打开；帧 1..n 原字节一致；坏路径 404 且不回显 |
 | `test/conflict.mjs` | 67 | F5–F7、F11、F28–F32、F44 | 四种冲突顺序 ask→reuse→copy→overwrite；覆盖前留 `.bak`；异机新鲜锁给理由；CAS 409 与 `force`；自动保存钩子写盘并递增 `writes`；关闭后不再写；同步盘识别；目录复原 |
@@ -164,8 +164,9 @@
 
 | F85 | 非回环地址的远程访问 | Host 不是 `127.0.0.1`/`localhost`/`::1` 时（内网 IP、域名、反代），`requestGate` 的判据从「必须是回环」换成「必须同源」：有 Origin 要求 `parsed.host.toLowerCase() === host`，没有 Origin 只放行浏览器自己的同源导航（`sec-fetch-site` 为 `same-origin` / `none`），`cross-site` 一律拒。三条路由因此在内网可用：①`/api/session.save?deliver=download` 只 `buildPackage` 后直接回 zip，不落盘、不判锁、不写 `stamps`、不留备份，响应带 `content-disposition: attachment` 与 RFC 5987 的 `filename*`（中文标题不乱码）；②`/api/session.open?upload=1` 把 POST 来的字节落成 `os.tmpdir()` 下的临时 `.dsproj`，再走同一套导入流程（校验、体检、冲突判定一条不绕），`finally` 删临时目录，空体 400、超 `MAX_TOTAL_BYTES` 413 `too-large`；③客户端 `isRemoteHost()` 为真时不注册 `session-autosave` 槽位（那个开关写的是服务端机器上的文件，用户既看不到也带不走），保存走 `window.open` 下载，打开用 React 渲染的隐藏 file input + `ref.click()` 上传——组件里仍然不许出现 `document.` |
 | F86 | 打开之后取消归档 | DSH 的归档集合（`workspaceRegistry.archivedSessionIds`）是 `agent/pre-step` gate 读的那一份：会话在里头时文件在、工作区也认，但唤醒会被挡下——用户看到的就是「点了打开没反应」。所以 `importPackage` 成功后调 `unarchiveInDsh(ctx, sessionId)` 把它摘出来，结果放进返回体 `archive`（`{unarchived}` / `{skipped:'no-service'}` / `{error}`）。三条边界：①不用 `inject: ['workspaceRegistry']`——那是必需依赖，宿主没装 workspace 插件时整条插件都起不来，少一个服务只该少一件顺手事；②`unarchiveSession` 本身幂等，没归档就什么都不写，所以不必先查再调，但报告里要把 `unarchived` 说准（没归档时是 `false`）；③取服务或写状态失败只回一个字段，导入本身照常成功——包已经落盘了，归档这件事用户还能手动补。界面在 `unarchived=true` 时于 toast 末尾补一句「已从归档里恢复」 |
+| F87 | 布局与分辨率 | `client.js` 只有内联样式、用不了媒体查询，所以适配统一走 `useViewport()`（读 `window.innerWidth`、听 `window` 的 `resize` 并在 cleanup 摘掉），断点只有两个常量 `VIEW_NARROW = 480` / `VIEW_COMPACT = 720`，不许在组件里各写一套宽度判断。9 个弹窗卡片固定 `width` 100% + `maxWidth` 设计 px + `maxHeight` + `overflowY` auto + `boxSizing` border-box，靠遮罩 `padding` 约束宽度；**不许写 `maxWidth` 为 vw 百分比**——它和 px 上限是两个互斥的想法，窄屏反而更贴边。遮罩带 `padding`（窄屏 8 / 宽屏 16）与 auto 滚动；按钮行一律 `flexWrap` wrap（三个中文按钮并排就超 360px）；可能放路径、uuid 的值要 `minWidth` 0 + `overflowWrap` anywhere，否则一条不换行的串撑破卡片；冲突面板窄屏单列；toast 与记忆浮层窄屏贴边收窄；hero 按钮窄屏只留图标。三条边界：①不许为适配去 `document.`、加全局 `<style>` 或往插槽外塞 DOM（红线 5 与红线 3）；②静态断言只能卡「有统一判据 + 卡片不超视口」，真机效果要在 375 / 768 / 1440 三档设备模拟里自己看过；③断点魔数只许出现在那两个常量上，别散落到组件的三元里 |
 
-合计 **735 条**。
+合计 **736 条**。
 
 ### 审计验收脚本（未随仓库分发）
 
@@ -205,7 +206,7 @@ node test/open.mjs
 node test/conflict.mjs
 node test/security.mjs
 node test/pathkey.mjs
-# 或一把梭：二十四套 735 条全绿
+# 或一把梭：二十四套 736 条全绿
 for f in pathkey client dialog smoke open conflict security attach repair open-repair version context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait dsh-list remote; do node test/$f.mjs || exit 1; done
 ```
 

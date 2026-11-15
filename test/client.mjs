@@ -398,3 +398,54 @@ assert.ok(source.includes('payload?.prompt'), '坏包说明要读服务端给的
 assert.ok(source.includes("replaceFile: '1'"), '位置被文件占着时，「改名备份」要带 replaceFile');
 assert.ok(source.includes('payload?.canReplace === true'), '只有服务端说能代劳才显示那个按钮');
 console.log('✅ 三条出口都接到界面：位置被占可改名备份、锁冲突可仍然保存、坏包可复制说明找 AI 修，中英文案齐全');
+
+/* ── 分辨率适配 ────────────────────────────────────────────────────────
+ * 插件只能写内联样式，没有媒体查询可用，所以适配靠「读窗口宽度 + 条件样式」。
+ * 这里卡住三件事：窄屏判据真的从 window.innerWidth 来（不是 document，也不是
+ * 写死）、弹窗不会超出视口、按钮行会换行。改坏了在小屏上就是卡片跑出屏幕、
+ * 按钮点不到，而桌面端看不出来。
+ */
+assert.ok(source.includes('function useViewport()'), '要有一个统一的视口判据，别每个组件各写一套');
+assert.ok(source.includes('window.innerWidth'), '视口宽度从 window.innerWidth 读');
+assert.ok(source.includes("window.addEventListener('resize'"), '窗口尺寸变化要重新判，否则缩窗后不生效');
+assert.ok(source.includes('VIEW_NARROW') && source.includes('VIEW_COMPACT'), '窄屏/小窗两档阈值要命名，别散落魔数');
+
+// 九个弹窗卡片：宽度靠 maxWidth 而不是写死，内容超高自己滚
+const cardHeights = (source.match(/maxHeight: vp\.narrow === true \? 'calc\(100vh - 16px\)'/g) || []).length;
+assert.equal(cardHeights, 9, `九个弹窗卡片都要按视口限制高度（实得 ${cardHeights}）`);
+assert.ok(
+  (source.match(/boxSizing: 'border-box',/g) || []).length >= 9,
+  '卡片要 border-box，否则 padding 会把宽度顶出视口',
+);
+assert.ok(
+  (source.match(/overflowY: 'auto',/g) || []).length >= 12,
+  '卡片和遮罩都要能滚：小屏上内容比屏幕高是常态',
+);
+assert.ok(
+  source.includes("padding: vp.narrow === true ? 8 : 16,"),
+  '遮罩在窄屏要收窄留白，把宽度让给卡片',
+);
+assert.ok(!/maxWidth: '\d+vw'/.test(source), '不要再按 vw 写死 maxWidth —— 与 maxWidth px 上限冲突');
+
+// 行为差异：窄屏下这几处布局真的换了形状
+assert.ok(
+  source.includes("gridTemplateColumns: vp.narrow === true ? '1fr' : '1fr 1fr'"),
+  '冲突面板用两栏对比本地/包内；窄屏要改成上下，否则每栏只剩一百多像素',
+);
+assert.ok(
+  source.includes("left: vp.narrow === true ? 12 : 'auto'"),
+  'toast 在窄屏要贴左右边，否则 maxWidth 420 在 360 宽的屏上会溢出',
+);
+assert.ok(
+  source.includes("width: vp.narrow === true ? 'auto' : 400"),
+  '记忆落点浮层在窄屏要撑满，别固定 400 宽',
+);
+assert.ok(
+  (source.match(/flexWrap: 'wrap'/g) || []).length >= 9,
+  '弹窗里的按钮行都要能换行 —— 三个中文按钮并排超过 360px',
+);
+assert.ok(
+  source.includes("vp.narrow === true ? null : React.createElement('span', null, flow.busy ? L.opening : L.openButton)"),
+  '新会话行的「打开」在窄屏只留图标，那一行还要放工作区与预设选择器',
+);
+console.log('✅ 分辨率适配：窄屏收窄留白、卡片按视口限高并可滚、冲突面板改上下、按钮行可换行');

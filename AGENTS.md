@@ -9,7 +9,7 @@
 - 语言/运行时：纯 ESM（`"type": "module"`），零运行时依赖，只用 `node:` 内置模块；客户端只 `require('react')`。
 - 宿主：DSH `>=0.2.1-rc.1 <0.3.0-0`（`engines.dsh`），Cordis `^4.0.1`（peer）。
 - 平台：Windows 优先（原生对话框走 `powershell.exe` + WinForms）；macOS 走 `osascript` 的 Finder 面板；Linux/BSD 探 zenity / kdialog / qarma / matedialog。三者都没有时退回网页里的路径输入框。平台相关代码全部隔离在 `dialog/` 下（`index.mjs` 选实现、`shared.mjs` 共用工具、`windows.mjs` / `macos.mjs` / `linux.mjs` 各平台实现），`index.js` 只 import `dialog/index.mjs`，不认识具体实现。
-- 规模：`index.js` ≈3840 行、`client.js` ≈2710 行、二十四套测试共 735 条 ✅（`smoke.mjs` 另有 12 处 throw 检查，只打一行汇总）。逐条覆盖见 `docs/TEST-MATRIX.md`。
+- 规模：`index.js` ≈3840 行、`client.js` ≈2860 行、二十四套测试共 736 条 ✅（`smoke.mjs` 另有 12 处 throw 检查，只打一行汇总）。逐条覆盖见 `docs/TEST-MATRIX.md`。
 
 ## 红线（改之前先看，违反会静默坏掉）
 
@@ -47,7 +47,7 @@ scripts/set-repo.mjs 把 OWNER 占位换成真实 GitHub 名字
 test/fixture.mjs    临时 DSH_HOME 夹具（二十四套测试共用）
 test/*.mjs          二十四套自检（见「测试」）
 locales/*.json      界面语言包（zh-CN 为源语言，121 键；新文案先加这里）
-docs/TEST-MATRIX.md 功能面 → 测试覆盖矩阵（86 条 F 编号）
+docs/TEST-MATRIX.md 功能面 → 测试覆盖矩阵（87 条 F 编号）
 docs/DSH-API-SURFACE.md 用到的 DSH 接口清单（升级 DSH 时逐条核对）
 assets/             截图与方形图标（市场用）
 ```
@@ -209,7 +209,7 @@ const { mod, routes } = await loadRoutes('../index.js');   // 必须在 makeFixt
 三条硬规矩：
 
 1. **别在文档里复述代码**。默认文件名规则的真源是 `index.js` 的 `suggestPath()`、上限常量在 `index.js` 顶部；文档只说结论和例子，不抄正则、不抄常量值。抄了就会在下次改代码时变成谎言。
-2. **数字必须当场能验**。文档里出现"12 条红线""735 条 ✅""F1–F86""≈3840 行"这类计数时，要能用一条命令复现（见「改完之后」）。改完顺手核一遍，别让读者去发现数字过期。
+2. **数字必须当场能验**。文档里出现"12 条红线""736 条 ✅""F1–F87""≈3840 行"这类计数时，要能用一条命令复现（见「改完之后」）。改完顺手核一遍，别让读者去发现数字过期。
 3. **中英必须同一次改完**。`README.md` 与 `README.en.md` 是同一份文档的两种语言：小标题顺序、表格列、示例文件名一一对应。只改一份等于给另一半读者发过期信息。
 
 还有两条不写在文档里的东西：进度和计划（放 issue / PR / 提交信息，不写进 README 的"路线图"）、本机路径与个人环境（`C:\Users\...`、profile 名、私有 registry）——后者写进文档等于把私有环境当契约。
@@ -279,6 +279,19 @@ grep -o '——' README.md | wc -l          # 中文破折号密度，超过 20 
 grep -o '—' README.en.md | wc -l        # 英文 em dash，超过 45 同理
 ```
 
+## 布局与分辨率
+
+`client.js` 只有内联样式，**用不了媒体查询**，所以适配靠一个统一的 `useViewport()`（读 `window.innerWidth`、听 `window` 的 `resize`）。别在组件里各写一套宽度判断。
+
+- 两个断点：`VIEW_NARROW = 480`（手机竖屏）、`VIEW_COMPACT = 720`（手机横屏、窄窗）。魔数只许出现在这两个常量上。
+- 弹窗卡片固定用 `width: '100%'` + `maxWidth: '<设计宽度>px'` + `maxHeight` + `overflowY: 'auto'` + `boxSizing: 'border-box'`，靠遮罩的 `padding` 约束宽度。**别写 `maxWidth: '92vw'`**：它和「设计宽度那个 px 上限」是两个互斥的想法，混用会让窄屏反而比宽屏更贴边、也不受父容器约束。
+- 遮罩要有 `padding`（窄屏收窄）与 `overflowY: 'auto'`；卡片 `alignItems: 'center'` 只管居中，不给滚动兜底。
+- 按钮行一律 `flexWrap: 'wrap'`。三个中文按钮并排就超过 360px。
+- 值里可能放路径、uuid、基线名的地方要 `minWidth: 0` + `overflowWrap: 'anywhere'`，否则窄卡片被一个不换行的串撑破。
+- 不许为了适配去 `document.`、加全局 `<style>`、或往插槽外塞 DOM（红线 5 与红线 3）。
+
+改完在浏览器里用设备模拟（375 / 768 / 1440 三档）过一遍弹窗，再跑 `node test/client.mjs`——那条新断言卡的是「有没有统一判据 + 卡片会不会超视口」，看不到真机效果。
+
 ## 改完之后
 
 1. `node --check index.js client.js`（改过 .ps1 再加语法检查）。
@@ -289,9 +302,9 @@ grep -o '—' README.en.md | wc -l        # 英文 em dash，超过 45 同理
 
    ```bash
    wc -l index.js client.js                                  # 对应 AGENTS.md「规模」
-   awk '/^## 红线/,/^## 目录/' AGENTS.md | grep -c '^[0-9]\+\. \*\*'   # 红线条数（必须限在红线节内：本文别处也有编号列表）
+   sed -n '/^## 红线/,/^## 目录/p' AGENTS.md | grep -cE '^[0-9]+\. \*\*'   # 红线条数（必须限在红线节内：本文别处也有编号列表）
    grep -oE 'F[0-9]+' docs/TEST-MATRIX.md | sort -u | wc -l  # 功能面条数
-   for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait dsh-list remote archive; do node test/$f.mjs | grep -c '✅' ; done   # 二十四行相加 = 735
+   for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait dsh-list remote archive; do node test/$f.mjs | grep -c '✅' ; done   # 二十四行相加 = 736
    ```
 
 6. 确认测试没有留下垃圾：跑完 `git status` 应为只有你改的源文件，`os.tmpdir()` 下不该残留 `dshss-fx-*` / `dshss-sec-*` 目录（`autoCleanup` 会删，残留说明收尾路径漏了信号处理）。

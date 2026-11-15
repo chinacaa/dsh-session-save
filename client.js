@@ -279,6 +279,37 @@ const ZH = {
       );
     }
 
+    /*
+     * 分辨率适配：插件只能写内联样式，用不了媒体查询，所以读一次窗口宽度、
+     * 再听 resize 做条件渲染。分三档——手机上竖屏（<=480）卡片要贴边、
+     * 内边距收窄；小窗或横屏（<=720）只放宽；再大按桌面原样。
+     * 监听加在 window 上（不是 document），也不往页面里塞 <style>。
+     */
+    const VIEW_NARROW = 480;
+    const VIEW_COMPACT = 720;
+
+    function useViewport() {
+      const read = () => {
+        if (typeof window === 'undefined') return VIEW_COMPACT + 1;
+        const value = Number(window.innerWidth);
+        return Number.isFinite(value) && value > 0 ? value : VIEW_COMPACT + 1;
+      };
+      const [width, setWidth] = useState(read);
+      useEffect(() => {
+        if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined;
+        const onResize = () => setWidth(read());
+        window.addEventListener('resize', onResize);
+        return () => {
+          if (typeof window.removeEventListener === 'function') window.removeEventListener('resize', onResize);
+        };
+      }, []);
+      return {
+        width,
+        narrow: width <= VIEW_NARROW,
+        compact: width <= VIEW_COMPACT,
+      };
+    }
+
     function Spinner() {
       return React.createElement(
         'span',
@@ -299,6 +330,7 @@ const ZH = {
     }
 
     function Toast({ tone, text, onDone }) {
+      const vp = useViewport();
       useEffect(() => {
         const timer = setTimeout(onDone, 3200);
         return () => clearTimeout(timer);
@@ -310,10 +342,11 @@ const ZH = {
           role: 'status',
           style: {
             position: 'fixed',
-            right: 18,
-            bottom: 18,
+            left: vp.narrow === true ? 12 : 'auto',
+            right: vp.narrow === true ? 12 : 18,
+            bottom: vp.narrow === true ? 12 : 18,
             zIndex: 9999,
-            maxWidth: 420,
+            maxWidth: vp.narrow === true ? 'none' : 420,
             padding: '8px 12px',
             display: 'flex',
             gap: 8,
@@ -333,6 +366,7 @@ const ZH = {
     }
 
     function AskPanel({ suggested, busy, title, hint, confirmLabel, onConfirm, onCancel }) {
+      const vp = useViewport();
       const [value, setValue] = useState(suggested || '');
       const inputRef = useRef(null);
       useEffect(() => {
@@ -353,6 +387,8 @@ const ZH = {
           style: {
             position: 'fixed',
             inset: 0,
+            padding: vp.narrow === true ? 8 : 16,
+            overflowY: 'auto',
             zIndex: 9998,
             display: 'flex',
             alignItems: 'center',
@@ -367,13 +403,16 @@ const ZH = {
           'div',
           {
             style: {
-              width: 520,
-              maxWidth: '90vw',
-              padding: 18,
+              width: '100%',
+              maxWidth: '520px',
+              padding: vp.narrow === true ? 12 : 18,
               background: COLORS.elevated,
               border: `1px solid ${COLORS.border}`,
               borderRadius: COLORS.radius,
               boxShadow: '0 24px 60px rgba(0,0,0,0.24)',
+              maxHeight: vp.narrow === true ? 'calc(100vh - 16px)' : 'calc(100vh - 48px)',
+              overflowY: 'auto',
+              boxSizing: 'border-box',
               display: 'flex',
               flexDirection: 'column',
               gap: 12,
@@ -406,7 +445,7 @@ const ZH = {
           }),
           React.createElement(
             'div',
-            { style: { display: 'flex', justifyContent: 'flex-end', gap: 8 } },
+            { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' } },
             React.createElement(
               'button',
               {
@@ -1248,17 +1287,23 @@ const ZH = {
       return React.createElement(React.Fragment, null, ...children);
     }
 
+    /** 一行「标签：值」。值是路径、uuid 这类不会自己断行的串，窄屏必须允许它折断。 */
     function MiniStat({ label, value }) {
       return React.createElement(
         'div',
-        { style: { display: 'flex', gap: 6, fontSize: 11.5, color: COLORS.secondary } },
-        React.createElement('span', null, `${label}：`),
-        React.createElement('span', { style: { color: COLORS.label } }, value),
+        { style: { display: 'flex', gap: 6, fontSize: 11.5, color: COLORS.secondary, minWidth: 0 } },
+        React.createElement('span', { style: { flexShrink: 0 } }, `${label}：`),
+        React.createElement(
+          'span',
+          { style: { color: COLORS.label, minWidth: 0, overflowWrap: 'anywhere', wordBreak: 'break-word' } },
+          value,
+        ),
       );
     }
 
     /** 同 id 不同会话时问用户怎么办。 */
     function ConflictModal({ conflict, busy, onChoose, onCancel }) {
+      const vp = useViewport();
       // 覆盖前要不要留一份原文件，默认留。取消勾选时才真的什么都不留。
       const [keepBackup, setKeepBackup] = React.useState(true);
       const local = conflict.existing || {};
@@ -1294,6 +1339,8 @@ const ZH = {
           style: {
             position: 'fixed',
             inset: 0,
+            padding: vp.narrow === true ? 8 : 16,
+            overflowY: 'auto',
             zIndex: 9998,
             display: 'flex',
             alignItems: 'center',
@@ -1308,13 +1355,16 @@ const ZH = {
           'div',
           {
             style: {
-              width: 560,
-              maxWidth: '92vw',
-              padding: 18,
+              width: '100%',
+              maxWidth: '560px',
+              padding: vp.narrow === true ? 12 : 18,
               background: COLORS.elevated,
               border: `1px solid ${COLORS.border}`,
               borderRadius: COLORS.radius,
               boxShadow: '0 24px 60px rgba(0,0,0,0.24)',
+              maxHeight: vp.narrow === true ? 'calc(100vh - 16px)' : 'calc(100vh - 48px)',
+              overflowY: 'auto',
+              boxSizing: 'border-box',
               display: 'flex',
               flexDirection: 'column',
               gap: 10,
@@ -1328,7 +1378,7 @@ const ZH = {
             {
               style: {
                 display: 'grid',
-                gridTemplateColumns: '1fr 1fr',
+                gridTemplateColumns: vp.narrow === true ? '1fr' : '1fr 1fr',
                 gap: 10,
                 padding: 10,
                 border: `1px solid ${COLORS.border}`,
@@ -1392,6 +1442,7 @@ const ZH = {
     /** 服务端拒绝覆盖时的小面板：给一条「换个位置」的出路，别让用户卡死。 */
     /** 记忆只落了副本时留在界面上的一小块说明：不点合并就永远不生效。 */
     function MemoryNotice({ payload, busy, onMerge, onDismiss }) {
+      const vp = useViewport();
       const written = Number(payload?.memoryWritten) || 0;
       const dir = typeof payload?.memoryDir === 'string' ? payload.memoryDir : '';
       // 在文件管理器里定位这个目录。走 Session Remote 的 openWorkspacePath：
@@ -1432,12 +1483,16 @@ const ZH = {
         {
           style: {
             position: 'fixed',
-            right: 20,
-            bottom: 20,
+            left: vp.narrow === true ? 12 : 'auto',
+            right: vp.narrow === true ? 12 : 20,
+            bottom: vp.narrow === true ? 12 : 20,
             zIndex: 9996,
-            width: 400,
-            maxWidth: 'calc(100vw - 40px)',
-            padding: 14,
+            width: vp.narrow === true ? 'auto' : 400,
+            maxWidth: 'calc(100vw - 24px)',
+            maxHeight: 'calc(100vh - 24px)',
+            overflowY: 'auto',
+            boxSizing: 'border-box',
+            padding: vp.narrow === true ? 12 : 14,
             background: COLORS.elevated,
             border: `1px solid ${COLORS.border}`,
             borderRadius: COLORS.radius,
@@ -1453,7 +1508,7 @@ const ZH = {
         dir === '' ? null : React.createElement(MiniStat, { label: L.memoryDirLabel, value: dir }),
         React.createElement(
           'div',
-          { style: { display: 'flex', gap: 8, marginTop: 2 } },
+          { style: { display: 'flex', gap: 8, marginTop: 2, flexWrap: 'wrap' } },
           React.createElement(
             'button',
             {
@@ -1481,6 +1536,7 @@ const ZH = {
 
     /** 合并前把要覆盖的文件列出来，避免用户不知道自己在覆盖什么。 */
     function MemoryMergeModal({ payload, busy, onConfirm, onNew, onCancel }) {
+      const vp = useViewport();
       // 覆盖本机记忆文件前要不要先备份，默认备份。
       const [keepBackup, setKeepBackup] = React.useState(true);
       // 清单来自 memoryPlanned（copy 模式也返回），不是 memoryConflicts。后者只记「覆盖了
@@ -1528,6 +1584,8 @@ const ZH = {
           style: {
             position: 'fixed',
             inset: 0,
+            padding: vp.narrow === true ? 8 : 16,
+            overflowY: 'auto',
             zIndex: 9999,
             display: 'flex',
             alignItems: 'center',
@@ -1542,13 +1600,16 @@ const ZH = {
           'div',
           {
             style: {
-              width: 480,
-              maxWidth: '92vw',
-              padding: 18,
+              width: '100%',
+              maxWidth: '480px',
+              padding: vp.narrow === true ? 12 : 18,
               background: COLORS.elevated,
               border: `1px solid ${COLORS.border}`,
               borderRadius: COLORS.radius,
               boxShadow: '0 24px 60px rgba(0,0,0,0.24)',
+              maxHeight: vp.narrow === true ? 'calc(100vh - 16px)' : 'calc(100vh - 48px)',
+              overflowY: 'auto',
+              boxSizing: 'border-box',
               display: 'flex',
               flexDirection: 'column',
               gap: 10,
@@ -1679,7 +1740,7 @@ const ZH = {
           ),
           React.createElement(
             'div',
-            { style: { display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 2 } },
+            { style: { display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 2, flexWrap: 'wrap' } },
             button(L.wsCancel, onCancel, false),
             // 两个按钮都给：只给「合并已有」的话，用户根本没法在全新机器上恢复记忆；
             // 只给「合并并新建」的话，等于把默认不放行的那一步做成了一键。
@@ -1691,6 +1752,7 @@ const ZH = {
     }
 
     function RefuseModal({ payload, busy, onSaveAs, onCancel }) {
+      const vp = useViewport();
       const notDsproj = payload?.status === 'not-dsproj';
       const button = (label, onClick, primary) =>
         React.createElement(
@@ -1720,6 +1782,8 @@ const ZH = {
           style: {
             position: 'fixed',
             inset: 0,
+            padding: vp.narrow === true ? 8 : 16,
+            overflowY: 'auto',
             zIndex: 9998,
             display: 'flex',
             alignItems: 'center',
@@ -1734,13 +1798,16 @@ const ZH = {
           'div',
           {
             style: {
-              width: 460,
-              maxWidth: '92vw',
-              padding: 18,
+              width: '100%',
+              maxWidth: '460px',
+              padding: vp.narrow === true ? 12 : 18,
               background: COLORS.elevated,
               border: `1px solid ${COLORS.border}`,
               borderRadius: COLORS.radius,
               boxShadow: '0 24px 60px rgba(0,0,0,0.24)',
+              maxHeight: vp.narrow === true ? 'calc(100vh - 16px)' : 'calc(100vh - 48px)',
+              overflowY: 'auto',
+              boxSizing: 'border-box',
               display: 'flex',
               flexDirection: 'column',
               gap: 10,
@@ -1762,7 +1829,7 @@ const ZH = {
             : null,
           React.createElement(
             'div',
-            { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 } },
+            { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4, flexWrap: 'wrap' } },
             button(L.cancel, onCancel, false),
             button(L.confirmOverwriteAlt, onSaveAs, true),
           ),
@@ -1778,6 +1845,7 @@ const ZH = {
      * 三条出路：另存到别处、明确同意在这里新建、或者取消。
      */
     function MissingModal({ payload, busy, onSaveAs, onRecreate, onCancel }) {
+      const vp = useViewport();
       const button = (label, onClick, primary, danger) =>
         React.createElement(
           'button',
@@ -1806,6 +1874,8 @@ const ZH = {
           style: {
             position: 'fixed',
             inset: 0,
+            padding: vp.narrow === true ? 8 : 16,
+            overflowY: 'auto',
             zIndex: 9998,
             display: 'flex',
             alignItems: 'center',
@@ -1820,13 +1890,16 @@ const ZH = {
           'div',
           {
             style: {
-              width: 460,
-              maxWidth: '92vw',
-              padding: 18,
+              width: '100%',
+              maxWidth: '460px',
+              padding: vp.narrow === true ? 12 : 18,
               background: COLORS.elevated,
               border: `1px solid ${COLORS.border}`,
               borderRadius: COLORS.radius,
               boxShadow: '0 24px 60px rgba(0,0,0,0.24)',
+              maxHeight: vp.narrow === true ? 'calc(100vh - 16px)' : 'calc(100vh - 48px)',
+              overflowY: 'auto',
+              boxSizing: 'border-box',
               display: 'flex',
               flexDirection: 'column',
               gap: 10,
@@ -1844,7 +1917,7 @@ const ZH = {
             : null,
           React.createElement(
             'div',
-            { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 } },
+            { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4, flexWrap: 'wrap' } },
             button(L.cancel, onCancel, false),
             button(L.missingTargetRecreate, onRecreate, false, true),
             button(L.missingTargetSaveAs, onSaveAs, true),
@@ -1858,6 +1931,7 @@ const ZH = {
      * 要不要强行存——文案要把后果说清（可能覆盖对方刚写的内容），不谈技术细节。
      */
     function LockedModal({ payload, busy, onForce, onCancel }) {
+      const vp = useViewport();
       const button = (label, onClick, primary) =>
         React.createElement(
           'button',
@@ -1885,6 +1959,8 @@ const ZH = {
           style: {
             position: 'fixed',
             inset: 0,
+            padding: vp.narrow === true ? 8 : 16,
+            overflowY: 'auto',
             zIndex: 9998,
             display: 'flex',
             alignItems: 'center',
@@ -1896,13 +1972,16 @@ const ZH = {
           'div',
           {
             style: {
-              width: 440,
-              maxWidth: '92vw',
-              padding: 18,
+              width: '100%',
+              maxWidth: '440px',
+              padding: vp.narrow === true ? 12 : 18,
               background: COLORS.elevated,
               border: `1px solid ${COLORS.border}`,
               borderRadius: COLORS.radius,
               boxShadow: '0 24px 60px rgba(0,0,0,0.24)',
+              maxHeight: vp.narrow === true ? 'calc(100vh - 16px)' : 'calc(100vh - 48px)',
+              overflowY: 'auto',
+              boxSizing: 'border-box',
               display: 'flex',
               flexDirection: 'column',
               gap: 10,
@@ -1922,7 +2001,7 @@ const ZH = {
           ),
           React.createElement(
             'div',
-            { style: { display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 } },
+            { style: { display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4, flexWrap: 'wrap' } },
             button(L.cancel, onCancel, false),
             button(L.lockedForce, onForce, true),
           ),
@@ -1936,6 +2015,7 @@ const ZH = {
      * 丢掉校验不过的条目先打开。两条路都得用户点，插件不替他决定丢数据。
      */
     function BrokenModal({ payload, busy, onRepair, onCancel }) {
+      const vp = useViewport();
       const [copied, setCopied] = useState(false);
       const prompt = typeof payload?.prompt === 'string' && payload.prompt !== '' ? payload.prompt : '';
       const button = (label, onClick, primary) =>
@@ -1976,6 +2056,8 @@ const ZH = {
           style: {
             position: 'fixed',
             inset: 0,
+            padding: vp.narrow === true ? 8 : 16,
+            overflowY: 'auto',
             zIndex: 9998,
             display: 'flex',
             alignItems: 'center',
@@ -1987,15 +2069,18 @@ const ZH = {
           'div',
           {
             style: {
-              width: 560,
-              maxWidth: '94vw',
+              width: '100%',
+              maxWidth: '560px',
               maxHeight: '88vh',
               overflow: 'auto',
-              padding: 18,
+              padding: vp.narrow === true ? 12 : 18,
               background: COLORS.elevated,
               border: `1px solid ${COLORS.border}`,
               borderRadius: COLORS.radius,
               boxShadow: '0 24px 60px rgba(0,0,0,0.24)',
+              maxHeight: vp.narrow === true ? 'calc(100vh - 16px)' : 'calc(100vh - 48px)',
+              overflowY: 'auto',
+              boxSizing: 'border-box',
               display: 'flex',
               flexDirection: 'column',
               gap: 10,
@@ -2041,7 +2126,7 @@ const ZH = {
             }),
           React.createElement(
             'div',
-            { style: { display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' } },
+            { style: { display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap' } },
             copied === true
               ? React.createElement('span', { style: { fontSize: 11.5, color: COLORS.secondary } }, L.brokenCopied)
               : null,
@@ -2054,6 +2139,7 @@ const ZH = {
     }
 
     function StaleModal({ payload, busy, onOverwrite, onSaveAs, onCancel }) {
+      const vp = useViewport();
       // 覆盖磁盘上那份之前要不要先备份，默认备份。
       const [keepBackup, setKeepBackup] = React.useState(true);
       const since = payload?.stale?.since;
@@ -2086,6 +2172,8 @@ const ZH = {
           style: {
             position: 'fixed',
             inset: 0,
+            padding: vp.narrow === true ? 8 : 16,
+            overflowY: 'auto',
             zIndex: 9998,
             display: 'flex',
             alignItems: 'center',
@@ -2100,13 +2188,16 @@ const ZH = {
           'div',
           {
             style: {
-              width: 520,
-              maxWidth: '92vw',
-              padding: 18,
+              width: '100%',
+              maxWidth: '520px',
+              padding: vp.narrow === true ? 12 : 18,
               background: COLORS.elevated,
               border: `1px solid ${COLORS.border}`,
               borderRadius: COLORS.radius,
               boxShadow: '0 24px 60px rgba(0,0,0,0.24)',
+              maxHeight: vp.narrow === true ? 'calc(100vh - 16px)' : 'calc(100vh - 48px)',
+              overflowY: 'auto',
+              boxSizing: 'border-box',
               display: 'flex',
               flexDirection: 'column',
               gap: 10,
@@ -2168,6 +2259,7 @@ const ZH = {
     /* ── 本机没有这个会话：问要打开到哪个工作区 ── */
 
     function WorkspaceModal({ payload, busy, onPick, onBrowse, onCreate, onReplace, onCancel }) {
+      const vp = useViewport();
       const list = Array.isArray(payload?.workspaces) ? payload.workspaces : [];
       // 同一个弹窗服务两种情形：本机没有这个会话（need-workspace）、原工作区在本机
       // 不可用（bad-workspace）。后者要先把「哪个路径、什么毛病」说清，再让用户挑。
@@ -2214,6 +2306,8 @@ const ZH = {
           style: {
             position: 'fixed',
             inset: 0,
+            padding: vp.narrow === true ? 8 : 16,
+            overflowY: 'auto',
             zIndex: 9998,
             display: 'flex',
             alignItems: 'center',
@@ -2228,15 +2322,18 @@ const ZH = {
           'div',
           {
             style: {
-              width: 460,
-              maxWidth: '92vw',
+              width: '100%',
+              maxWidth: '460px',
               maxHeight: '80vh',
               overflow: 'auto',
-              padding: 18,
+              padding: vp.narrow === true ? 12 : 18,
               background: COLORS.elevated,
               border: `1px solid ${COLORS.border}`,
               borderRadius: COLORS.radius,
               boxShadow: '0 24px 60px rgba(0,0,0,0.24)',
+              maxHeight: vp.narrow === true ? 'calc(100vh - 16px)' : 'calc(100vh - 48px)',
+              overflowY: 'auto',
+              boxSizing: 'border-box',
               display: 'flex',
               flexDirection: 'column',
               gap: 10,
@@ -2339,7 +2436,7 @@ const ZH = {
           ),
           React.createElement(
             'div',
-            { style: { display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 2 } },
+            { style: { display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 2, flexWrap: 'wrap' } },
             React.createElement(
               'button',
               {
@@ -2439,6 +2536,7 @@ const ZH = {
      */
     function HeroOpenButton() {
       const flow = useOpenFlow();
+      const vp = useViewport();
       const [hover, setHover] = useState(false);
       return React.createElement(
         React.Fragment,
@@ -2461,7 +2559,9 @@ const ZH = {
               alignItems: 'center',
               gap: 6,
               height: 28,
-              padding: '0 10px',
+              padding: vp.narrow === true ? 0 : '0 10px',
+              width: vp.narrow === true ? 28 : 'auto',
+              justifyContent: 'center',
               fontFamily: 'inherit',
               fontSize: 12.5,
               lineHeight: 1,
@@ -2475,7 +2575,8 @@ const ZH = {
             },
           },
           flow.busy ? React.createElement(Spinner, null) : React.createElement(FolderIcon, { size: 13 }),
-          React.createElement('span', null, flow.busy ? L.opening : L.openButton),
+          // 窄屏只留图标：这一行还要放工作区选择器、预设选择器，字挤不下。
+          vp.narrow === true ? null : React.createElement('span', null, flow.busy ? L.opening : L.openButton),
         ),
         React.createElement(OpenPanels, { key: 'panels', flow }),
       );
