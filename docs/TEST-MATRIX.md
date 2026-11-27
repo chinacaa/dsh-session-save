@@ -2,7 +2,7 @@
 
 本文从代码反推功能面（`index.js` 四条路由 + `client.js` 五个插槽项），逐条列出可观测行为、期望结果，以及由哪套测试覆盖。测试分两层：
 
-- **二十四套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共 735 条用例（`grep -c '✅'` 逐行相加的实测值）。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
+- **二十五套自动化回归**（`test/*.mjs`）：`node test/<name>.mjs` 单独可跑，共 801 条用例（`grep -c '✅'` 逐行相加的实测值）。`smoke.mjs` 用 `throw` 断言、只在末尾打一行汇总，表里按 1 计（实际 12 处检查）。
 - **审计验收脚本**（未随仓库分发）：针对历史漏洞的复现/防回归，判据写在下表里，可照着重写。
 
 所有套件都通过 `test/fixture.mjs` 自建临时 `DSH_HOME`（`os.tmpdir()` 下），跑完自删——**不读也不改真实 `~/.dsh`**，所以在任何机器、任何数据状态下结果一致。功能面的 F 编号是本文与 `test/*.mjs` 注释共同引用的锚点，改动功能时两边一起改。
@@ -99,7 +99,7 @@
 
 ## 二、测试矩阵（用例 → 期望 → 覆盖）
 
-### 二十四套回归
+### 二十五套回归
 
 | 套件 | 条数 | 覆盖功能 | 关键期望 |
 | --- | --- | --- | --- |
@@ -112,6 +112,7 @@
 | `test/audit-r2.mjs` | 18 | F69–F79 | B1 单个巨轮被裁且 tokensAfter 变小；B2 尾轮超大同样标 oversizeTurn；B3 86 汉字不误拒；B4 84 汉字 + copy 后缀不误拒；B5 NFD 名不误拒；B6 带端口 host 报 bad-host 且不串槽位；B7 炸弹包失败后无空目录；B8 标题不被提到文件最前；B9 无 `Atomics.wait(`；B10 状态写支持 scoped；B11 `isDsprojFile` 不整文件读；B12 改读 EOCD；B13 `[v6]` 剥端口 |
 | `test/audit-r3.mjs` | 46 | R3-1–R3-8 | 坏包/截断包走 `package-broken` 而不是裸 500；落盘名前逐段校验（尾点、ADS 冒号、CON/NUL）且被拒时零残留；`writeAtomic` 失败后 ADS 裸文件被清掉；未来时间戳的锁放行、侧车锁冲突是 409 且 `ignoreLock` 能真绕过；`trimSession` 没丢东西不再报 `trimmed:true`；`ENTRY_SINCE` 每项 ≤ `PLUGIN_VERSION` |
 | `test/audit-r4.mjs` | 36 | F80–F84 | U1 累计超上限抛 `E_LOG_TOO_LARGE` 且文案说「包太大、不是损坏」，默认额度下多帧包照常；U2 末帧缺 checksum 时帧表少一帧、`truncated` 为真、体检报告带出、覆盖率闸拒写；U3 校验失败包不落 `paths`、成功包记下 `paths` 与 `stamps`、别的会话键原样保留；U4 root 是链接 / dest 是链接 / dest 经链接逃出 root 三种情形（前两者判是、逃出判否）；U5 别工区 slug → `memoryForeign:true` + `memoryForeignSlug` + 实际落点，同工区不误报 |
+| `test/audit-r5.mjs` | 66 | F88–F93 | OV-1 copy/relocate 换新 id 后 `paths[newId]` 为空、源包首存 975 B 不变、`saveTarget` 为 `null`；OV-2 `owners` 由 `paths` 推导、撞成一组时记 `shared`；OV-3 别人的包 `staleOf` 报 `foreign-package` 且带出包内 id、自己的包与读不出归属的文件都不误拦；OV-4 覆盖前必有 `.bak`；OV-6 relocate 返回体的 `sessionId` 与 `target` 同源；NEG reuse 快速路仍记住保存目标（合法路径没被误伤） |
 | `test/audit-r1.mjs` | 17 | F62–F68 | A1 RLE 帧能被认出且覆盖到末尾；A2 三帧（中间 RLE）扫出三帧；A3 重写 header 后正文帧不丢；A4 扫描不完整时 `rewriteHeader` 抛错；A5 200 MB 炸弹包被拒；A6 失败后 sessions 里无 0 字节文件；A7–A9 ADS / 尾点 / 设备名的记忆条目被拒；A10 保存到不存在的多级目录被拒且不建目录；A11 relocate 后 bili 记 `renamed`；A12 `__proto__` 的 header.id 被拒 |
 | `test/security.mjs` | 199 | F22–F27、F38–F43、F50、F61 | V1 越界条目读包即拒；V2 恶意 `fileName` 被收敛；V3 200 MB / 1026:1 在解压前拒绝；V4 目录外 400 且不建树；V5 非 id 400；V6 不回显路径；V7 `parts` 不符 500；V8 跨源 Origin 与自报 `cross-site` 均 403（非回环地址不再一律拒绝，判据改成同源）；R1 未声明条目拒绝；R4 默认永不落原名；R6 restore 只覆盖已有、`memory=new` 才新建；V12 记住的文件被删后再存必须 409 `missing-target` 且不重建、`recreate=1` 才落地、成功后清 `missing`；V12b 自动保存发现目标消失后自己关掉并带回原路径、不重建；R7 附件条目 64 KB 起就算压缩比（3 MiB 全零 → 500 且对象库零写入）、2001 个附件只写 2000、超 128 MB 截断、正常包不受影响、已存在的不占配额；R8 六处解压单帧 64 MB 上限（900 MB 炸弹抛 `ERR_BUFFER_TOO_LARGE` 而**不是**当成坏帧静默跳过）、打包与体检的全解路径另有 512 MB 累计预算；R9 cwd 是普通文件或不存在的目录 → 400 `bad-workspace` 且不建目录、拒绝时回显包内原路径 + `reason`（`not-directory` / `missing`）+ 本机可用工作区，`ws` 与 `ws\` 落到两个记忆目录且不覆盖原 `MEMORY.md`；R10 打开失败只回通用文案、会话日志用临时文件 + `rename` 原子落盘、`wx` 撞名重试、部分失败时目录不残留 |
 | `test/remote.mjs` | 31 | F85 | 非回环 Host + 同源 Origin 放行（200 / zip）；跨源 Origin 403；非回环无 Origin 且 `cross-site` 403、`same-origin` 放行；`Origin` 与 `Sec-Fetch-Site` 都缺的下载按同源导航放行（浏览器本就不发这两个头）；`deliver=download` 响应是 zip、带 `attachment` 与 `filename*=UTF-8''`、目录里没多出文件；`upload=1` 能打开且临时目录已清；空上传 400；客户端有 `isRemoteHost`、走 `deliver: 'download'`/`upload: '1'`、用 React 渲染的 file input、远程不注册 `session-autosave`、后续步骤重发内存里那份字节不再弹文件框、源码无 `document.` |
@@ -161,11 +162,17 @@
 | F82 | 状态只在成功路径提交 | `commitSource(result, id, source)` 在返回体成型后调用，`writeState(..., { scoped: [id] })` 只覆盖本次键；`handleOpen` 不再用打开前的快照整表写回（那会抹掉导入刚记下的 `stamps`）；`restoreBili` 回读校验失败时删掉刚写的那份（`removed`），让「没写」与磁盘一致 |
 | F83 | `isInside` 解析符号链接 | 两端都走 `realTarget()`（从最深的已存在祖先 realpath 再拼回剩余段）后 `path.relative` 判前缀；root 自己是 junction、dest 是 junction 但仍在 root 内都判是，dest 经 junction 逃出 root 判否 |
 | F84 | 跨工区记忆如实提示 | 包内 slug（`memory/workspaces/<slug>/…` 第一段）与本机 `memoryDirFor(cwd)` 解析出的 slug 不同时，返回体带 `memoryForeign:true` + `memoryForeignSlug`（落点仍由 `memoryDir` 给出）；合并记忆弹窗显示 `memoryForeignNote`（中英各一份），同工区不误报 |
+| `test/audit-r5.mjs` | 66 | F88–F93 | OV-1 copy/relocate 换新 id 后 `paths[newId]` 为空、源包首存 975 B 不变、`saveTarget` 为 `null`；OV-2 `owners` 由 `paths` 推导、撞成一组时记 `shared`；OV-3 别人的包 `staleOf` 报 `foreign-package` 且带出包内 id、自己的包与读不出归属的文件都不误拦；OV-4 覆盖前必有 `.bak`；OV-6 relocate 返回体的 `sessionId` 与 `target` 同源；NEG reuse 快速路仍记住保存目标（合法路径没被误伤） |
 
 | F85 | 非回环地址的远程访问 | Host 不是 `127.0.0.1`/`localhost`/`::1` 时（内网 IP、域名、反代），`requestGate` 的判据从「必须是回环」换成「必须同源」：有 Origin 要求 `parsed.host.toLowerCase() === host`，没有 Origin 只放行浏览器自己的同源导航（`sec-fetch-site` 为 `same-origin` / `none`），`cross-site` 一律拒。三条路由因此在内网可用：①`/api/session.save?deliver=download` 只 `buildPackage` 后直接回 zip，不落盘、不判锁、不写 `stamps`、不留备份，响应带 `content-disposition: attachment` 与 RFC 5987 的 `filename*`（中文标题不乱码）；②`/api/session.open?upload=1` 把 POST 来的字节落成 `os.tmpdir()` 下的临时 `.dsproj`，再走同一套导入流程（校验、体检、冲突判定一条不绕），`finally` 删临时目录，空体 400、超 `MAX_TOTAL_BYTES` 413 `too-large`；③客户端 `isRemoteHost()` 为真时不注册 `session-autosave` 槽位（那个开关写的是服务端机器上的文件，用户既看不到也带不走），保存走 `window.open` 下载，打开用 React 渲染的隐藏 file input + `ref.click()` 上传——组件里仍然不许出现 `document.` |
 | F86 | 打开之后取消归档 | DSH 的归档集合（`workspaceRegistry.archivedSessionIds`）是 `agent/pre-step` gate 读的那一份：会话在里头时文件在、工作区也认，但唤醒会被挡下——用户看到的就是「点了打开没反应」。所以 `importPackage` 成功后调 `unarchiveInDsh(ctx, sessionId)` 把它摘出来，结果放进返回体 `archive`（`{unarchived}` / `{skipped:'no-service'}` / `{error}`）。三条边界：①不用 `inject: ['workspaceRegistry']`——那是必需依赖，宿主没装 workspace 插件时整条插件都起不来，少一个服务只该少一件顺手事；②`unarchiveSession` 本身幂等，没归档就什么都不写，所以不必先查再调，但报告里要把 `unarchived` 说准（没归档时是 `false`）；③取服务或写状态失败只回一个字段，导入本身照常成功——包已经落盘了，归档这件事用户还能手动补。界面在 `unarchived=true` 时于 toast 末尾补一句「已从归档里恢复」 |
-
-合计 **735 条**。
+| F88 | 换了身份的导入不继承源包路径 | `commitSource(result, id, sourcePath, originalId)` 只有「落盘 id 与包里的会话 id 相同」且 `conflictResolved` 不属于 {copy, relocate} 时才 `rememberSource`，否则 `forgetSource`（清 `paths`/`stamps`/`stale`/`missing`）；返回体同时给 `sourcePath`（从哪来）与 `saveTarget`（以后存到哪，不继承时为 `null`）。旧行为：copy 换了新 id 仍把用户打开的 `.dsproj` 记成副本的保存目标，副本首次保存静默覆盖原件且不留备份——2026-11-27 那个包被四个会话轮流覆盖就是这么来的 |
+| F89 | 反向索引 owners / shared | `state.owners` 不单独维护，由 `ownerIndex(paths, stamps)` 从 `paths` 推导（路径键 = `path.resolve` 且在 win32 下折小写；同键多 id 取 `stamps.at` 最新的当 holder，其余记进 `state.shared`），`writeState` 落盘前重算一次。导入与保存各有一道 `409 status:'shared-target'`，返回 `holder:{id,title}` + `shared` + `canForce`；导入侧把「holder 就是包里那个会话」排除掉（那个包本来就是它导出的）。`state.shared` 只提示，不改别人的 `paths` |
+| F90 | 保存前的占用闸 | `handleSave` 在锁之前先查 `state.owners[normalizePathKey(target)]`：占着的是别的会话就 `409 shared-target`（指名 holder 与标题），`force=1` 才放行。force 放行时 `overwrittenElsewhere` 也把 `holderForeign` 算进去，照样先留 `.bak-<ts>`——force 不是「不要备份」 |
+| F91 | 包内 header.id 的归属判据 | `staleOf` 先比所有权再比指纹：`packageSessionIdOf(target)` 读目标包第 0 帧 `header.id`，与本会话不同就返回 `{reason:'foreign-package', headerId}`，非 force 一律 409，界面文案指向「包里记的是另一个会话」。读不出来（不是包、半截文件、读权限不足）返回 `undefined` 不拦——判不了就不误伤。之前只看 sha256 指纹：副本导入时刚把指纹记成原件，于是首存必然「一致」而被放过 |
+| F92 | copy / relocate 落盘前留备份 | `backupWanted`（默认 true，`backup=0` 关）同时管 overwrite 与换目录落点：落盘前 `fs.existsSync(target)` 就 `copyFileSync(target, `${target}.bak-${Date.now()}`)`，备份失败不阻断写入。旧代码只有 overwrite 那一支自己备份，同一份文件从两条路进来一次有备份一次没有 |
+| F93 | relocate 后不再落进 reuse 分支 | `importPackage` 的 `reuse` / `overwrite` 从独立 `if` 改成互斥 `else if`：relocate 已经换了新 id，「同 id」那两支的判据不再成立。旧代码 relocate 之后继续落进 `if (mode === 'reuse')`，返回「`sessionId` 是新的、`target` 是旧会话目录」的错位组合，客户端拿这个 id 去保存就写进了另一个会话的文件 |
+合计 **801 条**（二十五套）。
 
 ### 审计验收脚本（未随仓库分发）
 
@@ -205,8 +212,8 @@ node test/open.mjs
 node test/conflict.mjs
 node test/security.mjs
 node test/pathkey.mjs
-# 或一把梭：二十四套 735 条全绿
-for f in pathkey client dialog smoke open conflict security attach repair open-repair version context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait dsh-list remote; do node test/$f.mjs || exit 1; done
+# 或一把梭：二十五套 801 条全绿
+for f in pathkey client dialog smoke open conflict security attach repair open-repair version context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 audit-r5 ui-openwait dsh-list remote; do node test/$f.mjs || exit 1; done
 ```
 
 `pathkey.mjs` 只依赖 `index.js` 里的两个纯函数，不建夹具、不写盘，跑起来几十毫秒——**每次升级 DSH 后第一件事就是跑它**，比读官方源码快。

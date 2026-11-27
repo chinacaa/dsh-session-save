@@ -430,7 +430,7 @@ node test/pathkey.mjs             # 路径键：与 DSH 官方的目录名算法
 
 改客户端后想验英文词表：`DSH_TEST_LOCALE=en-US node test/client.mjs`。
 
-二十四套测试大多跑在自己的临时 `DSH_HOME`（`test/fixture.mjs` 在 `os.tmpdir()` 下建的夹具目录）里，跑完自动删掉，**不碰真实的 `~/.dsh`**，也不要求本机"恰好有会话"。完整清单与逐套条数见 [`AGENTS.md`](AGENTS.md)。
+二十五套测试大多跑在自己的临时 `DSH_HOME`（`test/fixture.mjs` 在 `os.tmpdir()` 下建的夹具目录）里，跑完自动删掉，**不碰真实的 `~/.dsh`**，也不要求本机"恰好有会话"。完整清单与逐套条数见 [`AGENTS.md`](AGENTS.md)。
 
 几套例外：`test/client.mjs` 是纯内存接线测试，不建夹具目录也不读写磁盘；`test/pathkey.mjs` 只调纯函数，同样不落盘；`test/locales.mjs` 只读 `locales/`。`test/dialog.mjs` 里「选择器判据 / AppleScript 与 zenity 参数拼装 / 脚本 BOM」这几组是纯静态校验、跨平台可跑，只有真拉 `powershell.exe` 验中文编码的几条在非 Windows 上跳过（会打印 `⏭  跳过`，不算通过）；`test/dsh-list.mjs` 在没装 DSH 的机器上整条跳过。其余套件跨平台。
 
@@ -485,6 +485,7 @@ node test/pathkey.mjs          # 先确认基线是绿的，十二套逐个跑�
 - 切会话依赖 `uiWorkspace.openSession`；某个前端没有这个服务时（例如纯 TUI），会话仍会被导入并出现在列表里，只是不会自动跳转。
 - 跨机锁只按 15 分钟时间窗判断，不是实时心跳：另一台机器刚写完但没来得及清锁，最多挡 15 分钟。
 - 单机多实例共用一个 `DSH_HOME` 时，`storages/session-save.json` 会被后写的覆盖，但每个会话记住的路径仍各自独立。
+- 一个 `.dsproj` 同一时间只归一个会话。导入或保存时发现它已经是**另一个**会话的保存目标，会返回「这个包属于另一个会话」，让你选「另存到别处」或「仍要覆盖」；后者一定先留一份 `.bak-<ts>`。副本（`conflictResolved` 为 `copy` / `relocate`）不继承源包路径，所以从副本保存永远不会写回原件。
 - 「打开到哪个工作区」的列表来自 `storages/workspace.json`；全新机器上该文件不存在，列表为空，只能走「选其他目录…」。
 - 空会话页面的「打开」按钮只出现在还没有消息的新会话上；进入对话后要打开别的工程，用标题栏那个 📁。
 - 默认不打包工作区记忆；带了记忆的包打开后默认落副本，要用户显式点「合并记忆」/「合并并新建」才会被 DSH 读到（见上一节）。

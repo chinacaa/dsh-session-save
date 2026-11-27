@@ -77,6 +77,8 @@ interface ConnectionFetchRoute {
 | `stale` | 内容 sha256 与 `stamps` 不符（别处改过） | 弹覆盖 / 另存为 |
 | `locked` | 侧车 `.lock` 或包内 `LOCK.json` 判活 | 只报错，不给覆盖入口 |
 | `missing-target` | **保存前发现原路径上的文件不在了**（见 `docs/TEST-MATRIX.md` F50） | 弹三选一：就在这里新建（`?recreate=1`）/ 另存到别处 / 取消；默认不写字节 |
+| `shared-target` | 这个包已经是**另一个**会话的保存目标（`state.owners[路径]` 是别的 id，或 `state.shared[路径]` 里有两个以上会话） | 弹确认：这包属于另一个会话；给「另存到别处」与「仍要覆盖（`?force=1`）」 |
+| `foreign-package` | 目标包里的 `header.id` 不是本会话（包是别人写的） | 同上，`?force=1` 时照旧写入但一定留 `.bak-<ts>` |
 
 `missing-target` 是**插件自己发明的**，不对应任何 DSH 接口——列在这里是因为它出现在路由出参里，适配时若 DSH 改了 `connection.fetch` 的响应处理（比如对非 2xx 做统一包装），这条会先受影响。
 
@@ -299,7 +301,7 @@ fetch(`${ROUTE}?${search.toString()}`, { method: 'GET', headers: { accept: 'appl
 3. **插槽还在不在**：`cordis_inspect_query` → `client/Slots.listSubTree` 传 `conversation.session.header.utilities`，看 5 个 occupant 是否全 `active`。
 4. **事件名没变**：`cordis_inspect_query` → `host/Event.listEvents` 传 `session/event`，确认签名仍是 `(session, event)`；再确认 `event.type` 仍可能是 `step/end` / `turn/end`。
 5. **会话文件还能读**：`node test/smoke.mjs`（打包 + 回读）与 `node test/open.mjs`（40 条，导入与冲突）。十一套测试全部通过 `test/fixture.mjs` 自建临时 `DSH_HOME`，不读真实 `~/.dsh`。
-6. **跑满回归**：`for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 ui-openwait dsh-list remote; do node test/$f.mjs || exit 1; done`，应共 **735** 条 ✅（详见 `docs/TEST-MATRIX.md`）。其中 `pathkey.mjs` 是 rc.4 适配时新增的目录名派生回归。
+6. **跑满回归**：`for f in pathkey client dialog smoke open conflict security attach repair open-repair version locales context bili roundtrip backup-ui audit-r1 audit-r2 audit-r3 audit-r4 audit-r5 ui-openwait dsh-list remote; do node test/$f.mjs || exit 1; done`，应共 **801** 条 ✅（详见 `docs/TEST-MATRIX.md`）。其中 `pathkey.mjs` 是 rc.4 适配时新增的目录名派生回归。
 7. **客户端能调 Host 吗**：`node test/client.mjs` 里已断言 `inject` 含 `remote` 与 `remote.session`、且源码不含 `uiWorkspace.openPath`。「打开记忆目录」失效是**静默**的（按钮点了没反应、不报错），只能靠这条断言兜住。
 
 ---

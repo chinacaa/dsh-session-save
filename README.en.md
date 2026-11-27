@@ -382,7 +382,7 @@ node test/pathkey.mjs             # path keys: byte-for-byte check against DSH's
 
 To check the English word list after touching the client: `DSH_TEST_LOCALE=en-US node test/client.mjs`.
 
-Most of the twenty-four suites run against their own temporary `DSH_HOME` (a fixture directory under `os.tmpdir()` built by `test/fixture.mjs`) and delete it afterwards, so **your real `~/.dsh` is never touched** and no session has to "happen to exist".
+Most of the twenty-five suites run against their own temporary `DSH_HOME` (a fixture directory under `os.tmpdir()` built by `test/fixture.mjs`) and delete it afterwards, so **your real `~/.dsh` is never touched** and no session has to "happen to exist".
 
 Three exceptions: `test/client.mjs` is a pure in-memory wiring test with no fixture directory and no disk IO, and `test/pathkey.mjs` only calls two pure functions, so it writes nothing either. In `test/dialog.mjs` the selector checks, the AppleScript / zenity argument assembly and the script BOM checks are pure static verification and run anywhere, while only the few assertions that launch the real `powershell.exe` to verify CJK encoding are skipped off Windows (they print `⏭  跳过` — a skip is not a pass). The other eight are cross-platform.
 
@@ -437,6 +437,7 @@ Details in [`locales/README.md`](locales/README.md).
 - Session switching needs `uiWorkspace.openSession`; front ends without it still import the session, they just do not navigate.
 - The cross-machine lock is a 15-minute window, not a heartbeat: a just-finished foreign writer can block you for up to 15 minutes.
 - Two instances sharing one `DSH_HOME` overwrite `storages/session-save.json` last-write-wins, though each session keeps its own remembered path.
+- A `.dsproj` belongs to one session at a time. On import or save, if the file is already another session's save target you get "this file belongs to another session" and must choose "save elsewhere" or "overwrite anyway"; the latter always leaves a `.bak-<ts>` first. Copies (`conflictResolved` = `copy` / `relocate`) never inherit the source package path, so saving from a copy can not write back into the original.
 - The "which workspace" list comes from `storages/workspace.json`; a fresh machine has none, so use "choose another folder…".
 - The hero "Open" button only shows on a session with no messages yet; inside a conversation use the header 📁.
 - Memory is not packaged by default; a package that carries it still lands copies on import until the user explicitly picks Merge memory / Merge and create (see above).

@@ -135,6 +135,12 @@ const ZH = {
       confirmOverwriteHint: '该文件不是本会话记录的工程文件，覆盖将丢失其原有内容。',
       confirmOverwriteAlt: '选择其他位置另存为',
       notDsproj: '目标文件不是 .dsproj 工程包，无法覆盖',
+      sharedTarget: '这个包属于别的会话',
+      sharedTargetHint: '这个工程包现在是另一个会话的保存目标，写进去会让那个会话丢掉自己的内容。',
+      foreignPackage: '包里记的是别的会话',
+      foreignPackageHint: '这个工程包里记的是另一个会话，覆盖会让那个会话丢掉自己的内容。',
+      sharedHolder: '占用会话',
+      sharedForce: '仍要覆盖',
       missingTarget: '上次保存的文件不存在',
       missingTargetHint: '该位置原有一份工程包，当前无法读取（已被删除、移动，或所在磁盘未挂载）。继续保存将在该位置新建同名文件，原文件内容将丢失。',
       missingTargetRecreate: '在该位置新建',
@@ -555,6 +561,14 @@ const ZH = {
               setRefuse(payload);
               return;
             }
+            // 这个包已经是另一个会话（或包里记着另一个会话）的：默认停下来问一句，
+            // 「仍要覆盖」才带 force=1 再来一次。以前这里一路静默写过去，
+            // 2026-11-27 那个包就是这样被四个会话轮流覆盖的。
+            if (payload.status === 'shared-target' || payload.status === 'foreign-package') {
+              setAsk(null);
+              setRefuse(payload);
+              return;
+            }
             // 记住的位置上文件没了：不静默落盘，交给用户决定「另存」还是「就在这里新建」。
             if (payload.status === 'missing-target') {
               setAsk(null);
@@ -734,6 +748,12 @@ const ZH = {
               setRefuse(null);
               save({ ask: '1' });
             },
+            // 用户看过「会让另一个会话丢内容」之后仍然坚持：带 force=1 重发，
+            // 服务端那时才放行，并且照样先留 .bak。
+            onForce: () => {
+              setRefuse(null);
+              save({ force: '1' }, true);
+            },
             onCancel: () => {
               setRefuse(null);
               setToast({ tone: 'info', text: L.cancelled });
@@ -821,6 +841,9 @@ const ZH = {
       const [conflict, setConflict] = useState(null); // 冲突详情
       const [workspace, setWorkspace] = useState(null); // 本机没有 → 问落点
       const [broken, setBroken] = useState(null); // 包结构校验没过 → 给可复制的说明
+      // 这个包已经属于另一个会话：导入前必须让用户点一次头，否则新开出来的会话
+      // 会以为「保存」写的是自己的包，实际写的是别人的。
+      const [refuse, setRefuse] = useState(null);
       const [notice, setNotice] = useState(null); // 记忆只落了副本 → 留个面板让人去合并
       const [merge, setMerge] = useState(null); // 合并确认弹窗的载荷
       const [toast, setToast] = useState(null); // { tone, text }
@@ -929,6 +952,7 @@ const ZH = {
             setAsk(null);
             setConflict(null);
             setWorkspace(null);
+            setRefuse(null);
             await jump(payload);
             return;
           }
@@ -950,6 +974,16 @@ const ZH = {
             setAsk(null);
             setConflict(null);
             setWorkspace(payload);
+            return;
+          }
+          if (payload.status === 'shared-target') {
+            // 包里那个会话已经在本机有一份别人的保存目标（或被两个以上会话记着）：
+            // 停下来把「谁占着」说清，「仍要覆盖」才带 force=1 再来。
+            setAsk(null);
+            setConflict(null);
+            setWorkspace(null);
+            setBroken(null);
+            setRefuse(payload);
             return;
           }
           if (payload.status === 'package-broken') {
@@ -1090,6 +1124,7 @@ const ZH = {
         broken,
         notice,
         merge,
+        refuse,
         toast,
         open,
         fileRef,
@@ -1100,6 +1135,7 @@ const ZH = {
         setBroken,
         setNotice,
         setMerge,
+        setRefuse,
         setToast,
         mounted,
       };
@@ -1192,6 +1228,23 @@ const ZH = {
             onRepair: () => flow.open({ path: flow.broken.sourcePath, repairPackage: '1' }),
             onCancel: () => {
               flow.setBroken(null);
+              flow.setToast({ tone: 'info', text: L.cancelled });
+            },
+          }),
+        );
+      }
+      if (flow.refuse !== null && flow.refuse !== undefined) {
+        children.push(
+          React.createElement(RefuseModal, {
+            key: 'refuse',
+            payload: flow.refuse,
+            busy: flow.busy,
+            // 导入这一侧没有「另存为」的语义：包已经在那儿了，能选的只有
+            // 「先不动」或者「我就要覆盖」。所以这里不传 onSaveAs。
+            onForce: () =>
+              flow.open({ path: flow.refuse.sourcePath, force: '1' }),
+            onCancel: () => {
+              flow.setRefuse(null);
               flow.setToast({ tone: 'info', text: L.cancelled });
             },
           }),
@@ -1690,8 +1743,29 @@ const ZH = {
       );
     }
 
-    function RefuseModal({ payload, busy, onSaveAs, onCancel }) {
+    function RefuseModal({ payload, busy, onSaveAs, onForce, onCancel }) {
       const notDsproj = payload?.status === 'not-dsproj';
+      // 「这个包不属于本会话」有两种：它在磁盘上被另一个会话占着（shared-target），
+      // 或者包里的 header.id 根本不是本会话（foreign-package）。两种都可能让用户
+      // 丢掉别人的会话，所以文案要指名道姓地说清会丢谁的内容，并且保留一条
+      // 明确的「仍要覆盖」出路——只给「另存为」和「取消」，用户就只剩绕路可走。
+      const shared = payload?.status === 'shared-target';
+      const foreign = payload?.status === 'foreign-package';
+      const canForce = (shared === true || foreign === true) && payload?.canForce === true && typeof onForce === 'function';
+      const title = notDsproj
+        ? L.notDsproj
+        : shared === true
+          ? L.sharedTarget
+          : foreign === true
+            ? L.foreignPackage
+            : L.confirmOverwrite;
+      const hint = notDsproj
+        ? payload?.message ?? ''
+        : shared === true
+          ? L.sharedTargetHint
+          : foreign === true
+            ? L.foreignPackageHint
+            : L.confirmOverwriteHint;
       const button = (label, onClick, primary) =>
         React.createElement(
           'button',
@@ -1750,21 +1824,30 @@ const ZH = {
           React.createElement(
             'div',
             { style: { fontSize: 13.5, fontWeight: 600 } },
-            notDsproj ? L.notDsproj : L.confirmOverwrite,
+            title,
           ),
           React.createElement(
             'div',
             { style: { fontSize: 12, color: COLORS.secondary, lineHeight: 1.5 } },
-            notDsproj ? payload?.message ?? '' : L.confirmOverwriteHint,
+            hint,
           ),
           payload?.path
             ? React.createElement(MiniStat, { key: 'path', label: L.conflictCwd, value: String(payload.path) })
+            : null,
+          // 谁占着这个包：不给 id 或标题，用户没法判断这一覆盖会伤到哪个会话。
+          (shared === true || foreign === true) && (payload?.holder?.title || payload?.holder?.id)
+            ? React.createElement(MiniStat, {
+                key: 'holder',
+                label: L.sharedHolder,
+                value: String(payload.holder.title || payload.holder.id),
+              })
             : null,
           React.createElement(
             'div',
             { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 } },
             button(L.cancel, onCancel, false),
-            button(L.confirmOverwriteAlt, onSaveAs, true),
+            typeof onSaveAs === 'function' ? button(L.confirmOverwriteAlt, onSaveAs, canForce !== true) : null,
+            canForce === true ? button(L.sharedForce, onForce, true) : null,
           ),
         ),
       );

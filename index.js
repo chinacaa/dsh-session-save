@@ -1428,17 +1428,68 @@ function safeJoin(root, ...parts) {
 
 /* ───────────────────────── 记住的路径 ───────────────────────── */
 
+/**
+ * 反向索引用的路径键。
+ *
+ * 为什么不能直接用 path 当键：Windows 的盘符与目录名不区分大小写，同一个包
+ * 从 `D:\a\x.dsproj` 和 `d:\A\X.dsproj` 两个写法进来必须撞成同一个键，
+ * 否则「这个包归谁」的查询会漏掉一半；同一路径上的占用检查也就形同虚设。
+ */
+export function normalizePathKey(target) {
+  const abs = path.resolve(String(target));
+  return process.platform === 'win32' ? abs.toLowerCase() : abs;
+}
+
+/**
+ * 从 `paths` 推导反向索引：path → 会话 id。
+ *
+ * 为什么推导而不是单独维护一份：`paths` 是逐会话写的（每次只动一个键），
+ * 反向索引若也逐会话写，两份真相必然漂移 —— A 把包改存到别处之后，旧键
+ * 会永远留在索引里，下一个打开同一路径的会话会被一条不存在的占用拦下来。
+ * 路径被多个 id 记住时（旧版本留下的现场）取「最近一次写过」的那个：磁盘上
+ * 活下来的就是它，判成 holder 才与事实一致；其余一并记进 shared 供界面提示。
+ */
+function ownerIndex(paths, stamps) {
+  const groups = new Map();
+  for (const [id, raw] of Object.entries(paths ?? {})) {
+    if (typeof raw !== 'string' || raw === '') continue;
+    let key;
+    try {
+      key = normalizePathKey(raw);
+    } catch {
+      continue;
+    }
+    const list = groups.get(key) ?? [];
+    list.push({ id: String(id), at: Date.parse(String(stamps?.[id]?.at ?? '')) || 0 });
+    groups.set(key, list);
+  }
+  const owners = {};
+  const shared = {};
+  for (const [key, list] of groups) {
+    list.sort((a, b) => b.at - a.at || a.id.localeCompare(b.id));
+    owners[key] = list[0].id;
+    if (list.length > 1) shared[key] = list.map((item) => item.id);
+  }
+  return { owners, shared };
+}
+
 function readState() {
-  const empty = { paths: {}, lastDir: undefined, autosave: {}, stamps: {}, stale: {}, missing: {} };
+  const empty = { paths: {}, lastDir: undefined, autosave: {}, stamps: {}, stale: {}, missing: {}, owners: {}, shared: {} };
   try {
     const raw = JSON.parse(fs.readFileSync(stateFile(), 'utf8'));
+    const paths = raw?.paths && typeof raw.paths === 'object' ? raw.paths : {};
+    const stamps = raw?.stamps && typeof raw.stamps === 'object' ? raw.stamps : {};
+    const index = ownerIndex(paths, stamps);
     return {
-      paths: raw?.paths && typeof raw.paths === 'object' ? raw.paths : {},
+      paths,
       lastDir: typeof raw?.lastDir === 'string' ? raw.lastDir : undefined,
       autosave: raw?.autosave && typeof raw.autosave === 'object' ? raw.autosave : {},
-      stamps: raw?.stamps && typeof raw.stamps === 'object' ? raw.stamps : {},
+      stamps,
       stale: raw?.stale && typeof raw.stale === 'object' ? raw.stale : {},
       missing: raw?.missing && typeof raw.missing === 'object' ? raw.missing : {},
+      // 盘上的 owners 只当快照看：它必须等于 paths 的函数，所以以推导值为准。
+      owners: index.owners,
+      shared: index.shared,
     };
   } catch {
     return empty;
@@ -1479,10 +1530,41 @@ export function fileStampOf(target) {
 }
 
 /**
- * 这份文件是不是被「别人」改过（另一台机器、同步盘、或手动替换）。
- * 只跟本机上一次写盘记下的 sha256 比；没记录过就当作没冲突。
+ * 目标包自己记的会话 id（`header.id`，不存在/读不出返回 undefined）。
+ *
+ * 为什么要读这一层：CAS 指纹只回答「它跟我上次写的一不一样」，回答不了
+ * 「它本来就该由我来写」。副本换了 id 之后指纹恰好对得上（导入时刚记的），
+ * 于是旧版本一路绿灯把别人的包写掉。判所有权要看包自己说的话。
+ * 读不出来（不是包、文件半截、权限不足）就返回 undefined —— 判不了不拦。
  */
-export function staleOf(state, sessionId, target) {
+function packageSessionIdOf(file) {
+  try {
+    const entries = zipRead(fs.readFileSync(file));
+    for (const [name, data] of entries) {
+      if (/^session\/.+\.jsonl(\.zstd)?$/.test(name) !== true) continue;
+      const header = readHeader(data);
+      return typeof header?.id === 'string' && header.id !== '' ? header.id : undefined;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 这份文件是不是被「别人」改过（另一台机器、同步盘、或手动替换）。
+ * 先判所有权（包里的 header.id 是不是本会话），再跟本机上一次写盘记下的
+ * sha256 比；没记录过就当作没冲突。
+ */
+export function staleOf(state, sessionId, target, options = {}) {
+  // 所有权判据排在指纹之前：副本换了 id 之后指纹必然「一致」，先比指纹
+  // 就等于把最危险的那种情况直接放过去了。
+  if (options.ownership !== false) {
+    const headerId = packageSessionIdOf(target);
+    if (headerId !== undefined && String(headerId) !== String(sessionId)) {
+      return { reason: 'foreign-package', headerId };
+    }
+  }
   const stamp = state?.stamps?.[sessionId];
   if (stamp === undefined || typeof stamp?.sha256 !== 'string') return undefined;
   if (typeof stamp.path !== 'string') return undefined;
@@ -1561,6 +1643,10 @@ function writeState(state, options = {}) {
         }
       }
     }
+    // 落盘前重算反向索引：它必须是 paths 的函数，否则「改存 / 忘掉路径」都会
+    // 在盘上留下一条指向早已不归任何人的幽灵占用记录。
+    const index = ownerIndex(out.paths, out.stamps);
+    out = { ...out, owners: index.owners, shared: index.shared };
     writeAtomic(stateFile(), Buffer.from(JSON.stringify(out, null, 2), 'utf8'));
   } catch {
     /* 状态写不进去不影响本次保存 */
@@ -1591,13 +1677,58 @@ function rememberSource(state, id, sourcePath) {
  * 超限重抛、返回体里新加的字段解析）都会留下「说没打开、状态里却有」的记录。
  * 只覆盖本次会话的键 —— 读-改-写之间可能隔着对话框，整表覆盖会抹掉别的会话。
  */
-function commitSource(result, id, sourcePath) {
+/**
+ * 把一份会话从「记住的保存目标」里摘干净。
+ *
+ * 用在换了新 id 的导入上（copy / relocate）：副本落的是新目录里的新文件，
+ * 用户打开的那个 .dsproj 属于原来那份会话。旧版本在这里什么都不做，等于
+ * 把「用户打开的文件」直接写成副本的保存目标 —— 副本第一次保存就静默覆盖
+ * 原件，而且因为看指纹（staleOf）时「我上次看到的」正是这份原件，连备份
+ * 分支都不会触发。2026-11-27 那个包被四个会话轮流覆盖就是这么来的。
+ */
+function forgetSource(state, id) {
+  delete state.paths[id];
+  delete state.stamps[id];
+  if (state.stale !== undefined && typeof state.stale === 'object') delete state.stale[id];
+  if (state.missing !== undefined && typeof state.missing === 'object') delete state.missing[id];
+  return state;
+}
+
+/**
+ * 成功导入的最后一件事：记住「本机这份会话来自哪个包」。
+ *
+ * 为什么排在返回体成型之后：状态文件是用户看得见的「这个包我打开过」，返回体是
+ * 「这次到底成没成」。先落状态再拼返回体，任何一步在两者之间抛错（readStats 的
+ * 超限重抛、返回体里新加的字段解析）都会留下「说没打开、状态里却有」的记录。
+ * 只覆盖本次会话的键 —— 读-改-写之间可能隔着对话框，整表覆盖会抹掉别的会话。
+ *
+ * `originalId` 是包里那个会话 id：只有它等于落盘用的 id、且没有换过身份
+ * （copy / relocate）时，这份包才真的是本会话的写入口。返回体因此要把
+ * 「从哪来」（sourcePath）与「以后存到哪」（saveTarget）分开报，界面才不会
+ * 继续拿源包当目标。
+ */
+function commitSource(result, id, sourcePath, originalId) {
+  const resolved = String(result?.conflictResolved ?? '');
+  const inherited = originalId !== undefined
+    && String(id) === String(originalId)
+    && resolved !== 'copy'
+    && resolved !== 'relocate';
   try {
-    writeState(rememberSource(readState(), id, sourcePath), { scoped: [id] });
+    const state = readState();
+    if (inherited === true) rememberSource(state, id, sourcePath);
+    else forgetSource(state, id);
+    writeState(state, { scoped: [id] });
   } catch {
     // 状态写不进去不影响这次打开；下次保存会重新问一遍路径。
   }
-  return result;
+  if (result === null || typeof result !== 'object') return result;
+  return {
+    ...result,
+    // null 而不是 undefined：JSON 会把 undefined 的键整个丢掉，客户端拿到的返回体
+    // 就变回「只有一个 sourcePath」的老形状，正是这次要拆开的那团乱麻。
+    saveTarget: inherited === true ? sourcePath : null,
+    sourceInherited: inherited,
+  };
 }
 
 
@@ -2535,12 +2666,16 @@ function importPackage(sourcePath, options = {}) {
         sourcePath,
         packageLock,
       };
-      return commitSource(result, id, sourcePath);
+      return commitSource(result, id, sourcePath, original.id);
     }
 
     if (sameSession && !(sameCwd && mode === 'overwrite')) {
       // 同一会话，但要求落到别的工作区 → 就地再开一份，换新 id（id 必须全机唯一）
       // 「同会话同位置 + 用户要覆盖」不适用这一支：那种情况该盖掉原地那份，不是另起一份
+      // 换完 id 之后必须跳出整条 reuse/overwrite 判定：那两支都建立在「id 还等于
+      // 包里那个会话」上，relocate 已经不满足了。旧代码这里是独立 if，relocate 会
+      // 继续落进下面的 reuse 分支，返回「id 是新的、target 是旧会话目录」的错位组合，
+      // 客户端拿这个 id 去保存就写进了另一个会话的文件（OV-6）。
       conflictResolved = 'relocate';
       id = `session-${randomUUID()}`;
       renamed = true;
@@ -2571,9 +2706,7 @@ function importPackage(sourcePath, options = {}) {
         },
         sourcePath,
       };
-    }
-
-    if (mode === 'reuse') {
+    } else if (mode === 'reuse') {
       // 直接打开本机这份，也照样回填附件：用户很可能就是拿这个包来补上次没带过来的图
       const attachRestore = restoreAttachments(entries);
       const biliRestore = restoreBili(entries, id, backupWanted);
@@ -2600,27 +2733,46 @@ function importPackage(sourcePath, options = {}) {
         sourcePath,
         packageLock,
       };
-      return commitSource(result, id, sourcePath);
-    }
-
-    if (mode === 'overwrite') {
-      // 用包里的内容盖掉本机这份：同 id、同位置，旧文件留 .bak
+      return commitSource(result, id, sourcePath, original.id);
+    } else if (mode === 'overwrite') {
+      // 用包里的内容盖掉本机这份：同 id、同位置
       conflictResolved = 'overwrite';
       targetDir = existing.dir;
       target = existing.file;
-      try {
-        if (backupWanted === true) {
-          fs.copyFileSync(existing.file, `${existing.file}.bak-${Date.now()}`);
-        }
-      } catch {
-        /* 备份失败不阻断覆盖 */
-      }
     } else {
       // copy：换新 id，两条历史都留着
       conflictResolved = 'copy';
       id = `session-${randomUUID()}`;
       renamed = true;
     }
+  }
+
+  // 反向索引闸：这个包已经是别的会话的保存目标时，再导一份进来就等于让两个会话
+  // 盯着同一个文件写。2026-11-27 那个包被四个会话轮流覆盖，界面上一次提示都没有。
+  // 位置在这里是因为 id 已定型（copy / relocate 换过了），而 reuse 那两支都已返回。
+  //
+  // 「别的会话」要把包里那个会话本身排除掉：这个包本来就是它导出来的，用户再打开
+  // 一次（哪怕另开一份）是正常用法，而且副本不继承路径，覆盖风险是零。
+  const sourceKey = normalizePathKey(sourcePath);
+  const ownerState = readState();
+  const holderId = ownerState.owners?.[sourceKey];
+  const holderForeign = holderId !== undefined
+    && String(holderId) !== String(id)
+    && String(holderId) !== String(original.id);
+  // 同一路径被两个以上会话记着（旧版本留下的现场）：连「归谁」都说不清，
+  // 这时候再导一份进来，只会让本来已经分不清的东西更难收回。
+  const sharedGroup = Array.isArray(ownerState.shared?.[sourceKey]) && ownerState.shared[sourceKey].length > 1;
+  if ((holderForeign === true || sharedGroup === true) && options.force !== true) {
+    return {
+      status: 'shared-target',
+      conflict: false,
+      sessionId: id,
+      holder: { id: String(holderId), title: holderTitleOf(ownerState, holderId) },
+      shared: ownerState.shared?.[sourceKey],
+      sourcePath,
+      canForce: true,
+      message: '这个包已经是另一个会话的保存目标，写进去会让那个会话失去它的内容。',
+    };
   }
 
   // 包里的 fileName 也是外部输入：先按两种分隔符切掉任何目录部分，再要求它长得像
@@ -2654,6 +2806,17 @@ function importPackage(sourcePath, options = {}) {
   // 记下「这个目录原来在不在」：失败收尾时只删自己建的那个，restore 已存在的目录不能动。
   const dirExisted = fs.existsSync(targetDir);
   fs.mkdirSync(targetDir, { recursive: true });
+  // 落盘前先留一份原件，覆盖（overwrite / 强制接管别人的包）与换目录落点共用同一个
+  // backupWanted 开关：旧代码只有 overwrite 这一支自己备份，copy / relocate 走的是
+  // 另一条写盘路径，同一份文件从两条路进来过一次「有备份」一次「没有」，用户没法预期。
+  // 换目录落点正常是对着空位置（没有原件可备份），有残留时这里也不会静默丢掉它。
+  if (backupWanted === true && fs.existsSync(target)) {
+    try {
+      fs.copyFileSync(target, `${target}.bak-${Date.now()}`);
+    } catch {
+      /* 备份失败不阻断写入：别让一次备份失败把整个导入判死 */
+    }
+  }
   // 只有「覆盖本机这份」这条明确选择的路径可以写已存在的文件。
   // 判据用 `wx` 一次成型，不用 existsSync：查到「不存在」到真正写下去之间有一段空档，
   // 而这条判据的本意就是「不许覆盖别人的东西」——判据自己留着 TOCTOU 就白写了。
@@ -2928,7 +3091,7 @@ function importPackage(sourcePath, options = {}) {
     cloud: cloudMarkOf(sourcePath),
     packageLock,
     packageLockBlocked: lockBlocks(packageLock),
-  }, id, sourcePath);
+  }, id, sourcePath, original.id);
 }
 
 /* ───────────────────────── 自动保存 ───────────────────────── */
@@ -3169,6 +3332,35 @@ function saveRootsOf(state) {
   return [...roots];
 }
 
+/**
+ * 占着某个落点的那个会话叫什么，给确认弹窗用。
+ *
+ * 只报标题不报绝对路径：用户要判的是「这是不是我那个会话」，不是文件在哪；
+ * 路径已经在响应体的 path 里，界面自己会显示。
+ * 会话文件读不到（被删、还在打包）就回落到包文件名，实在没有就空串 ——
+ * 这里是提示文案的一部分，不能因为它读不出来就把 409 变成 500。
+ */
+function holderTitleOf(state, sessionId) {
+  const file = findSessionFile(sessionId);
+  if (file !== undefined) {
+    try {
+      const title = readTitle(fs.readFileSync(file));
+      if (typeof title === 'string' && title !== '') return title;
+    } catch {
+      /* 落到下面的兜底 */
+    }
+  }
+  const remembered = state?.paths?.[sessionId];
+  if (typeof remembered === 'string' && remembered !== '') {
+    try {
+      return path.basename(remembered);
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
 /** 这个文件是不是本插件写出的工程包（覆盖已有文件前必须成立）。 */
 function isDsprojFile(file) {
   // 只看文件尾部：EOCD → 中央目录 → 条目名。以前把 fs.readFileSync 整个文件读进来再判大小，
@@ -3377,6 +3569,51 @@ async function handleSave(request) {
     );
   }
 
+  // 反向索引闸：这个文件已经是别的会话的保存目标时，直接写进去就是两个会话共用一个包。
+  // 旧版本没有这道闸：2026-11-27 那个包被四个会话轮流覆盖，界面上一次提示都没有，
+  // 用户只能看到「文件日期怎么变了」。放在锁之前——「这个文件归谁」比「谁正在写」更根本。
+  const targetKey = normalizePathKey(target);
+  const holderId = state.owners?.[targetKey];
+  const holderForeign = holderId !== undefined && String(holderId) !== String(sessionId);
+  if (holderForeign === true && !force) {
+    return jsonResponse(
+      {
+        status: 'shared-target',
+        path: target,
+        name: path.basename(target),
+        holder: { id: String(holderId), title: holderTitleOf(state, holderId) },
+        shared: state.shared?.[targetKey],
+        canForce: true,
+        message: '这个包已经是另一个会话的保存目标，写进去会让那个会话失去它的内容。',
+      },
+      409,
+    );
+  }
+
+  // 磁盘内容是不是已经不是我们上次写的那份。这个判断有两个用处，别只留一个：
+  //   ① 没带 force → 拦下来问（409）；
+  //   ② 带了 force（界面上「覆盖磁盘文件」）→ 覆盖前要不要留 .bak。
+  // 早先只在 ① 里算它，② 那处只看 overwritingForeign，结果「勾了备份、点了覆盖磁盘文件」
+  // 一个 .bak 都不留——勾选框对这条路径等于摆设，别处同步过来的内容被直接抹掉。
+  // 放在「已存在文件」判定之前：所有权是更具体的问题，「那儿有个文件」说的只是占位。
+  const stale = staleOf(state, sessionId, target);
+
+  // 目标包自己记的是另一个会话：这不是「格式变了」也不是「别的机器改过」，
+  // 而是「你正在往别人的会话文件里写」，force 之外一律拦下来。
+  if (!force && stale?.reason === 'foreign-package') {
+    return jsonResponse(
+      {
+        status: 'foreign-package',
+        path: target,
+        name: path.basename(target),
+        headerId: stale.headerId,
+        canForce: true,
+        message: '这个包里记的是另一个会话，覆盖会让那个会话失去它的内容。',
+      },
+      409,
+    );
+  }
+
   // 锁先判：文件里带着别人正在写的锁时，比「要不要覆盖」更该先说。
   const existingLock = fs.existsSync(target) ? lockOfFile(target) : undefined;
   if (!force && !ignoreLock) {
@@ -3420,12 +3657,8 @@ async function handleSave(request) {
     }
   }
 
-  // 磁盘内容是不是已经不是我们上次写的那份。这个判断有两个用处，别只留一个：
-  //   ① 没带 force → 拦下来问（409）；
-  //   ② 带了 force（界面上「覆盖磁盘文件」）→ 覆盖前要不要留 .bak。
-  // 早先只在 ① 里算它，② 那处只看 overwritingForeign，结果「勾了备份、点了覆盖磁盘文件」
-  // 一个 .bak 都不留——勾选框对这条路径等于摆设，别处同步过来的内容被直接抹掉。
-  const stale = staleOf(state, sessionId, target);
+  // 剩下的 stale 只可能是「CAS 指纹对不上」：所有权那条已经在上面单独拦过了，
+  // 两条给用户的下一步不同（一个换名字另存，一个只是确认覆盖）。
   if (!force && stale !== undefined) {
     return jsonResponse(
       {
@@ -3450,9 +3683,10 @@ async function handleSave(request) {
 
   try {
     withSidecarLock(target, () => {
-      // 覆盖「不是我们上次写的那份」之前先留一份：陌生文件（手滑点了覆盖）与
-      // 磁盘内容已被别处改过（同步盘/另一台机器）都算，两条都由同一个 backup 开关控制。
-      const overwrittenElsewhere = overwritingForeign === true || stale !== undefined;
+      // 覆盖「不是我们上次写的那份」之前先留一份：陌生文件（手滑点了覆盖）、
+      // 磁盘内容已被别处改过（同步盘/另一台机器）、以及 force 接管别人占着的包，
+      // 三种都由同一个 backup 开关控制 —— force 不是「不要备份」。
+      const overwrittenElsewhere = overwritingForeign === true || stale !== undefined || holderForeign === true;
       if (backupWanted === true && overwrittenElsewhere === true && fs.existsSync(target)) {
         try {
           fs.copyFileSync(target, `${target}.bak-${Date.now()}`);
@@ -3515,6 +3749,9 @@ async function handleSave(request) {
     memoryFiles: out.manifest.memoryFiles.length,
     lock,
     cloud: cloudMarkOf(target),
+    // 落盘之后这条路径上还留着几个会话的旧记录（旧版本共用包留下的现场）。
+    // 不静默改别人的 paths，只把事实报出来让界面提示一句。
+    shared: ownerIndex(state.paths, state.stamps).shared[targetKey],
     session: { id: header?.id ?? sessionId, cwd: header?.cwd, createdAt: header?.createdAt },
   });
 }
@@ -3709,7 +3946,12 @@ async function openFromQuery(request, query, hooks = {}) {
     const replaceFile = query.replaceFile === '1' || query.replaceFile === 'true';
     const repairPackage = query.repairPackage === '1' || query.repairPackage === 'true';
     const backupWanted = query.backup !== '0' && query.backup !== 'false';
-    const result = importPackage(source, { cwd, onConflict, memory: memoryMode, createCwd, replaceFile, repairPackage, backup: backupWanted, contextBudget: query.contextBudget });
+    // force=1：用户看过「这个包已经是另一个会话的保存目标」之后明确选了「仍要导入」。
+    // 只有这一条路能越过反向索引闸，别拿 onConflict 复用——那是「同名会话怎么处理」的语义。
+    const forceOpen = query.force === '1' || query.force === 'true';
+    const result = importPackage(source, { cwd, onConflict, memory: memoryMode, createCwd, replaceFile, repairPackage, backup: backupWanted, force: forceOpen, contextBudget: query.contextBudget });
+    // 被反向索引闸拦下时什么都没写：先返回，别去动归档集合那类副作用。
+    if (result.status === 'shared-target') return jsonResponse(result, 409);
     // 取消归档放在这里、而不是客户端跳转之后：会话在归档集合里时，跳转会先撞上
     // 「不能唤醒」，用户看到报错，而真正该做的是先把它从名单里摘掉。
     let archive;
